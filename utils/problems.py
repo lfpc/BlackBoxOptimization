@@ -107,15 +107,15 @@ class stochastic_ThreeHump(ThreeHump):
 class ShipMuonShield():
     def __init__(self,reduction = 'sum', 
                  epsilon:float = 1e-5,
-                 W0 = 1,
+                 W0:float = 1915820.,
                  cores:int = 45,
                  n_samples:int = 0,
-                 fix_z:bool = True,
+                 z_dist:float = 0.1,
                  average_x:bool = True) -> None:
         
-        self.left_margin = 260  # in cm
-        self.right_margin = 300  # in cm
-        self.y_margin = 500 #cm
+        self.left_margin = 3#2.6
+        self.right_margin = 3
+        self.y_margin = 5
         self.z_bias = 50
         self.reduction = reduction #to implement
         self.epsilon = epsilon
@@ -123,14 +123,13 @@ class ShipMuonShield():
         self.cores = cores
         self.muons_file = '/home/hep/lprate/projects/MuonsAndMatter/'+'data/inputs.pkl'#'data/oliver_data_enriched.pkl'
         self.n_samples = n_samples
-        self.fix_z = fix_z
+        self.z_dist = z_dist
         self.average_x = average_x
 
     def sample_x(self,phi=None):
         with gzip.open(self.muons_file, 'rb') as f:
             x = pickle.load(f)
         if 0<self.n_samples<=x.shape[0]: x = x[:self.n_samples]
-        if self.fix_z: x[:,5] = 17*np.ones_like(x[:,5])
         return x
 
     def simulate(self,phi:torch.tensor,muons = None): #make it to not remove muons due to not being divisible by cores?
@@ -143,14 +142,14 @@ class ShipMuonShield():
             workloads.append(muons[i * division:(i + 1) * division, :])
 
         with Pool(self.cores) as pool:
-            result = pool.starmap(run_muonshield, [(workload,phi.cpu().numpy(),self.z_bias,True) for workload in workloads])
+            result = pool.starmap(run_muonshield, [(workload,phi.cpu().numpy(),self.z_bias,self.z_dist,True) for workload in workloads])
 
         all_results = []
         for rr in result:
             resulting_data,weight = rr
             all_results += [resulting_data]
-        all_results = np.concatenate(all_results, axis=0).T
-        return *all_results,muons[:-(muons.shape[0]%self.cores),-1], weight
+        all_results = torch.as_tensor(np.concatenate(all_results, axis=0).T,device = phi.device)
+        return *all_results, torch.as_tensor(weight,device = phi.device)
     
     def muon_loss(self,x,y,charge):
         mask = (x <= self.left_margin) & (-self.right_margin <= x) & (torch.abs(y) < self.y_margin) 
@@ -160,9 +159,11 @@ class ShipMuonShield():
     def weight_loss(self,W):
         return 1+torch.exp(10*(W-self.W0)/self.W0)
     def __call__(self,phi):
-        px,py,pz,x,y,z,charge, W = self.simulate(phi)
+        print(self.simulate(phi))
+        px,py,pz,x,y,z,charge,W = self.simulate(phi)
         loss = self.muon_loss(x,y,charge)*self.weight_loss(W)
-        loss = torch.where(W>3000,1e8,loss)
+        loss = torch.where(W>3E8,1e8,loss)
+        print('peso', W)
         if self.average_x: loss = loss.mean(-1)
         if self.reduction == 'sum': loss = loss.sum()
         return loss
@@ -176,7 +177,9 @@ class ShipMuonShield():
 
     
 if __name__ == '__main__':
-    phi = torch.tensor([208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0, 38.0, 46.0, 192.0, 14.0, 9.0, 10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 3.0, 32.0, 54.0, 24.0, 8.0, 8.0, 22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 33.0, 77.0, 85.0, 241.0, 9.0, 26.0])
+    phi = torch.tensor([208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0,
+                         38.0, 46.0, 192.0, 14.0, 9.0, 10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 3.0, 32.0, 54.0, 
+                         24.0, 8.0, 8.0, 22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 33.0, 77.0, 85.0, 241.0, 9.0, 26.0])
     problem = ShipMuonShield()
     x = problem.sample_x()
     loss = problem(phi)
