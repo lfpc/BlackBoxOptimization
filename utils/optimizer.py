@@ -4,7 +4,7 @@ from tqdm import tqdm
 from scipy.stats.qmc import LatinHypercube
 from matplotlib import pyplot as plt
 from pickle import dump, HIGHEST_PROTOCOL
-from utils import standardize
+import wandb
 
 
 class LGSO():
@@ -66,6 +66,8 @@ class LGSO():
         return self._i*self.samples_phi*self.true_model.n_samples
     def stopping_criterion(self,**convergence_params):
         return self._i >= convergence_params['max_iter']
+    
+    
 
 class BayesianOptimizer():
     
@@ -76,20 +78,23 @@ class BayesianOptimizer():
                  device = torch.device('cuda'),
                  acquisition_fn = botorch.acquisition.ExpectedImprovement,
                  acquisition_params = {'num_restarts': 20, 'raw_samples':2000},
-                 D:tuple = ()):
+                 D:tuple = (),
+                 WandB:dict = {'name': 'BayesianOptimization'}):
         
         self.device = device
         self.true_model = true_model
         #self.surrogate_model_class = surrogate_model_class
         self.acquisition_fn = acquisition_fn
-        if len(D)==0 : self.D = (initial_phi,true_model(initial_phi))
-        elif D[0].size ==0: self.D = (initial_phi,true_model(initial_phi))
+        if len(D)==0 or D[0].size ==0: 
+            self.D = (initial_phi.view(-1,initial_phi.size(-1)),
+                      true_model(initial_phi).view(-1,1))
         else: self.D = D
         #self.model = self.surrogate_model_class(*self.D).to(self.device)
         self._i = 0
         self.acquisition_params = acquisition_params
         self.model = surrogate_model
         self.bounds = bounds
+        self.wandb = WandB
         
     def fit_surrogate_model(self,**kwargs):
         self.model = self.model.fit(*self.D,**kwargs)
@@ -101,7 +106,16 @@ class BayesianOptimizer():
         phi,y = phi.reshape(-1,self.D[0].shape[1]).to(self.device), y.reshape(-1,self.D[1].shape[1]).to(self.device)
         self.D = (torch.cat([self.D[0], phi]),torch.cat([self.D[1], y]))
     def run_optimization(self, use_scipy = True,**convergence_params):
-        with tqdm(total=convergence_params['max_iter']) as pbar:
+        with wandb.init(reinit = True,**self.wandb) as wb, tqdm(total=convergence_params['max_iter']) as pbar:
+            for phi,y in zip(*self.D):
+                print(phi)
+                print(y)
+                log = {'loss':y.item(), 
+                        'min_loss':self.D[1].min().item()}
+                for i,p in enumerate(phi.flatten()):
+                    log['phi_{%d}'%i] = p
+                wb.log(log)
+            print('START')
             while not self.stopping_criterion(**convergence_params):
                 options = {'lr': 1e-2, 'maxiter': 100} if not use_scipy else None
                 # Create GP model
@@ -111,7 +125,13 @@ class BayesianOptimizer():
                 self.update_D(phi,y)
                 self._i += 1
                 pbar.update()
-            idx = self.D[1].argmin()
+                log = {'loss':y.item(), 
+                        'min_loss':self.D[1].min().item()}
+                for i,p in enumerate(phi.flatten()):
+                    log['phi_{%d}'%i] = p
+                wb.log(log)
+        idx = self.D[1].argmin()
+        wb.finish()
         return self.D[0][idx],self.D[1][idx]
     
     def n_iterations(self):
