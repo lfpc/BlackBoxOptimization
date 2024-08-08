@@ -29,6 +29,7 @@ args = parser.parse_args()
 
 wandb.login()
 WANDB = {'project': 'MuonShieldOptimization', 'group': 'BayesianOptimization', 'config': vars(args), 'name': 'test1'}
+OUTPUTS_FILE = 'outputs'
 
 if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda')
 else: dev = torch.device('cpu')
@@ -39,27 +40,25 @@ if args.float64: torch.set_default_dtype(torch.float64)
 
 
 
-INITIAL_PHI = torch.tensor([[208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0,
-                         38.0, 46.0, 192.0, 14.0, 9.0, 10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 3.0, 32.0, 54.0, 
-                         24.0, 8.0, 8.0, 22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 33.0, 77.0, 85.0, 241.0, 9.0, 26.0]],device = torch.device('cuda'))#2*torch.ones(1,dimensions_phi,device=dev)
-
-
-
 def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range):
-    if N_initial_points == -1: initial_phi = INITIAL_PHI
+    if N_initial_points == -1: initial_phi = problem_fn.DEFAULT_PHI
     else: initial_phi = (phi_range[1]-phi_range[0])*torch.rand(N_initial_points,dimensions_phi,device=dev)+phi_range[0]
     #assert initial_phi.ge(phi_range[0]).logical_and(initial_phi.le(phi_range[1])).all()
+
     if args.optimization == 'bayesian':
         acquisition_fn = acquisition.ExpectedImprovement
         optimizer = BayesianOptimizer(problem_fn,model,phi_range,acquisition_fn=acquisition_fn,initial_phi = initial_phi,device = dev, WandB = WANDB)
+
     elif args.optimization == 'lgso':
         optimizer = LGSO(problem_fn,model,phi_range,acquisition_fn=acquisition_fn,initial_phi = initial_phi,device = dev, WandB = WANDB)
-    return *optimizer.run_optimization(max_iter = max_iter,use_scipy=args.scipy),optimizer
+
+    optimizer.run_optimization(max_iter = max_iter,use_scipy=args.scipy)
+
+    return optimizer
+
 
 if __name__ == "__main__":
 
-    N_initial_points = args.n_initial
-    max_iter = args.maxiter
     dimensions_phi = args.dimensions
 
     if args.problem == 'stochastic_rosenbrock': problem_fn = problems.stochastic_RosenbrockProblem(n_samples=args.n_samples,std = args.noise)
@@ -70,20 +69,22 @@ if __name__ == "__main__":
     if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
     else:
         phi_range = torch.as_tensor(args.phi_bounds,device=dev,dtype=torch.get_default_dtype()).view(2,-1)  
-        if phi_range.size(1) != dimensions_phi: phi_range = phi_range.repeat(1,dimensions_phi)
+        if phi_range.size(1) != args.dimensions: phi_range = phi_range.repeat(1,args.dimensions)
 
     if args.model == 'gp_rbf': model = GP_RBF(phi_range,dev)
     elif args.model == 'gp_cylindrical': model = GP_Cylindrical_Custom(phi_range,dev)
-    phi,y,BayesOpt = main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range)
+    optimizer = main(model,problem_fn,args.dimensions,args.max_iter,args.n_initial,phi_range)
+    idx = optimizer.D[1].argmin()
+    phi,y = optimizer.D[0][idx],optimizer.D[1][idx]
     with open("phi_optm.txt", "w") as txt_file:
         for p in phi.view(-1):
             txt_file.write(" ".join(p.item()) + "\n")
     print('Optimal phi', phi)
     print('Optimal y', y.item(),'|')
-    print(f'Calls to the function: {max(N_initial_points,1)}(initial set) + {BayesOpt.n_iterations()}')
-    min_loss = torch.cummin(BayesOpt.D[1],dim=0).values
+    print(f'Calls to the function: {max(args.n_initial,1)}(initial set) + {optimizer.n_iterations()}')
+    min_loss = torch.cummin(optimizer.D[1],dim=0).values
     
-    plt.plot(BayesOpt.D[1].cpu().numpy())
+    plt.plot(optimizer.D[1].cpu().numpy())
     plt.ylabel('Loss')
     plt.xlabel('Iteration')
     plt.savefig('loss.png')
