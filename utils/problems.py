@@ -113,8 +113,7 @@ class ShipMuonShield():
     DEFAULT_PHI = torch.tensor([[208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0,
                          38.0, 46.0, 192.0, 14.0, 9.0, 10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 3.0, 32.0, 54.0, 
                          24.0, 8.0, 8.0, 22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 33.0, 77.0, 85.0, 241.0, 9.0, 26.0]],device = torch.device('cuda'))
-    def __init__(self,#reduction = 'sum', 
-                 epsilon:float = 1e-5,
+    def __init__(self,#reduction = 'sum',
                  W0:float = 1915820.,
                  cores:int = 45,
                  n_samples:int = 0,
@@ -122,12 +121,11 @@ class ShipMuonShield():
                  average_x:bool = True,
                  loss_with_weight:bool = True) -> None:
         
-        self.left_margin = 3#2.6
+        self.left_margin = 2.6#2.6
         self.right_margin = 3
         self.y_margin = 5
         self.z_bias = 50
         #self.reduction = reduction #to implement
-        self.epsilon = epsilon
         self.W0 = W0
         self.cores = cores
         self.muons_file = '/home/hep/lprate/projects/MuonsAndMatter/'+'data/inputs.pkl'#'data/oliver_data_enriched.pkl'
@@ -166,16 +164,17 @@ class ShipMuonShield():
         all_results = torch.as_tensor(np.concatenate(all_results, axis=0).T,device = phi.device)
         return *all_results, torch.as_tensor(weight,device = phi.device)
     
-    def muon_loss(self,x,y,charge):
-        mask = (x <= self.left_margin) & (-self.right_margin <= x) & (torch.abs(y) <= self.y_margin) & ((torch.abs(charge).to(torch.int))==self.MUON)
+    def muon_loss(self,x,y,particle):
+        charge = -1*torch.sign(particle)
+        mask = (-charge*x <= self.left_margin) & (-self.right_margin <= -charge*x) & (torch.abs(y) <= self.y_margin) & ((torch.abs(particle).to(torch.int))==self.MUON)
         x = x[mask]
-        charge = -1*torch.sign(charge)[mask]
-        return torch.sqrt(1 + (charge*x-self.right_margin)/(self.left_margin+self.right_margin)+self.epsilon)
+        charge = charge[mask]
+        return torch.sqrt(1 + (charge*x-self.right_margin)/(self.left_margin+self.right_margin))
     def weight_loss(self,W):
         return 1+torch.exp(10*(W-self.W0)/self.W0)
     def __call__(self,phi,muons = None):
-        _,_,_,x,y,_,charge,W = self.simulate(phi,muons)
-        loss = self.muon_loss(x,y,charge)
+        _,_,_,x,y,_,particle,W = self.simulate(phi,muons)
+        loss = self.muon_loss(x,y,particle)
         if self.loss_with_weight:
             loss *= self.weight_loss(W)
             loss = torch.where(W>3E6,1e8,loss)
