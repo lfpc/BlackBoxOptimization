@@ -128,7 +128,7 @@ class BayesianOptimizer():
                 log = {'loss':y.item(), 
                         'min_loss':self.D[1].min().item()}
                 for i,p in enumerate(phi.flatten()):
-                    log['phi_{%d}'%i] = p
+                    log['phi_%d'%i] = p
                 wb.log(log)
         idx = self.D[1].argmin()
         wb.finish()
