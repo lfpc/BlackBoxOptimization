@@ -169,7 +169,7 @@ class ShipMuonShield():
     def muon_loss(self,x,y,charge):
         mask = (x <= self.left_margin) & (-self.right_margin <= x) & (torch.abs(y) <= self.y_margin) & ((torch.abs(charge).to(torch.int))==self.MUON)
         x = x[mask]
-        charge = torch.sign(charge)[mask]
+        charge = -1*torch.sign(charge)[mask]
         return torch.sqrt(1 + (charge*x-self.right_margin)/(self.left_margin+self.right_margin)+self.epsilon)
     def weight_loss(self,W):
         return 1+torch.exp(10*(W-self.W0)/self.W0)
