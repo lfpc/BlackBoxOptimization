@@ -113,7 +113,7 @@ class BayesianOptimizer():
                 log = {'loss':y.item(), 
                         'min_loss':self.D[1].min().item()}
                 for i,p in enumerate(phi.flatten()):
-                    log['phi_{%d}'%i] = p
+                    log['phi_%d'%i] = p
                 wb.log(log)
             print('START')
             while not self.stopping_criterion(**convergence_params):
