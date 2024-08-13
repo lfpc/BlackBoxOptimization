@@ -6,30 +6,31 @@ from matplotlib import pyplot as plt
 import argparse
 from utils.models import GP_RBF, GP_Cylindrical_Custom
 import wandb
+import os
 
 #from warnings import filterwarnings
 #filterwarnings("ignore")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--cpu",dest = 'cuda', action = 'store_false')
-parser.add_argument("--seed", type=int, default=13)
-parser.add_argument("--maxiter", type=int, default=100)
-parser.add_argument("--dimensions", type=int, default=10)
+parser.add_argument("--seed", type=int, default=1)
+parser.add_argument("--maxiter", type=int, default=1000)
+parser.add_argument("--dimensions", type=int, default=42)
 parser.add_argument("--n_initial", type=int, default=-1)
 parser.add_argument('--phi_bounds', nargs='+', type=float, default=None)
-parser.add_argument('--problem', type=str, default='stochastic_rosenbrock')
+parser.add_argument('--problem', type=str, default='ship')
 parser.add_argument('--optimization', type=str, default='bayesian')
 parser.add_argument('--model', type=str, default='gp_rbf')
 parser.add_argument('--noise', type=float, default=1.0)
-parser.add_argument('--n_samples', type=int, default=1)
+parser.add_argument('--n_samples', type=int, default=0)
 parser.add_argument('--torch_optimizer',dest='scipy', action = 'store_false')
 parser.add_argument('--float64', action = 'store_true')
+parser.add_argument('--name', type=str, default='optimizationtest')
 
 args = parser.parse_args()
 
 wandb.login()
-WANDB = {'project': 'MuonShieldOptimization', 'group': 'BayesianOptimization', 'config': vars(args), 'name': 'test1'}
-OUTPUTS_FILE = 'outputs'
+WANDB = {'project': 'MuonShieldOptimization', 'group': 'BayesianOptimization', 'config': vars(args), 'name': args.name}
 
 if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda')
 else: dev = torch.device('cpu')
@@ -37,7 +38,9 @@ print('Device:', dev)
 torch.manual_seed(args.seed);
 if args.float64: torch.set_default_dtype(torch.float64)
 
-
+OUTPUTS_DIR = os.path.join('/home/hep/lprate/projects/BlackBoxOptimization/outputs',args.name)
+if not os.path.exists(OUTPUTS_DIR):
+    os.makedirs(OUTPUTS_DIR)
 
 
 def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range):
@@ -52,7 +55,7 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range):
     elif args.optimization == 'lgso':
         optimizer = LGSO(problem_fn,model,phi_range,acquisition_fn=acquisition_fn,initial_phi = initial_phi,device = dev, WandB = WANDB)
 
-    optimizer.run_optimization(max_iter = max_iter,use_scipy=args.scipy)
+    optimizer.run_optimization(max_iter = max_iter,use_scipy=args.scipy, save_phi=OUTPUTS_DIR)
 
     return optimizer
 
@@ -76,7 +79,7 @@ if __name__ == "__main__":
     optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range)
     idx = optimizer.D[1].argmin()
     phi,y = optimizer.D[0][idx],optimizer.D[1][idx]
-    with open("phi_optm.txt", "w") as txt_file:
+    with open(os.path.join(OUTPUTS_DIR,"phi_optm.txt"), "w") as txt_file:
         for p in phi.view(-1):
             txt_file.write(" ".join(p.item()) + "\n")
     print('Optimal phi', phi)

@@ -5,6 +5,7 @@ from scipy.stats.qmc import LatinHypercube
 from matplotlib import pyplot as plt
 from pickle import dump, HIGHEST_PROTOCOL
 import wandb
+from os.path import join
 
 
 class LGSO():
@@ -14,7 +15,7 @@ class LGSO():
                  epsilon:float,
                  samples_phi:int,
                  loss_fn,
-                 D:tuple = ()) -> None:
+                 D:tuple = ()):
         self.model = surrogate_model
         self.true_model = true_model
         self.D = D
@@ -105,13 +106,17 @@ class BayesianOptimizer():
     def update_D(self,phi,y):
         phi,y = phi.reshape(-1,self.D[0].shape[1]).to(self.device), y.reshape(-1,self.D[1].shape[1]).to(self.device)
         self.D = (torch.cat([self.D[0], phi]),torch.cat([self.D[1], y]))
-    def run_optimization(self, use_scipy = True,**convergence_params):
+    def run_optimization(self, 
+                         use_scipy = True,
+                         save_phi = None,
+                         **convergence_params):
         with wandb.init(reinit = True,**self.wandb) as wb, tqdm(total=convergence_params['max_iter']) as pbar:
+            min_loss = self.D[1].min()
             for phi,y in zip(*self.D):
                 print(phi)
                 print(y)
                 log = {'loss':y.item(), 
-                        'min_loss':self.D[1].min().item()}
+                        'min_loss':min_loss}
                 for i,p in enumerate(phi.flatten()):
                     log['phi_%d'%i] = p
                 wb.log(log)
@@ -129,6 +134,11 @@ class BayesianOptimizer():
                         'min_loss':self.D[1].min().item()}
                 for i,p in enumerate(phi.flatten()):
                     log['phi_%d'%i] = p
+                if y<min_loss and save_phi is not None:
+                    min_loss = y
+                    with open(join(save_phi,f'phi_{self._i}.txt'), "w") as txt_file:
+                        for p in phi.view(-1):
+                            txt_file.write(str(p.item()) + "\n")
                 wb.log(log)
         idx = self.D[1].argmin()
         wb.finish()
