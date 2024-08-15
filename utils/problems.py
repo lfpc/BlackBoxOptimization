@@ -111,19 +111,18 @@ class stochastic_ThreeHump(ThreeHump):
         return y
 
 class ShipMuonShield():
-    DEFAULT_PHI = torch.tensor([
-    205.,205.,280.,245.,305.,240.,87.,65.,
+    DEFAULT_PHI = torch.tensor([[205.,205.,280.,245.,305.,240.,87.,65.,
     35.,121,11.,2.,65.,43.,121.,207.,11.,2.,6.,33.,32.,13.,70.,11.,5.,16.,112.,5.,4.,2.,15.,34.,235.,32.,5.,
-    8.,31.,90.,186.,310.,2.,55.],device = torch.device('cuda'))
-    #torch.tensor([[208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0,
-                  #       38.0, 46.0, 192.0, 14.0, 9.0, 10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 3.0, 32.0, 54.0, 
-                  #       24.0, 8.0, 8.0, 22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 33.0, 77.0, 85.0, 241.0, 9.0, 26.0]],device = torch.device('cuda'))
+    8.,31.,90.,186.,310.,2.,55.]],device = torch.device('cuda'))
+
+    MUON = 13
+
     def __init__(self,
                  W0:float = 1915820.,
                  cores:int = 45,
                  n_samples:int = 0,
                  input_dist:float = 0.1,
-                 sensitive_plane:float = 64,#distance between end of shield and sensplane
+                 sensitive_plane:float = 32.,#distance between end of shield and sensplane
                  average_x:bool = True,
                  loss_with_weight:bool = True) -> None:
         
@@ -138,7 +137,6 @@ class ShipMuonShield():
         self.input_dist = input_dist
         self.average_x = average_x
         self.loss_with_weight = loss_with_weight
-        self.MUON = 13
         self.sentitive_plane = sensitive_plane
 
     def sample_x(self,phi=None):
@@ -182,7 +180,7 @@ class ShipMuonShield():
     def __call__(self,phi,muons = None):
         px,py,pz,x,y,z,particle,W = self.simulate(phi,muons)
         x,y,z = self.propagate_to_sensitive_plane(px,py,pz,x,y,z)
-        loss = 1+self.muon_loss(x,y,particle).sum(-1)
+        loss = self.muon_loss(x,y,particle).sum()
         if self.loss_with_weight:
             loss *= self.weight_loss(W)
             loss = torch.where(W>3E6,1e8,loss)
@@ -202,6 +200,8 @@ class ShipMuonShield():
         gap_bounds = [(2, 70)] * 2 
         bounds = magnet_lengths + 6*(dX_bounds + dY_bounds + gap_bounds)
         bounds = torch.tensor(bounds,device=device,dtype=torch.get_default_dtype()).T
+        bounds[0] = torch.minimum(bounds[0],ShipMuonShield.DEFAULT_PHI[0])
+        bounds[1] = torch.maximum(bounds[1],ShipMuonShield.DEFAULT_PHI[0])
         return bounds
     @staticmethod
     def add_fixed_params(phi:torch.tensor):
@@ -281,5 +281,6 @@ if __name__ == '__main__':
     plt.legend()
     plt.savefig('/home/hep/lprate/projects/BlackBoxOptimization/outputs/pz.png')
     plt.close()
-    plt.hist(y,bins = 'auto')
+    plt.hist(y[mask],bins = 'auto')
+    plt.ylim(-5,5)
     plt.savefig('/home/hep/lprate/projects/BlackBoxOptimization/outputs/y.png')

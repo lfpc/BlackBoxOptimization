@@ -78,7 +78,7 @@ class BayesianOptimizer():
                  initial_phi,
                  device = torch.device('cuda'),
                  acquisition_fn = botorch.acquisition.ExpectedImprovement,
-                 acquisition_params = {'num_restarts': 20, 'raw_samples':2000},
+                 acquisition_params = {'num_restarts': 30, 'raw_samples':5000},
                  D:tuple = (),
                  WandB:dict = {'name': 'BayesianOptimization'}):
         
@@ -99,7 +99,6 @@ class BayesianOptimizer():
         
     def fit_surrogate_model(self,**kwargs):
         self.model = self.model.fit(*self.D,**kwargs)
-    
     def get_new_phi(self):
         acquisition = self.acquisition_fn(self.model, self.D[1].min(), maximize=False)
         return botorch.optim.optimize.optimize_acqf(acquisition, self.bounds, q=1,**self.acquisition_params)[0]
