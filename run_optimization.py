@@ -13,7 +13,7 @@ import os
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--cpu",dest = 'cuda', action = 'store_false')
-parser.add_argument("--seed", type=int, default=1)
+parser.add_argument("--seed", type=int, default=13)
 parser.add_argument("--maxiter", type=int, default=1000)
 parser.add_argument("--dimensions", type=int, default=42)
 parser.add_argument("--n_initial", type=int, default=-1)
@@ -49,8 +49,11 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range):
     #assert initial_phi.ge(phi_range[0]).logical_and(initial_phi.le(phi_range[1])).all()
 
     if args.optimization == 'bayesian':
-        acquisition_fn = acquisition.ExpectedImprovement
-        optimizer = BayesianOptimizer(problem_fn,model,phi_range,acquisition_fn=acquisition_fn,initial_phi = initial_phi,device = dev, WandB = WANDB)
+        acquisition_fn = acquisition.LogExpectedImprovement
+        optimizer = BayesianOptimizer(problem_fn,model,
+                                      phi_range,acquisition_fn=acquisition_fn,
+                                      initial_phi = initial_phi,device = dev, 
+                                      WandB = WANDB,acquisition_params = {'num_restarts': 30, 'raw_samples':5000})
 
     elif args.optimization == 'lgso':
         optimizer = LGSO(problem_fn,model,phi_range,acquisition_fn=acquisition_fn,initial_phi = initial_phi,device = dev, WandB = WANDB)
