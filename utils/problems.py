@@ -4,11 +4,8 @@ import pickle
 import sys
 import numpy as np
 from multiprocessing import Pool
-from os.path import join
-try:
-    sys.path.insert(1, '/home/hep/lprate/projects/MuonsAndMatter/python/bin')
-    from run_simulation import run as run_muonshield
-except: pass
+sys.path.insert(1, '/home/hep/lprate/projects/MuonsAndMatter/python/bin')
+from run_simulation import run as run_muonshield
 
 def uniform_sample(shape,bounds,device = 'cpu'):
     return (bounds[0]-bounds[1])*torch.rand(shape,device=device)+bounds[1]
@@ -122,7 +119,7 @@ class ShipMuonShield():
                  cores:int = 45,
                  n_samples:int = 0,
                  input_dist:float = 0.1,
-                 sensitive_plane:float = 32.,#distance between end of shield and sensplane
+                 sensitive_plane:float = 50,#distance between end of shield and sensplane
                  average_x:bool = True,
                  loss_with_weight:bool = True) -> None:
         
@@ -155,7 +152,7 @@ class ShipMuonShield():
         for j,w in enumerate(muons[(i + 1) * division:, :]):    
             workloads[j] = np.append(workloads[j],w.reshape(1,-1),axis=0)
 
-        sensitive_film_params = {'dz': 0.01, 'dx': 6, 'dy': 10,'position': 0} #the center is in end of muon shield + position
+        sensitive_film_params = {'dz': 0.01, 'dx': 20, 'dy': 30,'position': 0} #the center is in end of muon shield + position
         with Pool(self.cores) as pool:
             result = pool.starmap(run_muonshield, 
                                   [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,sensitive_film_params) for workload in workloads])
@@ -180,7 +177,7 @@ class ShipMuonShield():
     def __call__(self,phi,muons = None):
         px,py,pz,x,y,z,particle,W = self.simulate(phi,muons)
         x,y,z = self.propagate_to_sensitive_plane(px,py,pz,x,y,z)
-        loss = self.muon_loss(x,y,particle).sum()
+        loss = self.muon_loss(x,y,particle).sum()+1
         if self.loss_with_weight:
             loss *= self.weight_loss(W)
             loss = torch.where(W>3E6,1e8,loss)
@@ -200,8 +197,8 @@ class ShipMuonShield():
         gap_bounds = [(2, 70)] * 2 
         bounds = magnet_lengths + 6*(dX_bounds + dY_bounds + gap_bounds)
         bounds = torch.tensor(bounds,device=device,dtype=torch.get_default_dtype()).T
-        bounds[0] = torch.minimum(bounds[0],ShipMuonShield.DEFAULT_PHI[0])
-        bounds[1] = torch.maximum(bounds[1],ShipMuonShield.DEFAULT_PHI[0])
+        bounds[0] = torch.minimum(bounds[0],ShipMuonShield.DEFAULT_PHI[0].to(device))
+        bounds[1] = torch.maximum(bounds[1],ShipMuonShield.DEFAULT_PHI[0].to(device))
         return bounds
     @staticmethod
     def add_fixed_params(phi:torch.tensor):
@@ -215,46 +212,42 @@ if __name__ == '__main__':
     phi_baseline = torch.tensor([208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0,
                          38.0, 46.0, 192.0, 14.0, 9.0, 10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 3.0, 32.0, 54.0, 
                          24.0, 8.0, 8.0, 22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 33.0, 77.0, 85.0, 241.0, 9.0, 26.0])
-    default_oliver = torch.tensor([
-    70.0,170.0,205.,205.,280.,245.,305.,240.,40.0,40.0,150.0,150.0,2.0,2.0,80.0,80.0,150.0,150.0,2.0,2.0,87.,65.,
+    default_oliver = torch.tensor([205.,205.,280.,245.,305.,240.,87.,65.,
     35.,121,11.,2.,65.,43.,121.,207.,11.,2.,6.,33.,32.,13.,70.,11.,5.,16.,112.,5.,4.,2.,15.,34.,235.,32.,5.,
     8.,31.,90.,186.,310.,2.,55.])
     
     array_values = []
-    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/optimizationtests2/phi_971.txt', "r") as txt_file:
+    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/optimizationsensitive32/phi_optm.txt', "r") as txt_file:
         for line in txt_file:
             array_values.append(float(line.strip()))
     phi_new_opt = torch.tensor(array_values)
-    phi = default_oliver
-    '''d = {'Weight':{}, 'MuonLoss':{}, 'WeightLoss':{},'TotalLoss':{}}
+    phi = phi_new_opt
+    d = {'Weight':{}, 'MuonLoss':{}, 'WeightLoss':{},'TotalLoss':{}}
     for name,phi in {'Oliver opt':phi_baseline,
                      'Def (oliver)':default_oliver,'Opt (new)':phi_new_opt, 
-                     '9':torch.tensor([]),'Smaller magnet': ShipMuonShield.GetBounds()[0],
-                     'Biggest magnet': ShipMuonShield.GetBounds()[1]}.items():'''
-    problem = ShipMuonShield(cores = 45)
-    px,py,pz,x,y,z,particle,W = problem.simulate(phi)
-    x,y,z = problem.propagate_to_sensitive_plane(px,py,pz,x,y,z)
-    charge = -1*torch.sign(particle)
-    mask = (-charge*x <= problem.left_margin) & (-problem.right_margin <= -charge*x) & (torch.abs(y) <= problem.y_margin) & ((torch.abs(particle).to(torch.int))==13)
+                     'Smaller magnet': ShipMuonShield.GetBounds()[0],
+                     'Biggest magnet': ShipMuonShield.GetBounds()[1]}.items():
+        problem = ShipMuonShield(cores = 45)
+        px,py,pz,x,y,z,particle,W = problem.simulate(phi)
+        x,y,z = problem.propagate_to_sensitive_plane(px,py,pz,x,y,z)
+        charge = -1*torch.sign(particle)
+        mask = (-charge*x <= problem.left_margin) & (-problem.right_margin <= -charge*x) & (torch.abs(y) <= problem.y_margin) & ((torch.abs(particle).to(torch.int))==13)
+        muon_loss = problem.muon_loss(x,y,particle).sum()
+        weight_loss = problem.weight_loss(W)
 
-
-    muon_loss = problem.muon_loss(x,y,particle).sum()
-    print('N muons:', len(x), '|  filtered:', mask.sum().item())
-    print('peso', W.item())
-    print(f'MUON LOSS = {muon_loss.item()}')
-    print(f'WEIGHT LOSS = {problem.weight_loss(W).item()}')
-    print(f'TOTAL_LOSS = {torch.where(W>3E6,1e8,(muon_loss+1)*problem.weight_loss(W)).item()}')
-
-    '''    muon_loss = problem.muon_loss(x,y,particle)
-        weight_loss = problem.weight_loss(W,beta)
-        break
+        print('N muons:', len(x), '|  filtered:', mask.sum().item())
+        print('peso', W.item())
+        print(f'MUON LOSS = {muon_loss.item()}')
+        print(f'WEIGHT LOSS = {weight_loss.item()}')
+        print(f'TOTAL_LOSS = {torch.where(W>3E6,1e8,(muon_loss+1)*weight_loss).item()}')
+        
 
         d['Weight'][name] = W.item()
         d['MuonLoss'][name] = muon_loss.item()
-        d['TotalLoss'][name] = torch.where(W>3E6,1e8,muon_loss*weight_loss).item()'''
-    #for i,v in d.items():
-    #    print(i)
-    #    print(v)
+        d['TotalLoss'][name] = torch.where(W>3E6,1e8,muon_loss*weight_loss).item()
+    for i,v in d.items():
+        print(i)
+        print(v)
     #with open('loss_results.pickle', 'wb') as handle:
     #    pickle.dump(d, handle, protocol=pickle.HIGHEST_PROTOCOL)
     from matplotlib import pyplot as plt

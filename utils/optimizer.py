@@ -8,6 +8,9 @@ import wandb
 from os.path import join
 
 
+class RL():
+    pass
+
 class LGSO():
     def __init__(self,true_model,
                  surrogate_model:torch.nn.Module,

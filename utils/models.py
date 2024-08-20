@@ -3,7 +3,7 @@ import botorch
 import gpytorch
 from math import sqrt
 from .models_priors import KumaAlphaPrior, KumaBetaPrior, AngularWeightsPrior
-from .nets import Generator, Discriminator,GANLosses, Encoder, Decoder
+from .nets import Generator, Discriminator,GANLosses, Encoder, Decoder, IBNN_ReLU
 from tqdm import trange
 from matplotlib import pyplot as plt
 from utils import standardize
@@ -14,6 +14,7 @@ class GP_RBF(botorch.models.SingleTaskGP):
         self.device = device
         self.bounds = bounds
     def fit(self,X,Y,use_scipy = True,options:dict = None,**kwargs):
+        self.train()
         Y = standardize(Y)
         X = self.normalization(X,self.bounds)
         super().__init__(X,Y,**kwargs)
@@ -29,13 +30,12 @@ class GP_RBF(botorch.models.SingleTaskGP):
     @staticmethod
     def normalization(X, bounds):
         return (X - bounds[0,:]) / (bounds[1,:] - bounds[0,:])
-    def predict(self,x,return_std = False):
+    def predict(self,x,return_std = False,**kwargs):
         self.eval()
         x = self.normalization(x,self.bounds)
-        with torch.no_grad():
-            observed_pred = self.posterior(x)
-            y_pred = observed_pred.mean.cpu()
-            std_pred = observed_pred.mvn.covariance_matrix.diag().sqrt().cpu()
+        observed_pred = self.posterior(x,**kwargs)
+        y_pred = observed_pred.mean.cpu()
+        std_pred = observed_pred.mvn.covariance_matrix.diag().sqrt().cpu()
         if return_std: return y_pred,std_pred
         else: return y_pred
     
@@ -45,6 +45,7 @@ class GP_Cylindrical_Custom(GP_RBF):#, botorch.models.gpytorch.GPyTorchModel):  
         self.bounds = self.bounds.t()
         if self.bounds.dim() == 1: self.bounds = self.bounds.unsqueeze(-1)
     def fit(self,x,y,**kwargs):
+        self.train()
         y = standardize(y)
         x = self.normalization(x,self.bounds)
         super().fit(x,y,**kwargs)
@@ -76,6 +77,28 @@ class GP_Cylindrical_Custom(GP_RBF):#, botorch.models.gpytorch.GPyTorchModel):  
         x = x / sqrt(dim)
         return x
     
+
+class SingleTaskIBNN(GP_RBF):
+    def __init__(self, bounds,
+                 var_w = 10.,var_b = 1.3,depth = 3,
+                device = torch.device('cpu')):
+        super().__init__(bounds,device)
+        self.model_args = {'var_w':var_w,'var_b':var_b, 'depth':depth}
+        self._kernel = None #IBNN_ReLU(bounds.size(-1), var_w, var_b, depth)
+    def fit(self,X,Y):
+        if self._kernel is None: kernel = IBNN_ReLU(self.bounds.size(-1), **self.model_args)
+        else: kernel = self._kernel
+        super().fit(X,Y,covar_module=kernel, outcome_transform=botorch.models.transforms.outcome.Standardize(m=1))
+        self._kernel = kernel
+        return self
+    def eval(self,*args):
+        super().eval(*args)
+        self._kernel.eval()
+    def train(self,*args):
+        super().train(*args)
+        self._kernel.train()
+    
+
 
 
 class GANModel():
@@ -260,7 +283,6 @@ class GANModel():
             y = y * self._y_std + self._y_mean
         return y
     
-
     
 class VAEModel(torch.nn.Module):
     '''essa VAE prediz o input. Tem que adaptar'''
@@ -308,7 +330,6 @@ class VAEModel(torch.nn.Module):
         return self
     def generate(self,phi,x):
         return self.Decoder(phi,x)
-
 
 
 

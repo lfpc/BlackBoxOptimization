@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
+from gpytorch.kernels import Kernel
 
 
 class PsiCompressor(nn.Module):
@@ -283,4 +284,43 @@ class Decoder(nn.Module):
         
         x_hat = torch.sigmoid(self.FC_output(h))
         return x_hat
+    
+class IBNN_ReLU(Kernel):
+    is_stationary = False
+
+    def __init__(self, d, var_w:float = 10., var_b:float = 1.6, depth:int = 3, **kwargs):
+        super().__init__(**kwargs)
+        self.d = d
+        self.var_w = var_w
+        self.var_b = var_b
+        self.depth = depth
+
+    def k(self, l, x1, x2):
+        # base case
+        if l == 0:
+            return self.var_b + self.var_w * (x1 * x2).sum(-1) / self.d
+        else:
+            K_12 = self.k(l - 1, x1, x2)
+            K_11 = self.k(l - 1, x1, x1)
+            K_22 = self.k(l - 1, x2, x2)
+            sqrt_term = torch.sqrt(K_11 * K_22)
+            fraction = K_12 / sqrt_term
+            epsilon = 1e-7
+            theta = torch.acos(torch.clamp(fraction, min=-1 + epsilon, max=1 - epsilon))
+            theta_term = torch.sin(theta) + (torch.pi - theta) * fraction
+            result = self.var_b + self.var_w / (2 * torch.pi) * sqrt_term * theta_term
+            return result
+        
+    def forward(self, x1, x2, **params):
+        d2 = x2.shape[-2]
+        x1_shape = tuple(x1.shape)
+        d1, dim = x1_shape[-2:]
+        new_shape = x1_shape[:-2] + (d1, d2, dim)
+        new_x1 = x1.unsqueeze(-2).expand(new_shape)
+        new_x2 = x2.unsqueeze(-3).expand(new_shape)
+        result = self.k(self.depth, new_x1, new_x2)
+        return result
+
+
+
 

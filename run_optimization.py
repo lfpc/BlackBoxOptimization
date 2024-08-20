@@ -4,7 +4,7 @@ from utils.optimizer import BayesianOptimizer,LGSO
 from utils import problems
 from matplotlib import pyplot as plt
 import argparse
-from utils.models import GP_RBF, GP_Cylindrical_Custom
+from utils.models import GP_RBF, GP_Cylindrical_Custom, SingleTaskIBNN
 import wandb
 import os
 
@@ -26,11 +26,12 @@ parser.add_argument('--n_samples', type=int, default=0)
 parser.add_argument('--torch_optimizer',dest='scipy', action = 'store_false')
 parser.add_argument('--float64', action = 'store_true')
 parser.add_argument('--name', type=str, default='optimizationtest')
+parser.add_argument('--group', type=str, default='BayesianOptimization')
 
 args = parser.parse_args()
 
 wandb.login()
-WANDB = {'project': 'MuonShieldOptimization', 'group': 'BayesianOptimization', 'config': vars(args), 'name': args.name}
+WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': vars(args), 'name': args.name}
 
 if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda')
 else: dev = torch.device('cpu')
@@ -79,12 +80,13 @@ if __name__ == "__main__":
 
     if args.model == 'gp_rbf': model = GP_RBF(phi_range,dev)
     elif args.model == 'gp_cylindrical': model = GP_Cylindrical_Custom(phi_range,dev)
+    elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,dev)
     optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range)
     idx = optimizer.D[1].argmin()
     phi,y = optimizer.D[0][idx],optimizer.D[1][idx]
     with open(os.path.join(OUTPUTS_DIR,"phi_optm.txt"), "w") as txt_file:
-        for p in phi.view(-1):
-            txt_file.write(" ".join(p.item()) + "\n")
+        for p in phi.flatten():
+            txt_file.write(str(p.item()) + "\n")
     print('Optimal phi', phi)
     print('Optimal y', y.item(),'|')
     print(f'Calls to the function: {max(args.n_initial,1)}(initial set) + {optimizer.n_iterations()}')
