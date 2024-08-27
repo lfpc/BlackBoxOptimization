@@ -14,7 +14,7 @@ class GP_RBF(botorch.models.SingleTaskGP):
         self.device = device
         self.bounds = bounds
     def fit(self,X,Y,use_scipy = True,options:dict = None,**kwargs):
-        self.train()
+        #self.train()
         Y = standardize(Y)
         X = self.normalization(X,self.bounds)
         super().__init__(X,Y,**kwargs)
@@ -31,7 +31,7 @@ class GP_RBF(botorch.models.SingleTaskGP):
     def normalization(X, bounds):
         return (X - bounds[0,:]) / (bounds[1,:] - bounds[0,:])
     def predict(self,x,return_std = False,**kwargs):
-        self.eval()
+        #self.eval()
         x = self.normalization(x,self.bounds)
         observed_pred = self.posterior(x,**kwargs)
         y_pred = observed_pred.mean.cpu()
@@ -45,9 +45,7 @@ class GP_Cylindrical_Custom(GP_RBF):#, botorch.models.gpytorch.GPyTorchModel):  
         self.bounds = self.bounds.t()
         if self.bounds.dim() == 1: self.bounds = self.bounds.unsqueeze(-1)
     def fit(self,x,y,**kwargs):
-        self.train()
-        y = standardize(y)
-        x = self.normalization(x,self.bounds)
+        #self.train()
         super().fit(x,y,**kwargs)
         self.mean_module = gpytorch.means.ConstantMean()
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.CylindricalKernel(
@@ -69,7 +67,7 @@ class GP_Cylindrical_Custom(GP_RBF):#, botorch.models.gpytorch.GPyTorchModel):  
         covar_x = self.covar_module(x)
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
     @staticmethod
-    def normalization(x, bounds):
+    def normalization_s(x, bounds):
         dim = len(bounds)
         # from bounds to [-1, 1]^d
         x = (x - bounds.mean(dim=-1)) / ((bounds[:,1] - bounds[:,0]) / 2)
@@ -79,24 +77,18 @@ class GP_Cylindrical_Custom(GP_RBF):#, botorch.models.gpytorch.GPyTorchModel):  
     
 
 class SingleTaskIBNN(GP_RBF):
-    def __init__(self, bounds,
-                 var_w = 10.,var_b = 1.3,depth = 3,
-                device = torch.device('cpu')):
+    def __init__(self, bounds, device = torch.device('cpu'),
+                 var_w = 10.,var_b = 1.3,depth = 3
+                ):
         super().__init__(bounds,device)
         self.model_args = {'var_w':var_w,'var_b':var_b, 'depth':depth}
         self._kernel = None #IBNN_ReLU(bounds.size(-1), var_w, var_b, depth)
-    def fit(self,X,Y):
+    def fit(self,X,Y,use_scipy = True,options:dict = None,**kwargs):
         if self._kernel is None: kernel = IBNN_ReLU(self.bounds.size(-1), **self.model_args)
         else: kernel = self._kernel
-        super().fit(X,Y,covar_module=kernel, outcome_transform=botorch.models.transforms.outcome.Standardize(m=1))
+        super().fit(X,Y,covar_module=kernel, outcome_transform=botorch.models.transforms.outcome.Standardize(m=1),use_scipy = use_scipy,options= options,**kwargs)
         self._kernel = kernel
         return self
-    def eval(self,*args):
-        super().eval(*args)
-        self._kernel.eval()
-    def train(self,*args):
-        super().train(*args)
-        self._kernel.train()
     
 
 

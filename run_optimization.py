@@ -79,7 +79,7 @@ if __name__ == "__main__":
         if phi_range.size(1) != args.dimensions: phi_range = phi_range.repeat(1,args.dimensions)
 
     if args.model == 'gp_rbf': model = GP_RBF(phi_range,dev)
-    elif args.model == 'gp_cylindrical': model = GP_Cylindrical_Custom(phi_range,dev)
+    elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_range,dev)
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,dev)
     optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range)
     idx = optimizer.D[1].argmin()

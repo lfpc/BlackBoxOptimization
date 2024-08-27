@@ -119,7 +119,7 @@ class ShipMuonShield():
                  cores:int = 45,
                  n_samples:int = 0,
                  input_dist:float = 0.1,
-                 sensitive_plane:float = 50,#distance between end of shield and sensplane
+                 sensitive_plane:float = 37,#distance between end of shield and sensplane
                  average_x:bool = True,
                  loss_with_weight:bool = True) -> None:
         
@@ -145,9 +145,10 @@ class ShipMuonShield():
         phi = phi.flatten() #Can we make it paralell on phi also?
         if len(phi) ==42: phi = self.add_fixed_params(phi)
         if muons is None: muons = self.sample_x()
-        division = int(len(muons) / (self.cores))
+        division = int(len(muons) / (self.cores)) 
         workloads = []
         for i in range(self.cores):
+            #TODO:make this with 'np.split'
             workloads.append(muons[i * division:(i + 1) * division, :])
         for j,w in enumerate(muons[(i + 1) * division:, :]):    
             workloads[j] = np.append(workloads[j],w.reshape(1,-1),axis=0)
@@ -217,17 +218,19 @@ if __name__ == '__main__':
     8.,31.,90.,186.,310.,2.,55.])
     
     array_values = []
-    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/optimizationsensitive32/phi_optm.txt', "r") as txt_file:
+    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/ibnn_tests/phi_359.txt', "r") as txt_file:
         for line in txt_file:
             array_values.append(float(line.strip()))
     phi_new_opt = torch.tensor(array_values)
     phi = phi_new_opt
     d = {'Weight':{}, 'MuonLoss':{}, 'WeightLoss':{},'TotalLoss':{}}
+    problem = ShipMuonShield(cores = 45, sensitive_plane=32)
     for name,phi in {'Oliver opt':phi_baseline,
-                     'Def (oliver)':default_oliver,'Opt (new)':phi_new_opt, 
+                     'Def (oliver)':default_oliver, 
                      'Smaller magnet': ShipMuonShield.GetBounds()[0],
-                     'Biggest magnet': ShipMuonShield.GetBounds()[1]}.items():
-        problem = ShipMuonShield(cores = 45)
+                     'Biggest magnet': ShipMuonShield.GetBounds()[1],
+                     'Opt (new)':phi_new_opt}.items():
+        
         px,py,pz,x,y,z,particle,W = problem.simulate(phi)
         x,y,z = problem.propagate_to_sensitive_plane(px,py,pz,x,y,z)
         charge = -1*torch.sign(particle)
@@ -275,5 +278,5 @@ if __name__ == '__main__':
     plt.savefig('/home/hep/lprate/projects/BlackBoxOptimization/outputs/pz.png')
     plt.close()
     plt.hist(y[mask],bins = 'auto')
-    plt.ylim(-5,5)
+    plt.xlim(-5,5)
     plt.savefig('/home/hep/lprate/projects/BlackBoxOptimization/outputs/y.png')
