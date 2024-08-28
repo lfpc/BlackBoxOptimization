@@ -1,10 +1,11 @@
 import torch
 from botorch import acquisition, settings
-from utils.optimizer import BayesianOptimizer,LGSO
-from utils import problems
+from src.optimizer import BayesianOptimizer,LGSO
+from src import problems
+from src.models import GP_RBF, GP_Cylindrical_Custom, SingleTaskIBNN
+
 from matplotlib import pyplot as plt
 import argparse
-from utils.models import GP_RBF, GP_Cylindrical_Custom, SingleTaskIBNN
 import wandb
 import os
 
@@ -45,7 +46,7 @@ if not os.path.exists(OUTPUTS_DIR):
 
 
 def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range):
-    if N_initial_points == -1: initial_phi = problem_fn.DEFAULT_PHI
+    if N_initial_points == -1: initial_phi = problem_fn.DEFAULT_PHI.to(dev)
     else: initial_phi = (phi_range[1]-phi_range[0])*torch.rand(N_initial_points,dimensions_phi,device=dev)+phi_range[0]
     #assert initial_phi.ge(phi_range[0]).logical_and(initial_phi.le(phi_range[1])).all()
 
@@ -71,7 +72,7 @@ if __name__ == "__main__":
     if args.problem == 'stochastic_rosenbrock': problem_fn = problems.stochastic_RosenbrockProblem(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
-    elif args.problem == 'ship': problem_fn = problems.ShipMuonShield()
+    elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster()
 
     if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
     else:
@@ -92,16 +93,12 @@ if __name__ == "__main__":
     print(f'Calls to the function: {max(args.n_initial,1)}(initial set) + {optimizer.n_iterations()}')
     min_loss = torch.cummin(optimizer.D[1],dim=0).values
     
-    plt.plot(optimizer.D[1].cpu().numpy())
-    plt.ylabel('Loss')
-    plt.xlabel('Iteration')
-    plt.savefig('loss.png')
-    plt.close()
-    plt.plot(min_loss.cpu().numpy())
-    plt.ylabel('Loss')
-    plt.xlabel('Iteration')
-    plt.savefig('min_loss.png')
-    plt.close()
+    if False:
+        plt.plot(min_loss.cpu().numpy())
+        plt.ylabel('Loss')
+        plt.xlabel('Iteration')
+        plt.savefig('min_loss.png')
+        plt.close()
     
 
 

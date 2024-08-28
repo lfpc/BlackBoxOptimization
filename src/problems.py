@@ -4,8 +4,11 @@ import pickle
 import sys
 import numpy as np
 from multiprocessing import Pool
-sys.path.insert(1, '/home/hep/lprate/projects/MuonsAndMatter/python/bin')
-from run_simulation import run as run_muonshield
+sys.path.insert(1, '/home/hep/lprate/projects/BlackBoxOptimization')
+from utils import split_array, split_array_idx, get_split_indices
+from os import getenv
+
+from starcompute.star_client import StarClient
 
 def uniform_sample(shape,bounds,device = 'cpu'):
     return (bounds[0]-bounds[1])*torch.rand(shape,device=device)+bounds[1]
@@ -110,9 +113,7 @@ class stochastic_ThreeHump(ThreeHump):
 class ShipMuonShield():
     DEFAULT_PHI = torch.tensor([[205.,205.,280.,245.,305.,240.,87.,65.,
     35.,121,11.,2.,65.,43.,121.,207.,11.,2.,6.,33.,32.,13.,70.,11.,5.,16.,112.,5.,4.,2.,15.,34.,235.,32.,5.,
-    8.,31.,90.,186.,310.,2.,55.]],device = torch.device('cuda'))
-
-    MUON = 13
+    8.,31.,90.,186.,310.,2.,55.]])
 
     def __init__(self,
                  W0:float = 1915820.,
@@ -121,11 +122,13 @@ class ShipMuonShield():
                  input_dist:float = 0.1,
                  sensitive_plane:float = 37,#distance between end of shield and sensplane
                  average_x:bool = True,
-                 loss_with_weight:bool = True) -> None:
+                 loss_with_weight:bool = True,
+                 ) -> None:
         
         self.left_margin = 2.6
-        self.right_margin = 3
-        self.y_margin = 5
+        self.MUON = 13
+        self.right_margin = 3.
+        self.y_margin = 5.
         self.z_bias = 50
         self.W0 = W0
         self.cores = cores
@@ -134,29 +137,28 @@ class ShipMuonShield():
         self.input_dist = input_dist
         self.average_x = average_x
         self.loss_with_weight = loss_with_weight
-        self.sentitive_plane = sensitive_plane
+        self.sensitive_plane = sensitive_plane
+        self.sensitive_film_params = {'dz': 0.01, 'dx': 20, 'dy': 30,'position': 0} #the center is in end of muon shield + position
+
+        sys.path.insert(1, '/home/hep/lprate/projects/MuonsAndMatter/python/bin')
+        from run_simulation import run
+        self.run_muonshield = run
 
     def sample_x(self,phi=None):
         with gzip.open(self.muons_file, 'rb') as f:
             x = pickle.load(f)
         if 0<self.n_samples<=x.shape[0]: x = x[:self.n_samples]
         return x
-    def simulate(self,phi:torch.tensor,muons = None): #make it to not remove muons due to not being divisible by cores?
+    def simulate(self,phi:torch.tensor,muons = None): 
         phi = phi.flatten() #Can we make it paralell on phi also?
         if len(phi) ==42: phi = self.add_fixed_params(phi)
         if muons is None: muons = self.sample_x()
-        division = int(len(muons) / (self.cores)) 
-        workloads = []
-        for i in range(self.cores):
-            #TODO:make this with 'np.split'
-            workloads.append(muons[i * division:(i + 1) * division, :])
-        for j,w in enumerate(muons[(i + 1) * division:, :]):    
-            workloads[j] = np.append(workloads[j],w.reshape(1,-1),axis=0)
 
-        sensitive_film_params = {'dz': 0.01, 'dx': 20, 'dy': 30,'position': 0} #the center is in end of muon shield + position
+        workloads = split_array(muons,self.cores)
+
         with Pool(self.cores) as pool:
-            result = pool.starmap(run_muonshield, 
-                                  [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,sensitive_film_params) for workload in workloads])
+            result = pool.starmap(self.run_muonshield, 
+                                  [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,self.sensitive_film_params) for workload in workloads])
 
         all_results = []
         for rr in result:
@@ -185,9 +187,9 @@ class ShipMuonShield():
         return loss.to(torch.get_default_dtype())
     
     def propagate_to_sensitive_plane(self,px,py,pz,x,y,z):
-        z += self.sentitive_plane
-        x += self.sentitive_plane*px/pz
-        y += self.sentitive_plane*py/pz
+        z += self.sensitive_plane
+        x += self.sensitive_plane*px/pz
+        y += self.sensitive_plane*py/pz
         return x,y,z
 
     @staticmethod
@@ -208,75 +210,66 @@ class ShipMuonShield():
                          torch.tensor([40.0, 40.0, 150.0, 150.0, 2.0, 2.0, 80.0, 80.0, 150.0, 150.0, 2.0, 2.0],device = phi.device), 
                          phi[6:]))
 
-    
+class ShipMuonShieldCluster(ShipMuonShield):
+    DEF_N_SAMPLES = 484449
+    def __init__(self,
+                 W0:float = 1915820.,
+                 cores:int = 96,
+                 n_samples:int = 484449,
+                 loss_with_weight:bool = True,
+                 manager_ip='34.65.198.159',
+                 port=444) -> None:
+        #super().__init__(W0 = W0,
+        #                 n_samples=n_samples,
+        #                cores = cores,
+        #                loss_with_weight = loss_with_weight)
+
+        self.W0 = W0
+        self.cores = cores
+        self.loss_with_weight = loss_with_weight
+        if 0<n_samples<self.DEF_N_SAMPLES: self.n_samples = n_samples
+        else: self.n_samples = self.DEF_N_SAMPLES
+
+        self.manager_cert_path = getenv('STARCOMPUTE_MANAGER_CERT_PATH')
+        self.client_cert_path = getenv('STARCOMPUTE_CLIENT_CERT_PATH')
+        self.client_key_path = getenv('STARCOMPUTE_CLIENT_KEY_PATH')
+        self.server_url = 'wss://%s:%s'%(manager_ip, port)
+
+    def sample_x(self,phi = None):
+        return get_split_indices(self.cores,self.n_samples)
+    def simulate(self,phi:torch.tensor,muons = None):
+        phi = phi.flatten() #Can we make it paralell on phi also?
+        if len(phi) ==42: phi = self.add_fixed_params(phi)
+        if muons is None: muons = self.sample_x(phi)
+        star_client = StarClient(self.server_url, self.manager_cert_path, 
+                                 self.client_cert_path, self.client_key_path) #redefine it every iteration?
+        muons = split_array_idx(phi.cpu(),muons) #If we can pass phi previously (??), no need to do this 
+        result = star_client.run(muons)
+        result,W = torch.as_tensor(result,device = phi.device).T
+        W = W.mean()
+        result = result.sum()
+        return result,W
+    def __call__(self,phi,muons = None):
+        loss,W = self.simulate(phi,muons)
+        if self.loss_with_weight:
+            loss *= self.weight_loss(W)
+            loss = torch.where(W>3E6,1e8,loss)
+        return loss.to(torch.get_default_dtype())    
+
+
+
+import time
+import argh
 if __name__ == '__main__':
-    phi_baseline = torch.tensor([208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0,
+    phi = torch.tensor([208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0,
                          38.0, 46.0, 192.0, 14.0, 9.0, 10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 3.0, 32.0, 54.0, 
                          24.0, 8.0, 8.0, 22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 33.0, 77.0, 85.0, 241.0, 9.0, 26.0])
-    default_oliver = torch.tensor([205.,205.,280.,245.,305.,240.,87.,65.,
-    35.,121,11.,2.,65.,43.,121.,207.,11.,2.,6.,33.,32.,13.,70.,11.,5.,16.,112.,5.,4.,2.,15.,34.,235.,32.,5.,
-    8.,31.,90.,186.,310.,2.,55.])
+    t1 = time.time()
+    muon_shield = ShipMuonShieldCluster()
+    result = muon_shield(phi)
+    print("The result:")
+    print(result)
+    t2 = time.time()
+    print("Took", t2 - t1, "seconds")
     
-    array_values = []
-    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/ibnn_tests/phi_359.txt', "r") as txt_file:
-        for line in txt_file:
-            array_values.append(float(line.strip()))
-    phi_new_opt = torch.tensor(array_values)
-    phi = phi_new_opt
-    d = {'Weight':{}, 'MuonLoss':{}, 'WeightLoss':{},'TotalLoss':{}}
-    problem = ShipMuonShield(cores = 45, sensitive_plane=32)
-    for name,phi in {'Oliver opt':phi_baseline,
-                     'Def (oliver)':default_oliver, 
-                     'Smaller magnet': ShipMuonShield.GetBounds()[0],
-                     'Biggest magnet': ShipMuonShield.GetBounds()[1],
-                     'Opt (new)':phi_new_opt}.items():
-        
-        px,py,pz,x,y,z,particle,W = problem.simulate(phi)
-        x,y,z = problem.propagate_to_sensitive_plane(px,py,pz,x,y,z)
-        charge = -1*torch.sign(particle)
-        mask = (-charge*x <= problem.left_margin) & (-problem.right_margin <= -charge*x) & (torch.abs(y) <= problem.y_margin) & ((torch.abs(particle).to(torch.int))==13)
-        muon_loss = problem.muon_loss(x,y,particle).sum()
-        weight_loss = problem.weight_loss(W)
-
-        print('N muons:', len(x), '|  filtered:', mask.sum().item())
-        print('peso', W.item())
-        print(f'MUON LOSS = {muon_loss.item()}')
-        print(f'WEIGHT LOSS = {weight_loss.item()}')
-        print(f'TOTAL_LOSS = {torch.where(W>3E6,1e8,(muon_loss+1)*weight_loss).item()}')
-        
-
-        d['Weight'][name] = W.item()
-        d['MuonLoss'][name] = muon_loss.item()
-        d['TotalLoss'][name] = torch.where(W>3E6,1e8,muon_loss*weight_loss).item()
-    for i,v in d.items():
-        print(i)
-        print(v)
-    #with open('loss_results.pickle', 'wb') as handle:
-    #    pickle.dump(d, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    from matplotlib import pyplot as plt
-    plt.hist(problem.muon_loss(x,y,particle),bins = 'auto')
-    plt.savefig('/home/hep/lprate/projects/BlackBoxOptimization/outputs/testloss.png')
-    plt.close()
-    plt.hist(x[mask][particle[mask]==13],bins = 'auto',label = r'$\mu^-$')
-    plt.hist(x[mask][particle[mask]==-13],bins = 'auto',label = r'$\mu^+$')
-    plt.legend()
-    plt.savefig('/home/hep/lprate/projects/BlackBoxOptimization/outputs/x.png')
-    plt.close()
-    plt.hist(px[particle==13],bins = 'auto',label = r'$\mu^-$')
-    plt.hist(px[particle==-13],bins = 'auto',label = r'$\mu^+$')
-    plt.legend()
-    plt.savefig('/home/hep/lprate/projects/BlackBoxOptimization/outputs/px.png')
-    plt.close()
-    plt.hist(py[particle==13],bins = 'auto',label = r'$\mu^-$')
-    plt.hist(py[particle==-13],bins = 'auto',label = r'$\mu^+$')
-    plt.legend()
-    plt.savefig('/home/hep/lprate/projects/BlackBoxOptimization/outputs/py.png')
-    plt.close()
-    plt.hist(pz[particle==13],bins = 'auto',label = r'$\mu^-$')
-    plt.hist(pz[particle==-13],bins = 'auto',label = r'$\mu^+$')
-    plt.legend()
-    plt.savefig('/home/hep/lprate/projects/BlackBoxOptimization/outputs/pz.png')
-    plt.close()
-    plt.hist(y[mask],bins = 'auto')
-    plt.xlim(-5,5)
-    plt.savefig('/home/hep/lprate/projects/BlackBoxOptimization/outputs/y.png')
+    

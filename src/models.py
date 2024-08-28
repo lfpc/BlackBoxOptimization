@@ -2,12 +2,11 @@ import torch
 import botorch
 import gpytorch
 from math import sqrt
-from .models_priors import KumaAlphaPrior, KumaBetaPrior, AngularWeightsPrior
-from .nets import Generator, Discriminator,GANLosses, Encoder, Decoder, IBNN_ReLU
+from utils.models_priors import KumaAlphaPrior, KumaBetaPrior, AngularWeightsPrior
+from utils.nets import Generator, Discriminator,GANLosses, Encoder, Decoder, IBNN_ReLU
 from tqdm import trange
 from matplotlib import pyplot as plt
 from utils import standardize
-
 
 class GP_RBF(botorch.models.SingleTaskGP):
     def __init__(self,bounds,device = 'cpu'):
