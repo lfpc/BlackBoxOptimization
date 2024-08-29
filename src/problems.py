@@ -3,11 +3,13 @@ import gzip
 import pickle
 import sys
 import numpy as np
-from multiprocessing import Pool
-sys.path.insert(1, '/home/hep/lprate/projects/BlackBoxOptimization')
-from utils import split_array, split_array_idx, get_split_indices
 from os import getenv
+from os.path import join
+from multiprocessing import Pool
 
+PROJECTS_DIR = getenv('PROJECTS_DIR')
+sys.path.insert(1, join(PROJECTS_DIR,'BlackBoxOptimization'))
+from utils import split_array, split_array_idx, get_split_indices
 import logging
 logging.basicConfig(level=logging.WARNING)
 
@@ -133,7 +135,7 @@ class ShipMuonShield():
         self.z_bias = 50
         self.W0 = W0
         self.cores = cores
-        self.muons_file = '/home/hep/lprate/projects/MuonsAndMatter/'+'data/inputs.pkl'#'data/oliver_data_enriched.pkl'
+        self.muons_file = join(PROJECTS_DIR,'MuonsAndMatter/data/inputs.pkl')
         self.n_samples = n_samples
         self.input_dist = input_dist
         self.average_x = average_x
@@ -141,7 +143,7 @@ class ShipMuonShield():
         self.sensitive_plane = sensitive_plane
         self.sensitive_film_params = {'dz': 0.01, 'dx': 20, 'dy': 30,'position': 0} #the center is in end of muon shield + position
 
-        sys.path.insert(1, '/home/hep/lprate/projects/MuonsAndMatter/python/bin')
+        sys.path.insert(1, join(PROJECTS_DIR,'MuonsAndMatter/python/bin'))
         from run_simulation import run
         self.run_muonshield = run
 

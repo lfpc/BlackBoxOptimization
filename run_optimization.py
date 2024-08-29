@@ -9,6 +9,8 @@ import argparse
 import wandb
 import os
 
+PROJECTS_DIR = os.getenv('PROJECTS_DIR')
+
 #from warnings import filterwarnings
 #filterwarnings("ignore")
 
@@ -40,7 +42,7 @@ print('Device:', dev)
 torch.manual_seed(args.seed);
 if args.float64: torch.set_default_dtype(torch.float64)
 
-OUTPUTS_DIR = os.path.join('/home/hep/lprate/projects/BlackBoxOptimization/outputs',args.name)
+OUTPUTS_DIR = os.path.join(PROJECTS_DIR,'BlackBoxOptimization/outputs',args.name)
 if not os.path.exists(OUTPUTS_DIR):
     os.makedirs(OUTPUTS_DIR)
 
