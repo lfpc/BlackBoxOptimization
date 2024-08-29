@@ -8,7 +8,8 @@ sys.path.insert(1, '/home/hep/lprate/projects/BlackBoxOptimization')
 from utils import split_array, split_array_idx, get_split_indices
 from os import getenv
 
-from starcompute.star_client import StarClient
+import logging
+logging.basicConfig(level=logging.WARNING)
 
 def uniform_sample(shape,bounds,device = 'cpu'):
     return (bounds[0]-bounds[1])*torch.rand(shape,device=device)+bounds[1]
@@ -234,6 +235,9 @@ class ShipMuonShieldCluster(ShipMuonShield):
         self.client_cert_path = getenv('STARCOMPUTE_CLIENT_CERT_PATH')
         self.client_key_path = getenv('STARCOMPUTE_CLIENT_KEY_PATH')
         self.server_url = 'wss://%s:%s'%(manager_ip, port)
+        from starcompute.star_client import StarClient
+        self.star_client = StarClient(self.server_url, self.manager_cert_path, 
+                                 self.client_cert_path, self.client_key_path)
 
     def sample_x(self,phi = None):
         return get_split_indices(self.cores,self.n_samples)
@@ -241,10 +245,10 @@ class ShipMuonShieldCluster(ShipMuonShield):
         phi = phi.flatten() #Can we make it paralell on phi also?
         if len(phi) ==42: phi = self.add_fixed_params(phi)
         if muons is None: muons = self.sample_x(phi)
-        star_client = StarClient(self.server_url, self.manager_cert_path, 
-                                 self.client_cert_path, self.client_key_path) #redefine it every iteration?
+        #star_client = self.StarClient(self.server_url, self.manager_cert_path, 
+        #                         self.client_cert_path, self.client_key_path) #redefine it every iteration?
         muons = split_array_idx(phi.cpu(),muons) #If we can pass phi previously (??), no need to do this 
-        result = star_client.run(muons)
+        result = self.star_client.run(muons)
         result,W = torch.as_tensor(result,device = phi.device).T
         W = W.mean()
         result = result.sum()
@@ -264,6 +268,7 @@ if __name__ == '__main__':
     phi = torch.tensor([208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0,
                          38.0, 46.0, 192.0, 14.0, 9.0, 10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 3.0, 32.0, 54.0, 
                          24.0, 8.0, 8.0, 22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 33.0, 77.0, 85.0, 241.0, 9.0, 26.0])
+
     t1 = time.time()
     muon_shield = ShipMuonShieldCluster()
     result = muon_shield(phi)
