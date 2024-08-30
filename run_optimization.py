@@ -11,8 +11,8 @@ import os
 
 PROJECTS_DIR = os.getenv('PROJECTS_DIR')
 
-#from warnings import filterwarnings
-#filterwarnings("ignore")
+from warnings import filterwarnings
+filterwarnings("ignore")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--cpu",dest = 'cuda', action = 'store_false')
