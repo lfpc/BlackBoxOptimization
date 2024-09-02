@@ -126,6 +126,7 @@ class ShipMuonShield():
                  sensitive_plane:float = 37,#distance between end of shield and sensplane
                  average_x:bool = True,
                  loss_with_weight:bool = True,
+                 fSC_mag:bool = True,
                  ) -> None:
         
         self.left_margin = 2.6
@@ -142,6 +143,7 @@ class ShipMuonShield():
         self.loss_with_weight = loss_with_weight
         self.sensitive_plane = sensitive_plane
         self.sensitive_film_params = {'dz': 0.01, 'dx': 20, 'dy': 30,'position': 0} #the center is in end of muon shield + position
+        self.fSC_mag = fSC_mag
 
         sys.path.insert(1, join(PROJECTS_DIR,'MuonsAndMatter/python/bin'))
         from run_simulation import run
@@ -161,7 +163,7 @@ class ShipMuonShield():
 
         with Pool(self.cores) as pool:
             result = pool.starmap(self.run_muonshield, 
-                                  [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,self.sensitive_film_params) for workload in workloads])
+                                  [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,self.sensitive_film_params,self.fSC_mag) for workload in workloads])
 
         all_results = []
         for rr in result:
