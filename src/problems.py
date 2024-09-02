@@ -163,7 +163,7 @@ class ShipMuonShield():
 
         with Pool(self.cores) as pool:
             result = pool.starmap(self.run_muonshield, 
-                                  [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,self.sensitive_film_params,self.fSC_mag) for workload in workloads])
+                                  [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,self.fSC_mag,self.sensitive_film_params) for workload in workloads])
 
         all_results = []
         for rr in result:
