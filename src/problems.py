@@ -280,7 +280,7 @@ if __name__ == '__main__':
     if args.n_tasks is None: n_tasks = args.nodes*args.n_tasks_per_node
     else: n_tasks = args.n_tasks
     muon_shield = ShipMuonShieldCluster(cores = n_tasks)
-    
+
     result = muon_shield(phi)
     print("The result:")
     print(result)

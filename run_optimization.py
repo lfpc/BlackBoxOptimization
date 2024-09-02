@@ -30,7 +30,9 @@ parser.add_argument('--torch_optimizer',dest='scipy', action = 'store_false')
 parser.add_argument('--float64', action = 'store_true')
 parser.add_argument('--name', type=str, default='optimizationtest')
 parser.add_argument('--group', type=str, default='BayesianOptimization')
-
+parser.add_argument("--nodes",type=int,default = 3)
+parser.add_argument("--n_tasks_per_node", type=int, default=32)
+parser.add_argument("--n_tasks", type=int, default=None)
 args = parser.parse_args()
 
 wandb.login()
@@ -70,11 +72,13 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range):
 if __name__ == "__main__":
 
     dimensions_phi = args.dimensions
+    if args.n_tasks is None: n_tasks = args.nodes*args.n_tasks_per_node
+    else: n_tasks = args.n_tasks
 
     if args.problem == 'stochastic_rosenbrock': problem_fn = problems.stochastic_RosenbrockProblem(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
-    elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster()
+    elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks)
 
     if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
     else:
