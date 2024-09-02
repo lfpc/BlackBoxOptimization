@@ -115,14 +115,11 @@ class BayesianOptimizer():
         with wandb.init(reinit = True,**self.wandb) as wb, tqdm(total=convergence_params['max_iter']) as pbar:
             min_loss = self.D[1].min()
             for phi,y in zip(*self.D):
-                print(phi)
-                print(y)
                 log = {'loss':y.item(), 
                         'min_loss':min_loss}
                 for i,p in enumerate(phi.flatten()):
                     log['phi_%d'%i] = p
                 wb.log(log)
-            print('START')
             while not self.stopping_criterion(**convergence_params):
                 options = {'lr': 1e-2, 'maxiter': 100} if not use_scipy else None
                 # Create GP model
