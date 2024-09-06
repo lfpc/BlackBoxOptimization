@@ -49,7 +49,7 @@ if not os.path.exists(OUTPUTS_DIR):
     os.makedirs(OUTPUTS_DIR)
 
 
-def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range):
+def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, model_scheduler):
     if N_initial_points == -1: initial_phi = problem_fn.DEFAULT_PHI.to(dev)
     else: initial_phi = (phi_range[1]-phi_range[0])*torch.rand(N_initial_points,dimensions_phi,device=dev)+phi_range[0]
     #assert initial_phi.ge(phi_range[0]).logical_and(initial_phi.le(phi_range[1])).all()
@@ -59,6 +59,7 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range):
         optimizer = BayesianOptimizer(problem_fn,model,
                                       phi_range,acquisition_fn=acquisition_fn,
                                       initial_phi = initial_phi,device = dev, 
+                                      model_scheduler=model_scheduler,
                                       WandB = WANDB,acquisition_params = {'num_restarts': 30, 'raw_samples':5000})
 
     elif args.optimization == 'lgso':
@@ -88,7 +89,8 @@ if __name__ == "__main__":
     if args.model == 'gp_rbf': model = GP_RBF(phi_range,dev)
     elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_range,dev)
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,dev)
-    optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range)
+    model_scheduler = {1500:SingleTaskIBNN(phi_range,dev)}
+    optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range, model_scheduler)
     idx = optimizer.D[1].argmin()
     phi,y = optimizer.D[0][idx],optimizer.D[1][idx]
     with open(os.path.join(OUTPUTS_DIR,"phi_optm.txt"), "w") as txt_file:
@@ -99,11 +101,11 @@ if __name__ == "__main__":
     print(f'Calls to the function: {max(args.n_initial,1)}(initial set) + {optimizer.n_iterations()}')
     min_loss = torch.cummin(optimizer.D[1],dim=0).values
     
-    if False:
+    if True:
         plt.plot(min_loss.cpu().numpy())
-        plt.ylabel('Loss')
+        plt.ylabel('Optimal Loss')
         plt.xlabel('Iteration')
-        plt.savefig('min_loss.png')
+        plt.savefig(os.path.join(OUTPUTS_DIR,'min_loss.png'))
         plt.close()
     
 

@@ -61,7 +61,7 @@ class GP_Cylindrical_Custom(GP_RBF):#, botorch.models.gpytorch.GPyTorchModel):  
         return self.to(self.device)
     
     def forward(self, x):
-        x = self.normalization(x, bounds=self.bounds)
+        x = self.normalization_s(x, bounds=self.bounds)
         mean_x = self.mean_module(x)
         covar_x = self.covar_module(x)
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)

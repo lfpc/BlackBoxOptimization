@@ -83,6 +83,7 @@ class BayesianOptimizer():
                  acquisition_fn = botorch.acquisition.ExpectedImprovement,
                  acquisition_params = {'num_restarts': 30, 'raw_samples':5000},
                  D:tuple = (),
+                 model_scheduler:dict = {},
                  WandB:dict = {'name': 'BayesianOptimization'}):
         
         self.device = device
@@ -99,6 +100,7 @@ class BayesianOptimizer():
         self.model = surrogate_model
         self.bounds = bounds
         self.wandb = WandB
+        self.model_scheduler = model_scheduler
         
     def fit_surrogate_model(self,**kwargs):
         self.model = self.model.fit(*self.D,**kwargs)
@@ -120,9 +122,10 @@ class BayesianOptimizer():
                 for i,p in enumerate(phi.flatten()):
                     log['phi_%d'%i] = p
                 wb.log(log)
+            options = {'lr': 1e-2, 'maxiter': 100} if not use_scipy else None
             while not self.stopping_criterion(**convergence_params):
-                options = {'lr': 1e-2, 'maxiter': 100} if not use_scipy else None
-                # Create GP model
+                if self._i in self.model_scheduler:
+                    self.model = self.model_scheduler[self._i]
                 self.fit_surrogate_model(use_scipy = use_scipy,options = options)
                 phi = self.get_new_phi()
                 y = self.true_model(phi)
