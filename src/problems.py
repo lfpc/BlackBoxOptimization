@@ -114,14 +114,24 @@ class stochastic_ThreeHump(ThreeHump):
         return y
 
 class ShipMuonShield():
-    PRIM_PHI = torch.tensor([[205.,205.,280.,245.,305.,240.,87.,65.,
+    baseline_1 = torch.tensor([205.,205.,280.,245.,305.,240.,87.,65.,
     35.,121,11.,2.,65.,43.,121.,207.,11.,2.,6.,33.,32.,13.,70.,11.,5.,16.,112.,5.,4.,2.,15.,34.,235.,32.,5.,
-    8.,31.,90.,186.,310.,2.,55.]])
+    8.,31.,90.,186.,310.,2.,55.])
+    combi = torch.as_tensor([ 208.  , 207.  , 281.  , 172.82, 212.54, 168.64,
+      72.  ,  51.  ,  29.  ,  46.  ,
+    10.  ,   7.  ,  54.  ,  38.  ,  46.  , 192.  ,  14.  ,   9.  ,
+    10.  ,  31.  ,  35.  ,  31.  ,  51.  ,  11.  ,   3.  ,  32.  ,
+    54.  ,  24.  ,   8.  ,   8.  ,  22.  ,  32.  , 209.  ,  35.  ,
+    8.  ,  13.  ,  33.  ,  77.  ,  85.  , 241.  ,   9.  ,  26.  ])
 
-    OPT_PHI =  torch.tensor([208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0,
+    sc_v6 = torch.as_tensor([0,353.078,125.083,184.834,150.193,186.812,72,51,29,46,10,7,45.6888,
+         45.6888,22.1839,22.1839,27.0063,16.2448,10,31,35,31,51,11,24.7961,48.7639,8,104.732,15.7991,16.7793,3,100,192,192,2,
+         4.8004,3,100,8,172.729,46.8285,2])
+
+    opt_oliver =  torch.tensor([208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0,
                          38.0, 46.0, 192.0, 14.0, 9.0, 10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 3.0, 32.0, 54.0, 
                          24.0, 8.0, 8.0, 22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 33.0, 77.0, 85.0, 241.0, 9.0, 26.0])
-    DEFAULT_PHI = PRIM_PHI
+    DEFAULT_PHI = sc_v6.view(1,-1)#torch.stack([baseline_1,combi,sc_v6])
 
     def __init__(self,
                  W0:float = 1915820.,
@@ -210,8 +220,8 @@ class ShipMuonShield():
         gap_bounds = [(2, 70)] * 2 
         bounds = magnet_lengths + 6*(dX_bounds + dY_bounds + gap_bounds)
         bounds = torch.tensor(bounds,device=device,dtype=torch.get_default_dtype()).T
-        bounds[0] = torch.minimum(bounds[0],ShipMuonShield.DEFAULT_PHI[0].to(device))
-        bounds[1] = torch.maximum(bounds[1],ShipMuonShield.DEFAULT_PHI[0].to(device))
+        bounds[0] = torch.minimum(bounds[0],ShipMuonShield.DEFAULT_PHI.to(device)).min(0).values
+        bounds[1] = torch.maximum(bounds[1],ShipMuonShield.DEFAULT_PHI.to(device)).max(0).values
         return bounds
     @staticmethod
     def add_fixed_params(phi:torch.tensor):
@@ -228,7 +238,8 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  n_samples:int = 484449,
                  loss_with_weight:bool = True,
                  manager_ip='34.65.198.159',
-                 port=444) -> None:
+                 port=444,
+                 **kwargs) -> None:
         #super().__init__(W0 = W0,
         #                 n_samples=n_samples,
         #                cores = cores,
@@ -271,41 +282,36 @@ class ShipMuonShieldCluster(ShipMuonShield):
 
 
 
-combi = torch.as_tensor([ 70.  , 170.  , 208.  , 207.  , 281.  , 172.82, 212.54, 168.64,
-    40.  ,  40.  , 150.  , 150.  ,   2.  ,   2.  ,  80.  ,  80.  ,
-    150.  , 150.  ,   2.  ,   2.  ,  72.  ,  51.  ,  29.  ,  46.  ,
-    10.  ,   7.  ,  54.  ,  38.  ,  46.  , 192.  ,  14.  ,   9.  ,
-    10.  ,  31.  ,  35.  ,  31.  ,  51.  ,  11.  ,   3.  ,  32.  ,
-    54.  ,  24.  ,   8.  ,   8.  ,  22.  ,  32.  , 209.  ,  35.  ,
-    8.  ,  13.  ,  33.  ,  77.  ,  85.  , 241.  ,   9.  ,  26.  ])
 
-sc_v6 = torch.as_tensor([70,170,0,353.078,125.083,184.834,150.193,186.812,40,40,150,150,2,2,80,80,150,150,2,2,72,51,29,46,10,7,45.6888,
-         45.6888,22.1839,22.1839,27.0063,16.2448,10,31,35,31,51,11,24.7961,48.7639,8,104.732,15.7991,16.7793,3,100,192,192,2,
-         4.8004,3,100,8,172.729,46.8285,2])
 
 
 import time
 import argparse
 if __name__ == '__main__':
-    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/ibnn_57_SC/phi_optm.txt', "r") as txt_file:
+    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/gprbf_57_SC_5000/phi_622.txt', "r") as txt_file:
         data = [float(line.strip()) for line in txt_file]
-    phi_ibnn = np.array(data)
-    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/gp_rbf_57_SC/phi_optm.txt', "r") as txt_file:
+    phi_sc = np.array(data)
+    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/gprbf_57_warm_5000/phi_1150.txt', "r") as txt_file:
         data = [float(line.strip()) for line in txt_file]
-    phi_gp = np.array(data)
-    i=1
+    phi_warm = np.array(data)
+    
     d = {}
-    for phi in [ShipMuonShield.PRIM_PHI,ShipMuonShield.OPT_PHI, phi_ibnn, phi_gp,combi,sc_v6]:
+    for name,phi in {'optimal':ShipMuonShield.opt_oliver, 'reoptimized_warm':phi_warm,
+                     'reoptimized_sc':phi_sc,'sc_v6':ShipMuonShield.sc_v6,
+                     'combi':ShipMuonShield.combi, 'baseline':ShipMuonShield.baseline_1,}.items(): #
         t1 = time.time()
         parser = argparse.ArgumentParser()
+        
         parser.add_argument("--nodes",type=int,default = 3)
         parser.add_argument("--n_tasks_per_node", type=int, default=96)
         parser.add_argument("--n_tasks", type=int, default=None)
+        parser.add_argument("--warm", dest = 'SC', action='store_false')
         args = parser.parse_args()
+        if name == 'sc_v6' and not args.SC: continue
         if args.n_tasks is None: n_tasks = args.nodes*args.n_tasks_per_node
         else: n_tasks = args.n_tasks
         #muon_shield = ShipMuonShieldCluster(cores = n_tasks)
-        muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=True)
+        muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC,sensitive_plane=57, input_dist = None)
 
         #loss_muons, W = muon_shield.simulate(torch.as_tensor(phi))
         px,py,pz,x,y,z,particle,W = muon_shield.simulate(torch.as_tensor(phi))
@@ -313,11 +319,10 @@ if __name__ == '__main__':
         loss_muons = muon_shield.muon_loss(x,y,particle).sum()+1
         loss = loss_muons*muon_shield.weight_loss(W)
         loss = torch.where(W>3E6,1e8,loss)
-        d[i] = (W,loss_muons,loss)
+        d[name] = (W,loss_muons,loss)
         t2 = time.time()
-        i+=1
-    for i,(W,loss_muons,loss) in d.items():
-        print(f"{i}:")
+    for name,(W,loss_muons,loss) in d.items():
+        print(f"{name}:")
         print(f"Weight: {W.item()}")
         print(f"Muon Loss: {loss_muons.item()}")
         print(f"Total Loss: {loss.item()}")
