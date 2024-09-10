@@ -131,7 +131,7 @@ class ShipMuonShield():
     opt_oliver =  torch.tensor([208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0,
                          38.0, 46.0, 192.0, 14.0, 9.0, 10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 3.0, 32.0, 54.0, 
                          24.0, 8.0, 8.0, 22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 33.0, 77.0, 85.0, 241.0, 9.0, 26.0])
-    DEFAULT_PHI = sc_v6.view(1,-1)#torch.stack([baseline_1,combi,sc_v6])
+    DEFAULT_PHI = torch.stack([baseline_1,combi,sc_v6])
 
     def __init__(self,
                  W0:float = 1915820.,
@@ -198,6 +198,11 @@ class ShipMuonShield():
     def weight_loss(self,W,beta = 10):
         return 1+torch.exp(beta*(W-self.W0)/self.W0) #oliver uses beta =1, sergey =10
     def __call__(self,phi,muons = None):
+        if phi.dim>1:
+            y = []
+            for p in phi:
+                y.append(self(p))
+            return torch.as_tensor(y)
         px,py,pz,x,y,z,particle,W = self.simulate(phi,muons)
         x,y,z = self.propagate_to_sensitive_plane(px,py,pz,x,y,z)
         loss = self.muon_loss(x,y,particle).sum()+1
@@ -274,6 +279,11 @@ class ShipMuonShieldCluster(ShipMuonShield):
         result = result.sum()+1
         return result,W
     def __call__(self,phi,muons = None):
+        if phi.dim()>1:
+            y = []
+            for p in phi:
+                y.append(self(p))
+            return torch.stack(y)
         loss,W = self.simulate(phi,muons)
         if self.loss_with_weight:
             loss *= self.weight_loss(W)

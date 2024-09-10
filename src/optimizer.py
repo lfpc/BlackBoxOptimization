@@ -90,8 +90,8 @@ class BayesianOptimizer():
         self.true_model = true_model
         #self.surrogate_model_class = surrogate_model_class
         self.acquisition_fn = acquisition_fn
-        if len(D)==0 or D[0].size ==0: 
-            self.D = (initial_phi.view(-1,initial_phi.size(-1)),
+        if len(D)==0: 
+            self.D = (initial_phi,
                       true_model(initial_phi).view(-1,1))
         else: self.D = D
         #self.model = self.surrogate_model_class(*self.D).to(self.device)
