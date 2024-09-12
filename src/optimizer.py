@@ -9,8 +9,9 @@ from os.path import join
 from gzip import open as gzip_open
 
 
-class RL():
-    pass
+class OptimizerClass():
+    '''Mother class for optimizers'''
+    pass #TODO
 
 class LGSO():
     def __init__(self,true_model,
@@ -22,7 +23,7 @@ class LGSO():
                  D:tuple = ()):
         self.model = surrogate_model
         self.true_model = true_model
-        self.D = D
+        self.history = D
         self._i = 0
         self.epsilon = epsilon
         self.lhs_sampler = LatinHypercube(d=initial_phi.size(-1))
@@ -34,22 +35,22 @@ class LGSO():
     def sample_phi(self,current_phi):
         return torch.as_tensor((2*self.lhs_sampler.random(n=self.samples_phi)-1)*self.epsilon,device=current_phi.device,dtype=torch.get_default_dtype())+current_phi
     def filter_D(self,phi):
-        dist = (self.D[0]-phi).norm(phi.size(-1),-1)
+        dist = (self.history[0]-phi).norm(phi.size(-1),-1)
         is_local = dist.le(self.epsilon)
-        return self.D[0][is_local], self.D[1][is_local], self.D[2][is_local]
+        return self.history[0][is_local], self.history[1][is_local], self.history[2][is_local]
     def run_optimization(self,**convergence_params):
         with tqdm(total=convergence_params['max_iter'],position=0, leave=True, desc = 'Optimization Loop') as pbar:
             while not self.stopping_criterion(**convergence_params):
                 sampled_phi = torch.cat((self.sample_phi(self.current_phi),self.current_phi))
                 x = self.true_model.sample_x(sampled_phi)
                 y = self.true_model(sampled_phi,x)
-                self.update_D(sampled_phi,y,x)
+                self.update_history(sampled_phi,y,x)
                 self.fit_surrogate_model(*self.filter_D(self.current_phi))
                 self.update_phi()
                 self._i += 1
                 pbar.update()
-                idx = self.D[1].argmin()
-        return self.D[0][idx],self.D[1][idx]
+                idx = self.history[1].argmin()
+        return self.history[0][idx],self.history[1][idx]
     def fit_surrogate_model(self,*args,**kwargs):
         self.model = self.model.fit(*args,**kwargs)
         self.model.eval()
@@ -60,11 +61,11 @@ class LGSO():
         l.backward()
         self.phi_optimizer.step()
         return self.current_phi
-    def update_D(self,phi,y,x):
-        if len(self.D) ==0: self.D = phi,y,x
+    def update_history(self,phi,y,x):
+        if len(self.history) ==0: self.history = phi,y,x
         else:
-            phi,y,x = phi.reshape(-1,self.D[0].shape[1]).to(phi.device), y.reshape(-1,self.D[1].shape[1]).to(phi.device),x.reshape(-1,self.D[2].shape[1]).to(phi.device)
-            self.D = (torch.cat([self.D[0], phi]),torch.cat([self.D[1], y]),torch.cat([self.D[2], x]))
+            phi,y,x = phi.reshape(-1,self.history[0].shape[1]).to(phi.device), y.reshape(-1,self.history[1].shape[1]).to(phi.device),x.reshape(-1,self.history[2].shape[1]).to(phi.device)
+            self.history = (torch.cat([self.history[0], phi]),torch.cat([self.history[1], y]),torch.cat([self.history[2], x]))
     def n_iterations(self):
         return self._i
     def n_calls_fn(self):
@@ -78,26 +79,26 @@ class BayesianOptimizer():
     
     def __init__(self,true_model,
                  surrogate_model,
-                 bounds,
-                 initial_phi,
+                 bounds:tuple,
+                 initial_phi:torch.tensor,
                  device = torch.device('cuda'),
                  acquisition_fn = botorch.acquisition.ExpectedImprovement,
                  acquisition_params = {'num_restarts': 30, 'raw_samples':5000},
-                 D:tuple = (),
+                 history:tuple = (),
                  model_scheduler:dict = {},
                  WandB:dict = {'name': 'BayesianOptimization'},
                  reduce_bounds:int = 4000,
-                 outputs_dir = 'outputs'):
+                 outputs_dir = 'outputs',):
         
         self.device = device
         self.true_model = true_model
         #self.surrogate_model_class = surrogate_model_class
         self.acquisition_fn = acquisition_fn
-        if len(D)==0: 
-            self.D = (initial_phi,
+        if len(history)==0: 
+            self.history = (initial_phi,
                       true_model(initial_phi).view(-1,1))
-        else: self.D = D
-        #self.model = self.surrogate_model_class(*self.D).to(self.device)
+        else: self.history = history
+        #self.model = self.surrogate_model_class(*self.history).to(self.device)
         self._i = 0
         self.acquisition_params = acquisition_params
         self.model = surrogate_model
@@ -108,21 +109,25 @@ class BayesianOptimizer():
         self.outputs_dir = outputs_dir
         
     def fit_surrogate_model(self,**kwargs):
-        self.model = self.model.fit(*self.D,**kwargs)
+        D = self.clean_training_data()
+        self.model = self.model.fit(*D,**kwargs)
     def get_new_phi(self):
-        acquisition = self.acquisition_fn(self.model, self.D[1].min(), maximize=False)
+        '''Minimize acquisition function, returning the next phi to evaluate'''
+        acquisition = self.acquisition_fn(self.model, self.history[1].min(), maximize=False)
         return botorch.optim.optimize.optimize_acqf(acquisition, self.bounds, q=1,**self.acquisition_params)[0]
-    def update_D(self,phi,y):
-        phi,y = phi.reshape(-1,self.D[0].shape[1]).to(self.device), y.reshape(-1,self.D[1].shape[1]).to(self.device)
-        self.D = (torch.cat([self.D[0], phi]),torch.cat([self.D[1], y]))
+    def update_history(self,phi,y):
+        '''Append phi and y to D'''
+        phi,y = phi.reshape(-1,self.history[0].shape[1]).to(self.device), y.reshape(-1,self.history[1].shape[1]).to(self.device)
+        self.history = (torch.cat([self.history[0], phi]),torch.cat([self.history[1], y]))
     def run_optimization(self, 
                          use_scipy:bool = True,
                          save_optimal_phi:bool = True,
-                         save_D:bool = False,
+                         save_history:bool = False,
                          **convergence_params):
         with wandb.init(reinit = True,**self.wandb) as wb, tqdm(total=convergence_params['max_iter']) as pbar:
-            min_loss = self.D[1].min()
-            for phi,y in zip(*self.D):
+            #replace wandb by just saving history?
+            min_loss = self.history[1].min()
+            for phi,y in zip(*self.history):
                 log = {'loss':y.item(), 
                         'min_loss':min_loss}
                 for i,p in enumerate(phi.flatten()):
@@ -137,25 +142,25 @@ class BayesianOptimizer():
                 self.fit_surrogate_model(use_scipy = use_scipy,options = options)
                 phi = self.get_new_phi()
                 y = self.true_model(phi)
-                self.update_D(phi,y)
+                self.update_history(phi,y)
                 self._i += 1
                 pbar.update()
                 log = {'loss':y.item(), 
-                        'min_loss':self.D[1].min().item()}
-                for i,p in enumerate(phi.flatten()):
-                    log['phi_%d'%i] = p
+                        'min_loss':self.history[1].min().item()}
+                #for i,p in enumerate(phi.flatten()): #Send phi to wandb
+                #    log['phi_%d'%i] = p
                 if y<min_loss and save_optimal_phi:
                     min_loss = y
                     with open(join(self.outputs_dir,f'phi_optm.txt'), "w") as txt_file:
                         for p in phi.view(-1):
                             txt_file.write(str(p.item()) + "\n")
-                if self.save_D:
+                if save_history:
                     with gzip_open(join(self.outputs_dir,f'history.txt'), "wb") as f:
-                        dump(self.D, f)
+                        dump(self.history, f)
                 wb.log(log)
-        idx = self.D[1].argmin()
+        idx = self.history[1].argmin()
         wb.finish()
-        return self.D[0][idx],self.D[1][idx]
+        return self.history[0][idx],self.history[1][idx]
     
     def n_iterations(self):
         return self._i
@@ -165,8 +170,12 @@ class BayesianOptimizer():
     
     def get_optimal(self):
         '''Get the current optimal'''
-        idx = self.D[1].argmin()
-        return self.D[0][idx],self.D[1][idx]
+        idx = self.history[1].argmin()
+        return self.history[0][idx],self.history[1][idx]
+    def clean_training_data(self):
+        '''Remove samples in D that are not contained in the bounds.'''
+        idx = self.bounds[0].le(self.history[0]).logical_and(self.bounds[1].ge(self.history[0])).all(-1)
+        return (self.history[0][idx],self.history[1][idx])
     def reduce_bounds(self,local_bounds:float = 0.1):
         '''Reduce the bounds to the region (+-local_bounds) of the current optimal, respecting also the previous bounds.'''
         phi = self.get_optimal()[0]
@@ -174,6 +183,9 @@ class BayesianOptimizer():
         new_bounds[0] = torch.maximum(self.bounds[0],new_bounds[0])
         new_bounds[1] = torch.minimum(self.bounds[1],new_bounds[1])
         self.bounds = new_bounds
+        self.model.bounds(new_bounds)#should we change the bounds in the model (used to normalize samples)?
+        #Then we need to 'clean' D.
+        #Even if not, should we clean D?
     
     
 if __name__ == '__main__':

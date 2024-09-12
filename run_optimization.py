@@ -9,7 +9,7 @@ import argparse
 import wandb
 import os
 
-PROJECTS_DIR = os.getenv('PROJECTS_DIR')
+PROJECTS_DIR = os.getenv('PROJECTS_DIR', default = '~')
 
 from warnings import filterwarnings
 filterwarnings("ignore")
@@ -66,7 +66,8 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, mo
     elif args.optimization == 'lgso':
         optimizer = LGSO(problem_fn,model,phi_range,acquisition_fn=acquisition_fn,initial_phi = initial_phi,device = dev, WandB = WANDB)
 
-    optimizer.run_optimization(max_iter = max_iter,use_scipy=args.scipy)
+    optimizer.run_optimization(max_iter = max_iter,use_scipy=args.scipy, 
+                               save_optimal_phi=True,save_history=True)
 
     return optimizer
 
