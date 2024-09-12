@@ -60,12 +60,13 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, mo
                                       phi_range,acquisition_fn=acquisition_fn,
                                       initial_phi = initial_phi,device = dev, 
                                       model_scheduler=model_scheduler,
+                                      outputs_dir=OUTPUTS_DIR,
                                       WandB = WANDB,acquisition_params = {'num_restarts': 30, 'raw_samples':5000})
 
     elif args.optimization == 'lgso':
         optimizer = LGSO(problem_fn,model,phi_range,acquisition_fn=acquisition_fn,initial_phi = initial_phi,device = dev, WandB = WANDB)
 
-    optimizer.run_optimization(max_iter = max_iter,use_scipy=args.scipy, save_phi=OUTPUTS_DIR)
+    optimizer.run_optimization(max_iter = max_iter,use_scipy=args.scipy)
 
     return optimizer
 
@@ -91,8 +92,7 @@ if __name__ == "__main__":
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,dev)
     model_scheduler = {1500:SingleTaskIBNN(phi_range,dev)}
     optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range, model_scheduler)
-    idx = optimizer.D[1].argmin()
-    phi,y = optimizer.D[0][idx],optimizer.D[1][idx]
+    phi,y = optimizer.get_optimal()
     with open(os.path.join(OUTPUTS_DIR,"phi_optm.txt"), "w") as txt_file:
         for p in phi.flatten():
             txt_file.write(str(p.item()) + "\n")

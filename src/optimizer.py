@@ -6,6 +6,7 @@ from matplotlib import pyplot as plt
 from pickle import dump, HIGHEST_PROTOCOL
 import wandb
 from os.path import join
+from gzip import open as gzip_open
 
 
 class RL():
@@ -84,7 +85,9 @@ class BayesianOptimizer():
                  acquisition_params = {'num_restarts': 30, 'raw_samples':5000},
                  D:tuple = (),
                  model_scheduler:dict = {},
-                 WandB:dict = {'name': 'BayesianOptimization'}):
+                 WandB:dict = {'name': 'BayesianOptimization'},
+                 reduce_bounds:int = 4000,
+                 outputs_dir = 'outputs'):
         
         self.device = device
         self.true_model = true_model
@@ -101,6 +104,8 @@ class BayesianOptimizer():
         self.bounds = bounds
         self.wandb = WandB
         self.model_scheduler = model_scheduler
+        self._iter_reduce_bounds = reduce_bounds
+        self.outputs_dir = outputs_dir
         
     def fit_surrogate_model(self,**kwargs):
         self.model = self.model.fit(*self.D,**kwargs)
@@ -111,8 +116,9 @@ class BayesianOptimizer():
         phi,y = phi.reshape(-1,self.D[0].shape[1]).to(self.device), y.reshape(-1,self.D[1].shape[1]).to(self.device)
         self.D = (torch.cat([self.D[0], phi]),torch.cat([self.D[1], y]))
     def run_optimization(self, 
-                         use_scipy = True,
-                         save_phi = None,
+                         use_scipy:bool = True,
+                         save_optimal_phi:bool = True,
+                         save_D:bool = False,
                          **convergence_params):
         with wandb.init(reinit = True,**self.wandb) as wb, tqdm(total=convergence_params['max_iter']) as pbar:
             min_loss = self.D[1].min()
@@ -126,6 +132,8 @@ class BayesianOptimizer():
             while not self.stopping_criterion(**convergence_params):
                 if self._i in self.model_scheduler:
                     self.model = self.model_scheduler[self._i]
+                if self._i == self._iter_reduce_bounds:
+                    self.reduce_bounds()
                 self.fit_surrogate_model(use_scipy = use_scipy,options = options)
                 phi = self.get_new_phi()
                 y = self.true_model(phi)
@@ -136,11 +144,14 @@ class BayesianOptimizer():
                         'min_loss':self.D[1].min().item()}
                 for i,p in enumerate(phi.flatten()):
                     log['phi_%d'%i] = p
-                if y<min_loss and save_phi is not None:
+                if y<min_loss and save_optimal_phi:
                     min_loss = y
-                    with open(join(save_phi,f'phi_{self._i}.txt'), "w") as txt_file:
+                    with open(join(self.outputs_dir,f'phi_optm.txt'), "w") as txt_file:
                         for p in phi.view(-1):
                             txt_file.write(str(p.item()) + "\n")
+                if self.save_D:
+                    with gzip_open(join(self.outputs_dir,f'history.txt'), "wb") as f:
+                        dump(self.D, f)
                 wb.log(log)
         idx = self.D[1].argmin()
         wb.finish()
@@ -151,6 +162,18 @@ class BayesianOptimizer():
     
     def stopping_criterion(self,**convergence_params):
         return self._i >= convergence_params['max_iter']
+    
+    def get_optimal(self):
+        '''Get the current optimal'''
+        idx = self.D[1].argmin()
+        return self.D[0][idx],self.D[1][idx]
+    def reduce_bounds(self,local_bounds:float = 0.1):
+        '''Reduce the bounds to the region (+-local_bounds) of the current optimal, respecting also the previous bounds.'''
+        phi = self.get_optimal()[0]
+        new_bounds = (phi*(1-local_bounds),phi*(1+local_bounds))
+        new_bounds[0] = torch.maximum(self.bounds[0],new_bounds[0])
+        new_bounds[1] = torch.minimum(self.bounds[1],new_bounds[1])
+        self.bounds = new_bounds
     
     
 if __name__ == '__main__':
