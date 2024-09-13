@@ -109,7 +109,7 @@ class BayesianOptimizer():
         self.outputs_dir = outputs_dir
         
     def fit_surrogate_model(self,**kwargs):
-        D = self.clean_training_data()
+        D = self.clean_training_data() #Should we do this here, in every iteration?
         self.model = self.model.fit(*D,**kwargs)
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''
