@@ -33,6 +33,9 @@ parser.add_argument('--group', type=str, default='BayesianOptimization')
 parser.add_argument("--nodes",type=int,default = 4)
 parser.add_argument("--n_tasks_per_node", type=int, default=96)
 parser.add_argument("--n_tasks", type=int, default=None)
+parser.add_argument("--save_history", action='store_true')
+parser.add_argument("--model_switch", type=int,default = -1)
+parser.add_argument("--resume", action='store_true')
 args = parser.parse_args()
 
 wandb.login()
@@ -61,13 +64,15 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, mo
                                       initial_phi = initial_phi,device = dev, 
                                       model_scheduler=model_scheduler,
                                       outputs_dir=OUTPUTS_DIR,
-                                      WandB = WANDB,acquisition_params = {'num_restarts': 30, 'raw_samples':5000})
+                                      reduce_bounds=3000,
+                                      WandB = WANDB,acquisition_params = {'num_restarts': 30, 'raw_samples':5000},
+                                      resume = args.resume)
 
     elif args.optimization == 'lgso':
         optimizer = LGSO(problem_fn,model,phi_range,acquisition_fn=acquisition_fn,initial_phi = initial_phi,device = dev, WandB = WANDB)
 
     optimizer.run_optimization(max_iter = max_iter,use_scipy=args.scipy, 
-                               save_optimal_phi=True,save_history=True)
+                               save_optimal_phi=True,save_history=args.save_history)
 
     return optimizer
 
@@ -84,6 +89,7 @@ if __name__ == "__main__":
     elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks)
 
     if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
+    #add phi initial here?
     else:
         phi_range = torch.as_tensor(args.phi_bounds,device=dev,dtype=torch.get_default_dtype()).view(2,-1)  
         if phi_range.size(1) != args.dimensions: phi_range = phi_range.repeat(1,args.dimensions)
@@ -91,7 +97,7 @@ if __name__ == "__main__":
     if args.model == 'gp_rbf': model = GP_RBF(phi_range,dev)
     elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_range,dev)
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,dev)
-    model_scheduler = {1500:SingleTaskIBNN(phi_range,dev)}
+    model_scheduler = {args.model_switch:SingleTaskIBNN(phi_range,dev)}
     optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range, model_scheduler)
     phi,y = optimizer.get_optimal()
     with open(os.path.join(OUTPUTS_DIR,"phi_optm.txt"), "w") as txt_file:

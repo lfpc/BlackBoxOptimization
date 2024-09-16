@@ -3,7 +3,7 @@ import torch
 from tqdm import tqdm
 from scipy.stats.qmc import LatinHypercube
 from matplotlib import pyplot as plt
-from pickle import dump, HIGHEST_PROTOCOL
+from pickle import dump,  load
 import wandb
 from os.path import join
 from gzip import open as gzip_open
@@ -80,7 +80,7 @@ class BayesianOptimizer():
     def __init__(self,true_model,
                  surrogate_model,
                  bounds:tuple,
-                 initial_phi:torch.tensor,
+                 initial_phi:torch.tensor = None,
                  device = torch.device('cuda'),
                  acquisition_fn = botorch.acquisition.ExpectedImprovement,
                  acquisition_params = {'num_restarts': 30, 'raw_samples':5000},
@@ -88,21 +88,25 @@ class BayesianOptimizer():
                  model_scheduler:dict = {},
                  WandB:dict = {'name': 'BayesianOptimization'},
                  reduce_bounds:int = 4000,
-                 outputs_dir = 'outputs',):
+                 outputs_dir = 'outputs',
+                 resume:bool = False):
         
         self.device = device
         self.true_model = true_model
         #self.surrogate_model_class = surrogate_model_class
         self.acquisition_fn = acquisition_fn
-        if len(history)==0: 
-            self.history = (initial_phi,
+        if len(history)==0:
+            if resume: 
+                with gzip_open(join(outputs_dir,'history.pkl')) as f:
+                    self.history = load(f)
+            else: self.history = (initial_phi,
                       true_model(initial_phi).view(-1,1))
         else: self.history = history
         #self.model = self.surrogate_model_class(*self.history).to(self.device)
-        self._i = 0
+        self._i = len(self.history[0]) if resume else 0
         self.acquisition_params = acquisition_params
         self.model = surrogate_model
-        self.bounds = bounds
+        self.bounds = bounds.cpu()
         self.wandb = WandB
         self.model_scheduler = model_scheduler
         self._iter_reduce_bounds = reduce_bounds
@@ -110,14 +114,14 @@ class BayesianOptimizer():
         
     def fit_surrogate_model(self,**kwargs):
         D = self.clean_training_data() #Should we do this here, in every iteration?
-        self.model = self.model.fit(*D,**kwargs)
+        self.model = self.model.fit(D[0].to(self.device),D[1].to(self.device),**kwargs)
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''
-        acquisition = self.acquisition_fn(self.model, self.history[1].min(), maximize=False)
-        return botorch.optim.optimize.optimize_acqf(acquisition, self.bounds, q=1,**self.acquisition_params)[0]
+        acquisition = self.acquisition_fn(self.model, self.history[1].min().to(self.device), maximize=False)
+        return botorch.optim.optimize.optimize_acqf(acquisition, self.bounds.to(self.device), q=1,**self.acquisition_params)[0]
     def update_history(self,phi,y):
         '''Append phi and y to D'''
-        phi,y = phi.reshape(-1,self.history[0].shape[1]).to(self.device), y.reshape(-1,self.history[1].shape[1]).to(self.device)
+        phi,y = phi.reshape(-1,self.history[0].shape[1]).cpu(), y.reshape(-1,self.history[1].shape[1]).cpu()
         self.history = (torch.cat([self.history[0], phi]),torch.cat([self.history[1], y]))
     def run_optimization(self, 
                          use_scipy:bool = True,
@@ -155,7 +159,7 @@ class BayesianOptimizer():
                         for p in phi.view(-1):
                             txt_file.write(str(p.item()) + "\n")
                 if save_history:
-                    with gzip_open(join(self.outputs_dir,f'history.txt'), "wb") as f:
+                    with gzip_open(join(self.outputs_dir,f'history.pkl'), "wb") as f:
                         dump(self.history, f)
                 wb.log(log)
         idx = self.history[1].argmin()
@@ -182,7 +186,7 @@ class BayesianOptimizer():
         new_bounds = (phi*(1-local_bounds),phi*(1+local_bounds))
         new_bounds[0] = torch.maximum(self.bounds[0],new_bounds[0])
         new_bounds[1] = torch.minimum(self.bounds[1],new_bounds[1])
-        self.bounds = new_bounds
+        self.bounds = torch.stack(new_bounds)
         self.model.bounds(new_bounds)#should we change the bounds in the model (used to normalize samples)?
         #Then we need to 'clean' D.
         #Even if not, should we clean D?
@@ -212,7 +216,7 @@ if __name__ == '__main__':
     plt.savefig('optimizer_test.png')
     plt.close()
     with open('D_lgso', 'wb') as handle:
-        dump(optimizer.D, handle, protocol=HIGHEST_PROTOCOL)
+        dump(optimizer.D, handle)
     with torch.no_grad():
         phi = torch.rand(50,10,device=dev)
         x = problem.sample_x(phi,n_samples_x).view(-1,1)
