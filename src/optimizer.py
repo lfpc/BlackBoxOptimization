@@ -99,8 +99,8 @@ class BayesianOptimizer():
             if resume: 
                 with gzip_open(join(outputs_dir,'history.pkl')) as f:
                     self.history = load(f)
-            else: self.history = (initial_phi,
-                      true_model(initial_phi).view(-1,1))
+            else: self.history = (initial_phi.cpu(),
+                      true_model(initial_phi).cpu().view(-1,1))
         else: self.history = history
         #self.model = self.surrogate_model_class(*self.history).to(self.device)
         self._i = len(self.history[0]) if resume else 0
