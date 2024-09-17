@@ -104,6 +104,7 @@ class BayesianOptimizer():
         else: self.history = history
         #self.model = self.surrogate_model_class(*self.history).to(self.device)
         self._i = len(self.history[0]) if resume else 0
+        print('STARTING FROM i = ', self._i)
         self.acquisition_params = acquisition_params
         self.model = surrogate_model
         self.bounds = bounds.cpu()
@@ -128,10 +129,10 @@ class BayesianOptimizer():
                          save_optimal_phi:bool = True,
                          save_history:bool = False,
                          **convergence_params):
-        with wandb.init(reinit = True,**self.wandb) as wb, tqdm(total=convergence_params['max_iter']) as pbar:
+        with wandb.init(reinit = True,**self.wandb) as wb, tqdm(initial = self._i,total=convergence_params['max_iter']) as pbar:
             #replace wandb by just saving history?
-            min_loss = self.history[1].min()
-            for phi,y in zip(*self.history):
+            #min_loss = self.history[1].min()
+            for min_loss,phi,y in zip(self.history[1].cummin(0).values,*self.history):
                 log = {'loss':y.item(), 
                         'min_loss':min_loss}
                 for i,p in enumerate(phi.flatten()):
@@ -153,7 +154,7 @@ class BayesianOptimizer():
                         'min_loss':self.history[1].min().item()}
                 #for i,p in enumerate(phi.flatten()): #Send phi to wandb
                 #    log['phi_%d'%i] = p
-                if y<min_loss and save_optimal_phi:
+                if y<min_loss.to(self.device) and save_optimal_phi:
                     min_loss = y
                     with open(join(self.outputs_dir,f'phi_optm.txt'), "w") as txt_file:
                         for p in phi.view(-1):
@@ -183,11 +184,11 @@ class BayesianOptimizer():
     def reduce_bounds(self,local_bounds:float = 0.1):
         '''Reduce the bounds to the region (+-local_bounds) of the current optimal, respecting also the previous bounds.'''
         phi = self.get_optimal()[0]
-        new_bounds = (phi*(1-local_bounds),phi*(1+local_bounds))
+        new_bounds = torch.stack([phi*(1-local_bounds),phi*(1+local_bounds)])
         new_bounds[0] = torch.maximum(self.bounds[0],new_bounds[0])
         new_bounds[1] = torch.minimum(self.bounds[1],new_bounds[1])
-        self.bounds = torch.stack(new_bounds)
-        self.model.bounds(new_bounds)#should we change the bounds in the model (used to normalize samples)?
+        self.bounds = new_bounds
+        self.model.bounds = new_bounds.to(self.device)#should we change the bounds in the model (used to normalize samples)?
         #Then we need to 'clean' D.
         #Even if not, should we clean D?
     

@@ -6,6 +6,7 @@ import numpy as np
 from os import getenv
 from os.path import join
 from multiprocessing import Pool
+from subprocess import call 
 
 PROJECTS_DIR = getenv('PROJECTS_DIR')
 sys.path.insert(1, join(PROJECTS_DIR,'BlackBoxOptimization'))
@@ -244,6 +245,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  loss_with_weight:bool = True,
                  manager_ip='34.65.198.159',
                  port=444,
+                 local:bool = False,
                  **kwargs) -> None:
         #super().__init__(W0 = W0,
         #                 n_samples=n_samples,
@@ -260,9 +262,12 @@ class ShipMuonShieldCluster(ShipMuonShield):
         self.client_cert_path = getenv('STARCOMPUTE_CLIENT_CERT_PATH')
         self.client_key_path = getenv('STARCOMPUTE_CLIENT_KEY_PATH')
         self.server_url = 'wss://%s:%s'%(manager_ip, port)
-        from starcompute.star_client import StarClient
-        self.star_client = StarClient(self.server_url, self.manager_cert_path, 
-                                 self.client_cert_path, self.client_key_path)
+
+        self.local = local
+        if not local:
+            from starcompute.star_client import StarClient
+            self.star_client = StarClient(self.server_url, self.manager_cert_path, 
+                                    self.client_cert_path, self.client_key_path)
 
     def sample_x(self,phi = None):
         return get_split_indices(self.cores,self.n_samples)
@@ -273,7 +278,8 @@ class ShipMuonShieldCluster(ShipMuonShield):
         #star_client = self.StarClient(self.server_url, self.manager_cert_path, 
         #                         self.client_cert_path, self.client_key_path) #redefine it every iteration?
         muons = split_array_idx(phi.cpu(),muons) #If we can pass phi previously (??), no need to do this 
-        result = self.star_client.run(muons)
+        if self.local: result = call(f'srun python3 {PROJECTS_DIR}/cluster/muon_shield_worker_https.py', shell=True) #TODO
+        else:  result = self.star_client.run(muons)
         result,W = torch.as_tensor(result,device = phi.device).T
         W = W.mean()
         result = result.sum()+1
@@ -289,6 +295,8 @@ class ShipMuonShieldCluster(ShipMuonShield):
             loss *= self.weight_loss(W)
             loss = torch.where(W>3E6,1e8,loss)
         return loss.to(torch.get_default_dtype())    
+    
+
 
 
 
