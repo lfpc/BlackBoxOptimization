@@ -239,7 +239,7 @@ class ShipMuonShield():
 class ShipMuonShieldCluster(ShipMuonShield):
     DEF_N_SAMPLES = 484449
     def __init__(self,
-                 W0:float = 1915820.,
+                 W0:float = 1558731.375,#1915820.,
                  cores:int = 96,
                  n_samples:int = 484449,
                  loss_with_weight:bool = True,

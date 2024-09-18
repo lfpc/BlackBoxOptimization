@@ -223,6 +223,10 @@ class BayesianOptimizer(OptimizerClass):
         self.acquisition_params = acquisition_params
         self.model_scheduler = model_scheduler
         self._iter_reduce_bounds = reduce_bounds
+        if resume: #current model from model_scheduler
+            for i in model_scheduler:
+                if self._i > i:
+                    self.model = model_scheduler[i]
         
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''

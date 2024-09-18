@@ -106,7 +106,7 @@ if __name__ == "__main__":
     print('Optimal phi', phi)
     print('Optimal y', y.item(),'|')
     print(f'Calls to the function: {max(args.n_initial,1)}(initial set) + {optimizer.n_iterations()}')
-    min_loss = torch.cummin(optimizer.D[1],dim=0).values
+    min_loss = torch.cummin(optimizer.history[1],dim=0).values
     
     if True:
         plt.plot(min_loss.cpu().numpy())
