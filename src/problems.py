@@ -306,7 +306,14 @@ class ShipMuonShieldCluster(ShipMuonShield):
 import time
 import argparse
 if __name__ == '__main__':
-    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/gprbf_57_SC_5000/phi_622.txt', "r") as txt_file:
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--nodes",type=int,default = 3)
+    parser.add_argument("--n_tasks_per_node", type=int, default=96)
+    parser.add_argument("--n_tasks", type=int, default=None)
+    parser.add_argument("--warm", dest = 'SC', action='store_false')
+    args = parser.parse_args()
+    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/complete_57_SC/phi_optm.txt', "r") as txt_file:
         data = [float(line.strip()) for line in txt_file]
     phi_sc = np.array(data)
     with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/gprbf_57_warm_5000/phi_1150.txt', "r") as txt_file:
@@ -318,18 +325,12 @@ if __name__ == '__main__':
                      'reoptimized_sc':phi_sc,'sc_v6':ShipMuonShield.sc_v6,
                      'combi':ShipMuonShield.combi, 'baseline':ShipMuonShield.baseline_1,}.items(): #
         t1 = time.time()
-        parser = argparse.ArgumentParser()
         
-        parser.add_argument("--nodes",type=int,default = 3)
-        parser.add_argument("--n_tasks_per_node", type=int, default=96)
-        parser.add_argument("--n_tasks", type=int, default=None)
-        parser.add_argument("--warm", dest = 'SC', action='store_false')
-        args = parser.parse_args()
         if name == 'sc_v6' and not args.SC: continue
         if args.n_tasks is None: n_tasks = args.nodes*args.n_tasks_per_node
         else: n_tasks = args.n_tasks
         #muon_shield = ShipMuonShieldCluster(cores = n_tasks)
-        muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC,sensitive_plane=57, input_dist = None)
+        muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC,sensitive_plane=57, input_dist = 0.1)
 
         #loss_muons, W = muon_shield.simulate(torch.as_tensor(phi))
         px,py,pz,x,y,z,particle,W = muon_shield.simulate(torch.as_tensor(phi))
