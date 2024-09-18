@@ -199,11 +199,11 @@ class ShipMuonShield():
     def weight_loss(self,W,beta = 10):
         return 1+torch.exp(beta*(W-self.W0)/self.W0) #oliver uses beta =1, sergey =10
     def __call__(self,phi,muons = None):
-        if phi.dim>1:
+        if phi.dim()>1:
             y = []
             for p in phi:
                 y.append(self(p))
-            return torch.as_tensor(y)
+            return torch.stack(y)
         px,py,pz,x,y,z,particle,W = self.simulate(phi,muons)
         x,y,z = self.propagate_to_sensitive_plane(px,py,pz,x,y,z)
         loss = self.muon_loss(x,y,particle).sum()+1
@@ -235,6 +235,20 @@ class ShipMuonShield():
                          phi[:6],
                          torch.tensor([40.0, 40.0, 150.0, 150.0, 2.0, 2.0, 80.0, 80.0, 150.0, 150.0, 2.0, 2.0],device = phi.device), 
                          phi[6:]))
+    
+    def add_fixed_params(phi:torch.Tensor):
+        # Fixed parameters, create them as tensors
+        fixed_params_start = torch.tensor([70.0, 170.0], device=phi.device)
+        fixed_params_middle = torch.tensor([40.0, 40.0, 150.0, 150.0, 2.0, 2.0, 80.0, 80.0, 150.0, 150.0, 2.0, 2.0], device=phi.device)
+        if phi.dim() == 1:
+            phi_start = phi[:6]
+            phi_rest = phi[6:]
+        else: 
+            phi_start = phi[:, :6] 
+            phi_rest = phi[:, 6:]
+            fixed_params_start = fixed_params_start.unsqueeze(0).expand(phi.size(0), -1)
+            fixed_params_middle = fixed_params_middle.unsqueeze(0).expand(phi.size(0), -1)
+        return torch.cat((fixed_params_start, phi_start, fixed_params_middle, phi_rest), dim=-1)
 
 class ShipMuonShieldCluster(ShipMuonShield):
     DEF_N_SAMPLES = 484449
