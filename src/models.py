@@ -11,7 +11,7 @@ from utils import standardize
 class GP_RBF(botorch.models.SingleTaskGP):
     def __init__(self,bounds,device = 'cpu'):
         self.device = device
-        self.bounds = bounds
+        self.bounds = bounds.to(device)
     def fit(self,X,Y,use_scipy = True,options:dict = None,**kwargs):
         #self.train()
         Y = standardize(Y)
@@ -41,7 +41,7 @@ class GP_RBF(botorch.models.SingleTaskGP):
 class GP_Cylindrical_Custom(GP_RBF):#, botorch.models.gpytorch.GPyTorchModel):  # FixedNoiseGP SingleTaskGP
     def __init__(self, bounds:torch.tensor,device = 'cpu'):
         super().__init__(bounds,device)
-        self.bounds = self.bounds.t()
+        self.bounds = self.bounds.t().to(device)
         if self.bounds.dim() == 1: self.bounds = self.bounds.unsqueeze(-1)
     def fit(self,x,y,**kwargs):
         #self.train()

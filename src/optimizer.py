@@ -201,7 +201,7 @@ class BayesianOptimizer(OptimizerClass):
                  bounds:tuple,
                  initial_phi:torch.tensor = None,
                  device = torch.device('cuda'),
-                 acquisition_fn = botorch.acquisition.ExpectedImprovement,
+                 acquisition_fn = botorch.acquisition.LogExpectedImprovement,
                  acquisition_params = {'num_restarts': 30, 'raw_samples':5000},
                  history:tuple = (),
                  model_scheduler:dict = {},
