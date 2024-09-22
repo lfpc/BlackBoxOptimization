@@ -202,7 +202,7 @@ class BayesianOptimizer(OptimizerClass):
                  initial_phi:torch.tensor = None,
                  device = torch.device('cuda'),
                  acquisition_fn = botorch.acquisition.LogExpectedImprovement,
-                 acquisition_params = {'num_restarts': 30, 'raw_samples':5000},
+                 acquisition_params = {'q':1,'num_restarts': 30, 'raw_samples':5000},
                  history:tuple = (),
                  model_scheduler:dict = {},
                  WandB:dict = {'name': 'BayesianOptimization'},
@@ -231,7 +231,7 @@ class BayesianOptimizer(OptimizerClass):
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''
         acquisition = self.acquisition_fn(self.model, self.history[1].min().to(self.device), maximize=False)
-        return botorch.optim.optimize.optimize_acqf(acquisition, self.bounds.to(self.device), q=1,**self.acquisition_params)[0]
+        return botorch.optim.optimize.optimize_acqf(acquisition, self.bounds.to(self.device), **self.acquisition_params)[0]
     def run_optimization(self, 
                          use_scipy:bool = True,
                          save_optimal_phi:bool = True,
