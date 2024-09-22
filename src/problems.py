@@ -10,7 +10,7 @@ from subprocess import call
 
 PROJECTS_DIR = getenv('PROJECTS_DIR')
 sys.path.insert(1, join(PROJECTS_DIR,'BlackBoxOptimization'))
-from utils import split_array, split_array_idx, get_split_indices
+from utils import split_array, split_array_idx, get_split_indices, split_array_parallel
 import logging
 logging.basicConfig(level=logging.WARNING)
 
@@ -157,8 +157,8 @@ class ShipMuonShield():
         self.input_dist = input_dist
         self.average_x = average_x
         self.loss_with_weight = loss_with_weight
-        self.sensitive_plane = sensitive_plane
-        self.sensitive_film_params = {'dz': 0.01, 'dx': 20, 'dy': 30,'position': 0} #the center is in end of muon shield + position
+        self.sensitive_plane = 0#sensitive_plane
+        self.sensitive_film_params = {'dz': 0.01, 'dx': 10, 'dy': 15,'position': sensitive_plane} #the center is in end of muon shield + position
         self.fSC_mag = fSC_mag
 
         sys.path.insert(1, join(PROJECTS_DIR,'MuonsAndMatter/python/bin'))
@@ -171,7 +171,7 @@ class ShipMuonShield():
         if 0<self.n_samples<=x.shape[0]: x = x[:self.n_samples]
         return x
     def simulate(self,phi:torch.tensor,muons = None): 
-        phi = phi.flatten() #Can we make it paralell on phi also?
+        phi = phi.flatten() 
         if len(phi) ==42: phi = self.add_fixed_params(phi)
         if muons is None: muons = self.sample_x()
 
@@ -195,9 +195,9 @@ class ShipMuonShield():
         mask = (-charge*x <= self.left_margin) & (-self.right_margin <= -charge*x) & (torch.abs(y) <= self.y_margin) & ((torch.abs(particle).to(torch.int))==self.MUON)
         x = x[mask]
         charge = charge[mask]
-        return torch.sqrt(1 + (charge*x-self.right_margin)/(self.left_margin+self.right_margin)) #plus or minus x????? #1+ is oliver, sergey does not use it
+        return torch.sqrt(1 + (charge*x-self.right_margin)/(self.left_margin+self.right_margin))
     def weight_loss(self,W,beta = 10):
-        return 1+torch.exp(beta*(W-self.W0)/self.W0) #oliver uses beta =1, sergey =10
+        return 1+torch.exp(beta*(W-self.W0)/self.W0)
     def __call__(self,phi,muons = None):
         if phi.dim()>1:
             y = []
@@ -219,23 +219,18 @@ class ShipMuonShield():
         return x,y,z
 
     @staticmethod
-    def GetBounds(zGap:float = 1.,device = torch.device('cpu')):
+    def GetBounds(zGap:float = 1.,device = torch.device('cpu'), correct_bounds:bool = True):
         magnet_lengths = [(170 + zGap, 300 + zGap)] * 6  
         dX_bounds = [(10, 100)] * 2
         dY_bounds = [(20, 200)] * 2 
         gap_bounds = [(2, 70)] * 2 
         bounds = magnet_lengths + 6*(dX_bounds + dY_bounds + gap_bounds)
         bounds = torch.tensor(bounds,device=device,dtype=torch.get_default_dtype()).T
-        bounds[0] = torch.minimum(bounds[0],ShipMuonShield.DEFAULT_PHI.to(device)).min(0).values
-        bounds[1] = torch.maximum(bounds[1],ShipMuonShield.DEFAULT_PHI.to(device)).max(0).values
+        if correct_bounds:
+            bounds[0] = torch.minimum(bounds[0],ShipMuonShield.DEFAULT_PHI.to(device)).min(0).values
+            bounds[1] = torch.maximum(bounds[1],ShipMuonShield.DEFAULT_PHI.to(device)).max(0).values
         return bounds
     @staticmethod
-    def add_fixed_params(phi:torch.tensor):
-        return torch.cat((torch.tensor([70.0, 170.0],device = phi.device), 
-                         phi[:6],
-                         torch.tensor([40.0, 40.0, 150.0, 150.0, 2.0, 2.0, 80.0, 80.0, 150.0, 150.0, 2.0, 2.0],device = phi.device), 
-                         phi[6:]))
-    
     def add_fixed_params(phi:torch.Tensor):
         # Fixed parameters, create them as tensors
         fixed_params_start = torch.tensor([70.0, 170.0], device=phi.device)
@@ -260,6 +255,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  manager_ip='34.65.198.159',
                  port=444,
                  local:bool = False,
+                 parallel:bool = False,
                  **kwargs) -> None:
         #super().__init__(W0 = W0,
         #                 n_samples=n_samples,
@@ -267,7 +263,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
         #                loss_with_weight = loss_with_weight)
 
         self.W0 = W0
-        self.cores = cores
+        self.cores = cores if not parallel else 1
         self.loss_with_weight = loss_with_weight
         if 0<n_samples<self.DEF_N_SAMPLES: self.n_samples = n_samples
         else: self.n_samples = self.DEF_N_SAMPLES
@@ -282,24 +278,23 @@ class ShipMuonShieldCluster(ShipMuonShield):
             from starcompute.star_client import StarClient
             self.star_client = StarClient(self.server_url, self.manager_cert_path, 
                                     self.client_cert_path, self.client_key_path)
+        self.parallel = parallel
 
     def sample_x(self,phi = None):
         return get_split_indices(self.cores,self.n_samples)
     def simulate(self,phi:torch.tensor,muons = None):
-        phi = phi.flatten() #Can we make it paralell on phi also?
-        if len(phi) ==42: phi = self.add_fixed_params(phi)
-        if muons is None: muons = self.sample_x(phi)
-        #star_client = self.StarClient(self.server_url, self.manager_cert_path, 
-        #                         self.client_cert_path, self.client_key_path) #redefine it every iteration?
-        muons = split_array_idx(phi.cpu(),muons) #If we can pass phi previously (??), no need to do this 
-        if self.local: result = call(f'srun python3 {PROJECTS_DIR}/cluster/muon_shield_worker_https.py', shell=True) #TODO
-        else:  result = self.star_client.run(muons)
+        #phi = phi.flatten()
+        if phi.shape[-1] ==42: phi = self.add_fixed_params(phi)
+        if muons is None: muons = self.sample_x()
+        inputs = split_array_idx(phi.cpu(),muons) 
+        result = self.star_client.run(inputs)
         result,W = torch.as_tensor(result,device = phi.device).T
-        W = W.mean()
-        result = result.sum()+1
+        if phi.dim()==1 or phi.size(0)==1:
+            W = W.mean()
+            result = result.sum()+1
         return result,W
     def __call__(self,phi,muons = None):
-        if phi.dim()>1:
+        if phi.dim()>1 and not self.parallel:
             y = []
             for p in phi:
                 y.append(self(p))

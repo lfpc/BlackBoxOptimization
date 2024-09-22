@@ -36,6 +36,8 @@ parser.add_argument("--n_tasks", type=int, default=None)
 parser.add_argument("--save_history", action='store_true')
 parser.add_argument("--model_switch", type=int,default = -1)
 parser.add_argument("--resume", action='store_true')
+parser.add_argument("--reduce_bounds", type=int, default=-1)
+parser.add_argument("--parallel", action='store_true', default=False)
 args = parser.parse_args()
 
 wandb.login()
@@ -52,20 +54,21 @@ if not os.path.exists(OUTPUTS_DIR):
     os.makedirs(OUTPUTS_DIR)
 
 
-def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, model_scheduler):
+def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, model_scheduler, n_tasks:int):
     if N_initial_points == -1: initial_phi = problem_fn.DEFAULT_PHI.to(dev)
     else: initial_phi = (phi_range[1]-phi_range[0])*torch.rand(N_initial_points,dimensions_phi,device=dev)+phi_range[0]
     #assert initial_phi.ge(phi_range[0]).logical_and(initial_phi.le(phi_range[1])).all()
 
     if args.optimization == 'bayesian':
         acquisition_fn = acquisition.LogExpectedImprovement
+        q = n_tasks if args.parallel else 1
         optimizer = BayesianOptimizer(problem_fn,model,
                                       phi_range,acquisition_fn=acquisition_fn,
                                       initial_phi = initial_phi,device = dev, 
                                       model_scheduler=model_scheduler,
                                       outputs_dir=OUTPUTS_DIR,
-                                      reduce_bounds=3000,
-                                      WandB = WANDB,acquisition_params = {'num_restarts': 30, 'raw_samples':5000},
+                                      reduce_bounds=args.reduce_bounds,
+                                      WandB = WANDB,acquisition_params = {'q':q,'num_restarts': 30, 'raw_samples':5000},
                                       resume = args.resume)
 
     elif args.optimization == 'lgso':
@@ -98,7 +101,9 @@ if __name__ == "__main__":
     elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_range,dev)
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,dev)
     model_scheduler = {args.model_switch:SingleTaskIBNN(phi_range,dev)}
-    optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range, model_scheduler)
+
+    optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range, model_scheduler, n_tasks)
+
     phi,y = optimizer.get_optimal()
     with open(os.path.join(OUTPUTS_DIR,"phi_optm.txt"), "w") as txt_file:
         for p in phi.flatten():

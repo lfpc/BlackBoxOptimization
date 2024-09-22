@@ -4,14 +4,6 @@ import numpy as np
 def standardize(y:torch.tensor):
     std = y.std() if y.std()>0 else 1
     return (y-y.mean())/std
-def split_array_old(array,n_div:int):
-    division = int(len(array) / (n_div)) 
-    workloads = []
-    for i in range(n_div):
-        workloads.append(array[i * division:(i + 1) * division, :])
-    for j,w in enumerate(array[(i + 1) * division:, :]):    
-        workloads[j] = np.append(workloads[j],w.reshape(1,-1),axis=0)
-    return workloads
 
 def get_split_indices(num_splits, N):
     '''Get indices that divide array of size N into num_splits splits.
@@ -36,6 +28,16 @@ def split_array_idx(phi,
     for idx in indices:
         splits.append([phi,idx]) #can we only pass phi once?
     return splits
+
+def split_array_parallel(phi, 
+                    N_samples = -1):
+    indices = (0,N_samples)
+    splits = []
+    for p in phi:
+        splits.append([p,indices]) #can we only pass phi once?
+    return splits
+
+
 
 def split_array(arr, K):
     N = len(arr)
