@@ -250,7 +250,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
     def __init__(self,
                  W0:float = 1558731.375,#1915820.,
                  cores:int = 96,
-                 n_samples:int = 484449,
+                 n_samples:int = 0,
                  loss_with_weight:bool = True,
                  manager_ip='34.65.198.159',
                  port=444,
@@ -293,7 +293,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
         result,W = torch.as_tensor(result,device = phi.device).T
         if phi.dim()==1 or phi.size(0)==1:
             W = W.mean()
-            result = result.sum()+1
+            result = result.sum()
         return result,W
     def __call__(self,phi,muons = None):
         if phi.dim()>1 and not self.parallel:
@@ -302,6 +302,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
                 y.append(self(p))
             return torch.stack(y)
         loss,W = self.simulate(phi,muons)
+        loss += 1
         if self.loss_with_weight:
             loss *= self.weight_loss(W)
             loss = torch.where(W>3E6,1e8,loss)
