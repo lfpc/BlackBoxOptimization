@@ -141,6 +141,7 @@ class ShipMuonShield():
                  average_x:bool = True,
                  loss_with_weight:bool = True,
                  fSC_mag:bool = True,
+                 seed:int = None,
                  ) -> None:
         
         self.left_margin = 2.6
@@ -158,6 +159,7 @@ class ShipMuonShield():
         self.sensitive_plane = 0#sensitive_plane
         self.sensitive_film_params = {'dz': 0.01, 'dx': 10, 'dy': 15,'position': sensitive_plane} #the center is in end of muon shield + position
         self.fSC_mag = fSC_mag
+        self.seed = seed
 
         sys.path.insert(1, join(PROJECTS_DIR,'MuonsAndMatter/python/bin'))
         from run_simulation import run
@@ -177,7 +179,7 @@ class ShipMuonShield():
 
         with Pool(self.cores) as pool:
             result = pool.starmap(self.run_muonshield, 
-                                  [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,self.fSC_mag,self.sensitive_film_params) for workload in workloads])
+                                  [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,self.fSC_mag,self.sensitive_film_params,self.seed) for workload in workloads])
 
         all_results = []
         for rr in result:
@@ -254,6 +256,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  port=444,
                  local:bool = False,
                  parallel:bool = False,
+                 seed = None,
                  **kwargs) -> None:
         #super().__init__(W0 = W0,
         #                 n_samples=n_samples,
@@ -272,6 +275,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
         self.server_url = 'wss://%s:%s'%(manager_ip, port)
 
         self.local = local
+        self.seed = seed
         if not local:
             from starcompute.star_client import StarClient
             self.star_client = StarClient(self.server_url, self.manager_cert_path, 

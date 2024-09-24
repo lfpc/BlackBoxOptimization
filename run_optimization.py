@@ -89,7 +89,7 @@ if __name__ == "__main__":
     if args.problem == 'stochastic_rosenbrock': problem_fn = problems.stochastic_RosenbrockProblem(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
-    elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks)
+    elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed)
 
     if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
     #add phi initial here?
@@ -101,7 +101,8 @@ if __name__ == "__main__":
     elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_range,dev)
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,dev)
     model_scheduler = {args.model_switch:SingleTaskIBNN,
-                       args.reduce_bounds:GP_RBF}
+                       #args.reduce_bounds:GP_RBF,
+                       }
 
     optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range, model_scheduler, n_tasks)
 
