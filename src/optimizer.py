@@ -225,9 +225,10 @@ class BayesianOptimizer(OptimizerClass):
         self._iter_reduce_bounds = reduce_bounds
         if resume: #current model from model_scheduler
             for i in model_scheduler:
-                if self._i > i:
+                if self._i > i and i>0:
                     self.model = model_scheduler[i]
-        
+            if self._i > reduce_bounds and reduce_bounds>0:
+                self.reduce_bounds()        
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''
         acquisition = self.acquisition_fn(self.model, self.history[1].min().to(self.device), maximize=False)
@@ -249,7 +250,7 @@ class BayesianOptimizer(OptimizerClass):
             options = {'lr': 1e-2, 'maxiter': 100} if not use_scipy else None
             while not self.stopping_criterion(**convergence_params):
                 if self._i in self.model_scheduler:
-                    self.model = self.model_scheduler[self._i]
+                    self.model = self.model_scheduler[self._i](self.bounds,self.device)
                 if self._i == self._iter_reduce_bounds:
                     self.reduce_bounds()
                 self.fit_surrogate_model(use_scipy = use_scipy,options = options)

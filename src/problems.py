@@ -6,11 +6,9 @@ import numpy as np
 from os import getenv
 from os.path import join
 from multiprocessing import Pool
-from subprocess import call 
-
 PROJECTS_DIR = getenv('PROJECTS_DIR')
 sys.path.insert(1, join(PROJECTS_DIR,'BlackBoxOptimization'))
-from utils import split_array, split_array_idx, get_split_indices, split_array_parallel
+from utils import split_array, split_array_idx, get_split_indices
 import logging
 logging.basicConfig(level=logging.WARNING)
 

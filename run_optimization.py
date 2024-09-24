@@ -100,7 +100,8 @@ if __name__ == "__main__":
     if args.model == 'gp_rbf': model = GP_RBF(phi_range,dev)
     elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_range,dev)
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,dev)
-    model_scheduler = {args.model_switch:SingleTaskIBNN(phi_range,dev)}
+    model_scheduler = {args.model_switch:SingleTaskIBNN,
+                       args.reduce_bounds:GP_RBF}
 
     optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range, model_scheduler, n_tasks)
 
