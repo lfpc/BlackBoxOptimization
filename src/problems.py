@@ -133,7 +133,7 @@ class ShipMuonShield():
     DEFAULT_PHI = torch.stack([baseline_1,combi,sc_v6])
 
     def __init__(self,
-                 W0:float = 1915820.,
+                 W0:float = 1558731.375,
                  cores:int = 45,
                  n_samples:int = 0,
                  input_dist:float = 0.1,
@@ -157,7 +157,7 @@ class ShipMuonShield():
         self.average_x = average_x
         self.loss_with_weight = loss_with_weight
         self.sensitive_plane = 0#sensitive_plane
-        self.sensitive_film_params = {'dz': 0.01, 'dx': 10, 'dy': 15,'position': sensitive_plane} #the center is in end of muon shield + position
+        self.sensitive_film_params = {'dz': 0.01, 'dx': 10, 'dy': 20,'position': sensitive_plane} #the center is in end of muon shield + position
         self.fSC_mag = fSC_mag
         self.seed = seed
 
@@ -186,16 +186,21 @@ class ShipMuonShield():
             resulting_data,weight = rr
             if resulting_data.size == 0: continue
             all_results += [resulting_data]
-            
+        if len(all_results) == 0:
+            all_results = [[0]*8]
         all_results = torch.as_tensor(np.concatenate(all_results, axis=0).T,device = phi.device)
         return *all_results, torch.as_tensor(weight,device = phi.device)
     
-    def muon_loss(self,x,y,particle):
+    def muon_loss(self,x,y,particle, weight = None):
         charge = -1*torch.sign(particle)
         mask = (-charge*x <= self.left_margin) & (-self.right_margin <= -charge*x) & (torch.abs(y) <= self.y_margin) & ((torch.abs(particle).to(torch.int))==self.MUON)
         x = x[mask]
         charge = charge[mask]
-        return torch.sqrt(1 + (charge*x-self.right_margin)/(self.left_margin+self.right_margin))
+        loss = torch.sqrt(1 + (charge*x-self.right_margin)/(self.left_margin+self.right_margin)) 
+        if weight is not None:
+            weight = weight[mask]
+            loss *= weight
+        return loss
     def weight_loss(self,W,beta = 10):
         return 1+torch.exp(beta*(W-self.W0)/self.W0)
     def __call__(self,phi,muons = None):
@@ -212,7 +217,8 @@ class ShipMuonShield():
             loss = torch.where(W>3E6,1e8,loss)
         return loss.to(torch.get_default_dtype())
     
-    def propagate_to_sensitive_plane(self,px,py,pz,x,y,z):
+    def propagate_to_sensitive_plane(self,px,py,pz,x,y,z, epsilon = 1e-8):
+        pz += epsilon
         z += self.sensitive_plane
         x += self.sensitive_plane*px/pz
         y += self.sensitive_plane*py/pz
@@ -246,10 +252,10 @@ class ShipMuonShield():
         return torch.cat((fixed_params_start, phi_start, fixed_params_middle, phi_rest), dim=-1)
 
 class ShipMuonShieldCluster(ShipMuonShield):
-    DEF_N_SAMPLES = 484449
+    DEF_N_SAMPLES = 484449#16533515
     def __init__(self,
                  W0:float = 1558731.375,#1915820.,
-                 cores:int = 96,
+                 cores:int = 480,
                  n_samples:int = 0,
                  loss_with_weight:bool = True,
                  manager_ip='34.65.198.159',
@@ -284,24 +290,24 @@ class ShipMuonShieldCluster(ShipMuonShield):
 
     def sample_x(self,phi = None):
         return get_split_indices(self.cores,self.n_samples)
-    def simulate(self,phi:torch.tensor,muons = None):
+    def simulate(self,phi:torch.tensor,muons = None, file = None):
         #phi = phi.flatten()
         if phi.shape[-1] ==42: phi = self.add_fixed_params(phi)
         if muons is None: muons = self.sample_x()
-        inputs = split_array_idx(phi.cpu(),muons) 
+        inputs = split_array_idx(phi.cpu(),muons, file = file) 
         result = self.star_client.run(inputs)
         result,W = torch.as_tensor(result,device = phi.device).T
         if phi.dim()==1 or phi.size(0)==1:
             W = W.mean()
             result = result.sum()
         return result,W
-    def __call__(self,phi,muons = None):
+    def __call__(self,phi,muons = None, file = None):
         if phi.dim()>1 and not self.parallel:
             y = []
             for p in phi:
                 y.append(self(p))
             return torch.stack(y)
-        loss,W = self.simulate(phi,muons)
+        loss,W = self.simulate(phi,muons, file)
         loss += 1
         if self.loss_with_weight:
             loss *= self.weight_loss(W)
@@ -320,20 +326,19 @@ import argparse
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--nodes",type=int,default = 3)
-    parser.add_argument("--n_tasks_per_node", type=int, default=96)
+    parser.add_argument("--nodes",type=int,default = 15)
+    parser.add_argument("--n_tasks_per_node", type=int, default=32)
     parser.add_argument("--n_tasks", type=int, default=None)
     parser.add_argument("--warm", dest = 'SC', action='store_false')
+    parser.add_argument("--file", type=str, default=None)
+    parser.add_argument("--cluster", action='store_true')
     args = parser.parse_args()
-    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/complete_57_SC/phi_optm.txt', "r") as txt_file:
+    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/complete_57_SC_new/phi_optm.txt', "r") as txt_file:
         data = [float(line.strip()) for line in txt_file]
     phi_sc = np.array(data)
-    with open('/home/hep/lprate/projects/BlackBoxOptimization/outputs/gprbf_57_warm_5000/phi_1150.txt', "r") as txt_file:
-        data = [float(line.strip()) for line in txt_file]
-    phi_warm = np.array(data)
     
     d = {}
-    for name,phi in {'optimal':ShipMuonShield.opt_oliver, 'reoptimized_warm':phi_warm,
+    for name,phi in {'optimal oliver':ShipMuonShield.opt_oliver, 
                      'reoptimized_sc':phi_sc,'sc_v6':ShipMuonShield.sc_v6,
                      'combi':ShipMuonShield.combi, 'baseline':ShipMuonShield.baseline_1,}.items(): #
         t1 = time.time()
@@ -341,13 +346,15 @@ if __name__ == '__main__':
         if name == 'sc_v6' and not args.SC: continue
         if args.n_tasks is None: n_tasks = args.nodes*args.n_tasks_per_node
         else: n_tasks = args.n_tasks
-        #muon_shield = ShipMuonShieldCluster(cores = n_tasks)
-        muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC,sensitive_plane=57, input_dist = 0.1)
-
-        #loss_muons, W = muon_shield.simulate(torch.as_tensor(phi))
-        px,py,pz,x,y,z,particle,W = muon_shield.simulate(torch.as_tensor(phi))
-        x,y,z = muon_shield.propagate_to_sensitive_plane(px,py,pz,x,y,z)
-        loss_muons = muon_shield.muon_loss(x,y,particle).sum()+1
+        if args.cluster:
+            muon_shield = ShipMuonShieldCluster(cores = n_tasks,sensitive_plane=0)
+            loss_muons, W = muon_shield.simulate(torch.as_tensor(phi), file = args.file)
+            loss_muons += 1
+        else:
+            muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC,sensitive_plane=0,input_dist = 0.1)
+            px,py,pz,x,y,z,particle,W = muon_shield.simulate(torch.as_tensor(phi))
+            x,y,z = muon_shield.propagate_to_sensitive_plane(px,py,pz,x,y,z)
+            loss_muons = muon_shield.muon_loss(x,y,particle).sum()+1
         loss = loss_muons*muon_shield.weight_loss(W)
         loss = torch.where(W>3E6,1e8,loss)
         d[name] = (W,loss_muons,loss)

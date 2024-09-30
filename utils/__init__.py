@@ -22,11 +22,14 @@ def get_split_indices(num_splits, N):
 def split_array_idx(phi, 
                     indices = None, 
                     num_splits = None,
-                    N_samples = None):
+                    N_samples = None,
+                    file = None):
     if indices is None: indices = get_split_indices(num_splits,N_samples)
     splits = []
     for idx in indices:
-        splits.append([phi,idx]) #can we only pass phi once?
+        input = [phi,idx]
+        if file is not None: input.append(file)
+        splits.append(input)
     return splits
 
 def split_array_parallel(phi, 
@@ -34,7 +37,7 @@ def split_array_parallel(phi,
     indices = (0,N_samples)
     splits = []
     for p in phi:
-        splits.append([p,indices]) #can we only pass phi once?
+        splits.append([p,indices])
     return splits
 
 
