@@ -25,11 +25,13 @@ def split_array_idx(phi,
                     N_samples = None,
                     file = None):
     if indices is None: indices = get_split_indices(num_splits,N_samples)
+    phi = phi.view(-1,phi.size(-1))
     splits = []
-    for idx in indices:
-        input = [phi,idx]
-        if file is not None: input.append(file)
-        splits.append(input)
+    for p in phi:
+        for idx in indices:
+            input = [p,idx]
+            if file is not None: input.append(file)
+            splits.append(input)
     return splits
 
 def split_array_parallel(phi, 

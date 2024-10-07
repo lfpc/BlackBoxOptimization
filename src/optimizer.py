@@ -40,13 +40,16 @@ class OptimizerClass():
 
     def fit_surrogate_model(self,**kwargs):
         D = self.clean_training_data() #Should we do this here, in every iteration?
-        self.model = self.model.fit(D[0].to(self.device),D[1].to(self.device),**kwargs)
+        self.model = self.model.fit(D[0].to(self.device),(-1)*D[1].to(self.device),**kwargs)
+        #self.model = self.model.fit(D[0].to(self.device),D[1].to(self.device),**kwargs)
     def update_history(self,phi,y):
         '''Append phi and y to D'''
         phi,y = phi.reshape(-1,self.history[0].shape[1]).cpu(), y.reshape(-1,self.history[1].shape[1]).cpu()
         self.history = (torch.cat([self.history[0], phi]),torch.cat([self.history[1], y]))
     def n_iterations(self):
         return self._i
+    def n_calls(self):
+        return self.history[1].size(0)
     def stopping_criterion(self,**convergence_params):
         return self._i >= convergence_params['max_iter']
     def get_optimal(self):
@@ -228,10 +231,11 @@ class BayesianOptimizer(OptimizerClass):
                 if self._i > i and i>0:
                     self.model = model_scheduler[i]
             if self._i > reduce_bounds and reduce_bounds>0:
-                self.reduce_bounds()        
+                self.reduce_bounds() 
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''
-        acquisition = self.acquisition_fn(self.model, self.history[1].min().to(self.device), maximize=False)
+        acquisition = self.acquisition_fn(self.model, self.history[1].max().to(self.device))
+        #acquisition = self.acquisition_fn(self.model, self.history[1].min().to(self.device), maximize=False)
         return botorch.optim.optimize.optimize_acqf(acquisition, self.bounds.to(self.device), **self.acquisition_params)[0]
     def run_optimization(self, 
                          use_scipy:bool = True,
@@ -259,12 +263,12 @@ class BayesianOptimizer(OptimizerClass):
                 self.update_history(phi,y)
                 self._i += 1
                 pbar.update()
-                log = {'loss':y.item(), 
+                log = {'loss':y.min().item(), 
                         'min_loss':self.history[1].min().item()}
                 #for i,p in enumerate(phi.flatten()): #Send phi to wandb
                 #    log['phi_%d'%i] = p
-                if y<min_loss.to(self.device) and save_optimal_phi:
-                    min_loss = y
+                if (y<min_loss.to(self.device)).any() and save_optimal_phi:
+                    min_loss = y.min()
                     with open(join(self.outputs_dir,f'phi_optm.txt'), "w") as txt_file:
                         for p in phi.view(-1):
                             txt_file.write(str(p.item()) + "\n")

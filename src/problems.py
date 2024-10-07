@@ -142,12 +142,15 @@ class ShipMuonShield():
                  loss_with_weight:bool = True,
                  fSC_mag:bool = True,
                  seed:int = None,
+                 left_margin = 2.6,
+                 right_margin = 3,
+                 y_margin = 5,
                  ) -> None:
         
-        self.left_margin = 2.6
+        self.left_margin = left_margin
         self.MUON = 13
-        self.right_margin = 3.
-        self.y_margin = 5.
+        self.right_margin = right_margin
+        self.y_margin = y_margin
         self.z_bias = 50
         self.W0 = W0
         self.cores = cores
@@ -217,11 +220,10 @@ class ShipMuonShield():
             loss = torch.where(W>3E6,1e8,loss)
         return loss.to(torch.get_default_dtype())
     
-    def propagate_to_sensitive_plane(self,px,py,pz,x,y,z, epsilon = 1e-8):
-        pz += epsilon
+    def propagate_to_sensitive_plane(self,px,py,pz,x,y,z, epsilon = 1e-12):
         z += self.sensitive_plane
-        x += self.sensitive_plane*px/pz
-        y += self.sensitive_plane*py/pz
+        x += self.sensitive_plane*px/(pz+epsilon)
+        y += self.sensitive_plane*py/(pz+epsilon)
         return x,y,z
 
     @staticmethod
@@ -255,7 +257,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
     DEF_N_SAMPLES = 484449#16533515
     def __init__(self,
                  W0:float = 1558731.375,#1915820.,
-                 cores:int = 480,
+                 cores:int = 512,
                  n_samples:int = 0,
                  loss_with_weight:bool = True,
                  manager_ip='34.65.198.159',
@@ -270,7 +272,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
         #                loss_with_weight = loss_with_weight)
 
         self.W0 = W0
-        self.cores = cores if not parallel else 1
+        self.cores = cores# if not parallel else 1
         self.loss_with_weight = loss_with_weight
         if 0<n_samples<self.DEF_N_SAMPLES: self.n_samples = n_samples
         else: self.n_samples = self.DEF_N_SAMPLES
@@ -289,17 +291,20 @@ class ShipMuonShieldCluster(ShipMuonShield):
         self.parallel = parallel
 
     def sample_x(self,phi = None):
-        return get_split_indices(self.cores,self.n_samples)
+        if phi is not None:
+            cores = int(self.cores/phi.size(0)) #a ser otimizado. como usar todos os cores?
+        else: cores = self.cores
+        return get_split_indices(cores,self.n_samples) 
     def simulate(self,phi:torch.tensor,muons = None, file = None):
         #phi = phi.flatten()
-        if phi.shape[-1] ==42: phi = self.add_fixed_params(phi)
-        if muons is None: muons = self.sample_x()
+        if phi.shape[-1]==42: phi = self.add_fixed_params(phi)
+        if muons is None: muons = self.sample_x(phi)
         inputs = split_array_idx(phi.cpu(),muons, file = file) 
         result = self.star_client.run(inputs)
         result,W = torch.as_tensor(result,device = phi.device).T
-        if phi.dim()==1 or phi.size(0)==1:
-            W = W.mean()
-            result = result.sum()
+        #if phi.dim()==1 or phi.size(0)==1:
+        W = W.view(phi.size(0),-1).mean(-1)
+        result = result.view(phi.size(0),-1).sum(-1)
         return result,W
     def __call__(self,phi,muons = None, file = None):
         if phi.dim()>1 and not self.parallel:
@@ -351,7 +356,8 @@ if __name__ == '__main__':
             loss_muons, W = muon_shield.simulate(torch.as_tensor(phi), file = args.file)
             loss_muons += 1
         else:
-            muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC,sensitive_plane=0,input_dist = 0.1)
+            muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC,
+                                         sensitive_plane=67,input_dist = 0.845)
             px,py,pz,x,y,z,particle,W = muon_shield.simulate(torch.as_tensor(phi))
             x,y,z = muon_shield.propagate_to_sensitive_plane(px,py,pz,x,y,z)
             loss_muons = muon_shield.muon_loss(x,y,particle).sum()+1

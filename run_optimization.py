@@ -30,8 +30,8 @@ parser.add_argument('--torch_optimizer',dest='scipy', action = 'store_false')
 parser.add_argument('--float64', action = 'store_true')
 parser.add_argument('--name', type=str, default='optimizationtest')
 parser.add_argument('--group', type=str, default='BayesianOptimization')
-parser.add_argument("--nodes",type=int,default = 4)
-parser.add_argument("--n_tasks_per_node", type=int, default=96)
+parser.add_argument("--nodes",type=int,default = 16)
+parser.add_argument("--n_tasks_per_node", type=int, default=32)
 parser.add_argument("--n_tasks", type=int, default=None)
 parser.add_argument("--save_history", action='store_true')
 parser.add_argument("--model_switch", type=int,default = -1)
@@ -60,15 +60,16 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, mo
     #assert initial_phi.ge(phi_range[0]).logical_and(initial_phi.le(phi_range[1])).all()
 
     if args.optimization == 'bayesian':
-        acquisition_fn = acquisition.LogExpectedImprovement
-        q = n_tasks if args.parallel else 1
+        acquisition_fn = acquisition.qLogExpectedImprovement if args.parallel else acquisition.LogExpectedImprovement
+        q = 20 if args.parallel else 1
         optimizer = BayesianOptimizer(problem_fn,model,
                                       phi_range,acquisition_fn=acquisition_fn,
                                       initial_phi = initial_phi,device = dev, 
                                       model_scheduler=model_scheduler,
                                       outputs_dir=OUTPUTS_DIR,
                                       reduce_bounds=args.reduce_bounds,
-                                      WandB = WANDB,acquisition_params = {'q':q,'num_restarts': 30, 'raw_samples':5000},
+                                      WandB = WANDB,
+                                      acquisition_params = {'q':q,'num_restarts': 30, 'raw_samples':5000},
                                       resume = args.resume)
 
     elif args.optimization == 'lgso':
@@ -89,7 +90,7 @@ if __name__ == "__main__":
     if args.problem == 'stochastic_rosenbrock': problem_fn = problems.stochastic_RosenbrockProblem(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
-    elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed)
+    elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel)
 
     if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
     #add phi initial here?
