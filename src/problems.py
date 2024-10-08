@@ -14,18 +14,6 @@ logging.basicConfig(level=logging.WARNING)
 
 def uniform_sample(shape,bounds,device = 'cpu'):
     return (bounds[0]-bounds[1])*torch.rand(shape,device=device)+bounds[1]
-
-
-class oliver_fn():
-    def __init__(self,omega:float = 5,gamma:float = 1,noise:float = 0):
-        self.omega = omega
-        self.gamma = gamma
-        self.noise = noise
-    def __call__(self,phi:torch.tensor):
-        y = torch.prod(torch.sin(self.omega*phi)*(1-torch.tanh(self.gamma*phi.pow(2))),-1,keepdims=True)
-        if self.noise:
-            y += torch.randn_like(y)*self.noise
-        return y
     
 class RosenbrockProblem():
     def __init__(self,noise:float = 0) -> None:
@@ -182,7 +170,7 @@ class ShipMuonShield():
 
         with Pool(self.cores) as pool:
             result = pool.starmap(self.run_muonshield, 
-                                  [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,self.fSC_mag,self.sensitive_film_params,self.seed) for workload in workloads])
+                                  [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,self.fSC_mag,self.sensitive_film_params,self.seed, False) for workload in workloads])
 
         all_results = []
         for rr in result:
@@ -291,7 +279,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
         self.parallel = parallel
 
     def sample_x(self,phi = None):
-        if phi is not None:
+        if phi is not None and phi.dim()==2:
             cores = int(self.cores/phi.size(0)) #a ser otimizado. como usar todos os cores?
         else: cores = self.cores
         return get_split_indices(cores,self.n_samples) 
@@ -302,9 +290,11 @@ class ShipMuonShieldCluster(ShipMuonShield):
         inputs = split_array_idx(phi.cpu(),muons, file = file) 
         result = self.star_client.run(inputs)
         result,W = torch.as_tensor(result,device = phi.device).T
-        #if phi.dim()==1 or phi.size(0)==1:
-        W = W.view(phi.size(0),-1).mean(-1)
-        result = result.view(phi.size(0),-1).sum(-1)
+        if not (phi.dim()==1 or phi.size(0)==1):
+            W = W.view(phi.size(0),-1)
+            result = result.view(phi.size(0),-1)
+        W = W.mean(-1)
+        result = result.sum(-1)
         return result,W
     def __call__(self,phi,muons = None, file = None):
         if phi.dim()>1 and not self.parallel:
@@ -331,7 +321,7 @@ import argparse
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--nodes",type=int,default = 15)
+    parser.add_argument("--nodes",type=int,default = 16)
     parser.add_argument("--n_tasks_per_node", type=int, default=32)
     parser.add_argument("--n_tasks", type=int, default=None)
     parser.add_argument("--warm", dest = 'SC', action='store_false')
@@ -343,9 +333,12 @@ if __name__ == '__main__':
     phi_sc = np.array(data)
     
     d = {}
-    for name,phi in {'optimal oliver':ShipMuonShield.opt_oliver, 
+    t0 = time.time()
+    for name,phi in {#'optimal oliver':ShipMuonShield.opt_oliver, 
                      'reoptimized_sc':phi_sc,'sc_v6':ShipMuonShield.sc_v6,
-                     'combi':ShipMuonShield.combi, 'baseline':ShipMuonShield.baseline_1,}.items(): #
+                     #'combi':ShipMuonShield.combi, 'baseline':ShipMuonShield.baseline_1,
+                     }.items(): #
+        print(name)
         t1 = time.time()
         
         if name == 'sc_v6' and not args.SC: continue
@@ -365,10 +358,12 @@ if __name__ == '__main__':
         loss = torch.where(W>3E6,1e8,loss)
         d[name] = (W,loss_muons,loss)
         t2 = time.time()
+        print(f"took {t2-t1} sec")
     for name,(W,loss_muons,loss) in d.items():
         print(f"{name}:")
         print(f"Weight: {W.item()}")
         print(f"Muon Loss: {loss_muons.item()}")
         print(f"Total Loss: {loss.item()}")
+    print(f"Total Time: {time.time()-t0}")
     
     

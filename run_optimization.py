@@ -43,6 +43,7 @@ args = parser.parse_args()
 wandb.login()
 WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': vars(args), 'name': args.name}
 
+if args.cuda: assert torch.cuda.is_available()
 if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda')
 else: dev = torch.device('cpu')
 print('Device:', dev)

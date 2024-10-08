@@ -60,7 +60,7 @@ class OptimizerClass():
         '''Get samples on history for training'''
         return self.history
     
-class LGSO():
+class LGSO(OptimizerClass):
     def __init__(self,true_model,
                  surrogate_model:torch.nn.Module,
                  bounds:tuple,
