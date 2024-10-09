@@ -118,7 +118,7 @@ class ShipMuonShield():
     opt_oliver =  torch.tensor([208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 54.0,
                          38.0, 46.0, 192.0, 14.0, 9.0, 10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 3.0, 32.0, 54.0, 
                          24.0, 8.0, 8.0, 22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 33.0, 77.0, 85.0, 241.0, 9.0, 26.0])
-    DEFAULT_PHI = torch.stack([baseline_1,combi,sc_v6])
+    DEFAULT_PHI = torch.stack([combi,sc_v6])
 
     def __init__(self,
                  W0:float = 1558731.375,
@@ -180,6 +180,7 @@ class ShipMuonShield():
         if len(all_results) == 0:
             all_results = [[0]*8]
         all_results = torch.as_tensor(np.concatenate(all_results, axis=0).T,device = phi.device)
+        all_results[3],all_results[4],all_results[5] = self.propagate_to_sensitive_plane(*all_results[:6])
         return *all_results, torch.as_tensor(weight,device = phi.device)
     
     def muon_loss(self,x,y,particle, weight = None):
@@ -194,6 +195,12 @@ class ShipMuonShield():
         return loss
     def weight_loss(self,W,beta = 10):
         return 1+torch.exp(beta*(W-self.W0)/self.W0)
+    def calc_loss(self,px,py,pz,x,y,z,particle,W):
+        loss = self.muon_loss(x,y,particle).sum()+1
+        if self.loss_with_weight:
+            loss *= self.weight_loss(W)
+            loss = torch.where(W>3E6,1e8,loss)
+        return loss.to(torch.get_default_dtype())
     def __call__(self,phi,muons = None):
         if phi.dim()>1:
             y = []
@@ -201,12 +208,7 @@ class ShipMuonShield():
                 y.append(self(p))
             return torch.stack(y)
         px,py,pz,x,y,z,particle,W = self.simulate(phi,muons)
-        x,y,z = self.propagate_to_sensitive_plane(px,py,pz,x,y,z)
-        loss = self.muon_loss(x,y,particle).sum()+1
-        if self.loss_with_weight:
-            loss *= self.weight_loss(W)
-            loss = torch.where(W>3E6,1e8,loss)
-        return loss.to(torch.get_default_dtype())
+        return self.calc_loss(None,None,None,x,y,None,particle,W)
     
     def propagate_to_sensitive_plane(self,px,py,pz,x,y,z, epsilon = 1e-12):
         z += self.sensitive_plane
@@ -334,10 +336,13 @@ if __name__ == '__main__':
     
     d = {}
     t0 = time.time()
-    for name,phi in {#'optimal oliver':ShipMuonShield.opt_oliver, 
+    params_dict = {#'optimal oliver':ShipMuonShield.opt_oliver, 
                      'reoptimized_sc':phi_sc,'sc_v6':ShipMuonShield.sc_v6,
                      #'combi':ShipMuonShield.combi, 'baseline':ShipMuonShield.baseline_1,
-                     }.items(): #
+                     }
+    seed = 0
+    N = 100
+    for name,phi in {i:ShipMuonShield.sc_v6 for i in range(N)}.items(): #
         print(name)
         t1 = time.time()
         
@@ -350,20 +355,26 @@ if __name__ == '__main__':
             loss_muons += 1
         else:
             muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC,
-                                         sensitive_plane=67,input_dist = 0.845)
+                                         sensitive_plane=57,input_dist = 0.2, seed=seed)
             px,py,pz,x,y,z,particle,W = muon_shield.simulate(torch.as_tensor(phi))
             x,y,z = muon_shield.propagate_to_sensitive_plane(px,py,pz,x,y,z)
             loss_muons = muon_shield.muon_loss(x,y,particle).sum()+1
         loss = loss_muons*muon_shield.weight_loss(W)
         loss = torch.where(W>3E6,1e8,loss)
-        d[name] = (W,loss_muons,loss)
+        d[name] = loss_muons.item()#(W,loss_muons,loss)
         t2 = time.time()
+        seed += 5
         print(f"took {t2-t1} sec")
-    for name,(W,loss_muons,loss) in d.items():
+    '''for name,(W,loss_muons,loss) in d.items():
         print(f"{name}:")
         print(f"Weight: {W.item()}")
         print(f"Muon Loss: {loss_muons.item()}")
-        print(f"Total Loss: {loss.item()}")
+        print(f"Total Loss: {loss.item()}")'''
+    
     print(f"Total Time: {time.time()-t0}")
+    print('Muon loss (N iterations) = ', list(d.values()))
+    print('Mean Loss = ', np.mean(list(d.values())))
+    print('Mean STD = ', np.std(list(d.values())))
+    print('Error = ', np.std(list(d.values()))/np.sqrt(N))
     
     

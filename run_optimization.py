@@ -44,7 +44,7 @@ wandb.login()
 WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': vars(args), 'name': args.name}
 
 if args.cuda: assert torch.cuda.is_available()
-if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda')
+if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda:2')
 else: dev = torch.device('cpu')
 print('Device:', dev)
 torch.manual_seed(args.seed);
