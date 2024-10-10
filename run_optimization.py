@@ -114,7 +114,7 @@ if __name__ == "__main__":
             txt_file.write(str(p.item()) + "\n")
     print('Optimal phi', phi)
     print('Optimal y', y.item(),'|')
-    print(f'Calls to the function: {max(args.n_initial,1)}(initial set) + {optimizer.n_iterations()}')
+    print(f'Calls to the function: {optimizer.n_calls()}')
     min_loss = torch.cummin(optimizer.history[1],dim=0).values
     
     if True:

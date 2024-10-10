@@ -41,8 +41,7 @@ class OptimizerClass():
         return y
     def fit_surrogate_model(self,**kwargs):
         D = self.clean_training_data() #Should we do this here, in every iteration?
-        self.model = self.model.fit(D[0].to(self.device),(-1)*D[1].to(self.device),**kwargs)
-        #self.model = self.model.fit(D[0].to(self.device),D[1].to(self.device),**kwargs)
+        self.model = self.model.fit(*D,**kwargs)
     def update_history(self,phi,y):
         '''Append phi and y to D'''
         phi,y = phi.reshape(-1,self.history[0].shape[1]).cpu(), y.reshape(-1,self.history[1].shape[1]).cpu()
@@ -128,7 +127,7 @@ class LGSO(OptimizerClass):
         sample = (2*self.lhs_sampler.random(n=self.samples_phi)-1)*self.epsilon
         sample = torch.as_tensor(sample,device=current_phi.device,dtype=torch.get_default_dtype())
         return sample+current_phi
-    def loss(self,y):
+    def loss_fn(self,y):
         return self.true_model.calc_loss(*y)
     def clean_training_data(self):
         dist = (self.history[0]-self.current_phi).abs()#(self.history[0]-phi).norm(2,-1)
@@ -151,7 +150,7 @@ class LGSO(OptimizerClass):
     def get_new_phi(self):
         self.phi_optimizer.zero_grad()
         x = self.true_model.sample_x(self.current_phi)
-        l = self.loss(self.model.generate(condition = torch.cat([self.current_phi,x],dim=-1)))
+        l = self.loss_fn(self.model(self.current_phi,x))
         l.backward()
         self.phi_optimizer.step()
         return self.current_phi
@@ -219,7 +218,7 @@ class BayesianOptimizer(OptimizerClass):
     def clean_training_data(self):
         '''Remove samples in D that are not contained in the bounds.'''
         idx = self.bounds[0].le(self.history[0]).logical_and(self.bounds[1].ge(self.history[0])).all(-1)
-        return (self.history[0][idx],self.history[1][idx])
+        return (self.history[0][idx],(-1)*self.history[1][idx])
     def reduce_bounds(self,local_bounds:float = 0.1):
         '''Reduce the bounds to the region (+-local_bounds) of the current optimal, respecting also the previous bounds.'''
         phi = self.get_optimal()[0]
