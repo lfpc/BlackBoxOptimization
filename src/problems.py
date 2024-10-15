@@ -161,7 +161,7 @@ class ShipMuonShield():
             x = pickle.load(f)
         if 0<self.n_samples<=x.shape[0]: x = x[:self.n_samples]
         return x
-    def simulate(self,phi:torch.tensor,muons = None): 
+    def simulate(self,phi:torch.tensor,muons = None, return_nan = False): 
         phi = phi.flatten() 
         if len(phi) ==42: phi = self.add_fixed_params(phi)
         if muons is None: muons = self.sample_x()
@@ -170,16 +170,15 @@ class ShipMuonShield():
 
         with Pool(self.cores) as pool:
             result = pool.starmap(self.run_muonshield, 
-                                  [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,self.fSC_mag,self.sensitive_film_params,self.seed, False) for workload in workloads])
-
+                                  [(workload,phi.cpu().numpy(),self.z_bias,self.input_dist,True,self.fSC_mag,self.sensitive_film_params,return_nan,self.seed, False) for workload in workloads])
         all_results = []
         for rr in result:
             resulting_data,weight = rr
             if resulting_data.size == 0: continue
             all_results += [resulting_data]
         if len(all_results) == 0:
-            all_results = [[0]*8]
-        all_results = torch.as_tensor(np.concatenate(all_results, axis=0).T,device = phi.device)
+            all_results = [[np.nan]*8]
+        all_results = torch.as_tensor(np.concatenate(all_results, axis=0).T,device = phi.device,dtype=torch.get_default_dtype())
         all_results[3],all_results[4],all_results[5] = self.propagate_to_sensitive_plane(*all_results[:6])
         return *all_results, torch.as_tensor(weight,device = phi.device)
     
@@ -195,7 +194,7 @@ class ShipMuonShield():
         return loss
     def weight_loss(self,W,beta = 10):
         return 1+torch.exp(beta*(W-self.W0)/self.W0)
-    def calc_loss(self,px,py,pz,x,y,z,particle,W):
+    def calc_loss(self,px,py,pz,x,y,z,particle,W = None):
         loss = self.muon_loss(x,y,particle).sum()+1
         if self.loss_with_weight:
             loss *= self.weight_loss(W)
@@ -211,6 +210,7 @@ class ShipMuonShield():
         return self.calc_loss(None,None,None,x,y,None,particle,W)
     
     def propagate_to_sensitive_plane(self,px,py,pz,x,y,z, epsilon = 1e-12):
+        #if not np.isnan(x):
         z += self.sensitive_plane
         x += self.sensitive_plane*px/(pz+epsilon)
         y += self.sensitive_plane*py/(pz+epsilon)
@@ -285,18 +285,32 @@ class ShipMuonShieldCluster(ShipMuonShield):
             cores = int(self.cores/phi.size(0)) #a ser otimizado. como usar todos os cores?
         else: cores = self.cores
         return get_split_indices(cores,self.n_samples) 
-    def simulate(self,phi:torch.tensor,muons = None, file = None):
+    def simulate(self,phi:torch.tensor,
+                 muons = None, 
+                 file = None,
+                 sum_outputs = True):
         #phi = phi.flatten()
         if phi.shape[-1]==42: phi = self.add_fixed_params(phi)
         if muons is None: muons = self.sample_x(phi)
+
         inputs = split_array_idx(phi.cpu(),muons, file = file) 
         result = self.star_client.run(inputs)
+        #for f in os.listdir('/home/hep/lprate/projects/cluster/outputs'):
+            
+        #result = []
+        #W = []
+        #for r in results:
+        #    result.append(r[0])
+        #    W.append(r[1])
+        #result = torch.as_tensor(result,device = phi.device)
+        #W = torch.as_tensor(W,device = phi.device)
         result,W = torch.as_tensor(result,device = phi.device).T
+
         if not (phi.dim()==1 or phi.size(0)==1):
             W = W.view(phi.size(0),-1)
             result = result.view(phi.size(0),-1)
         W = W.mean(-1)
-        result = result.sum(-1)
+        if sum_outputs: result = result.sum(-1) #use reduction?
         return result,W
     def __call__(self,phi,muons = None, file = None):
         if phi.dim()>1 and not self.parallel:
@@ -357,7 +371,6 @@ if __name__ == '__main__':
             muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC,
                                          sensitive_plane=57,input_dist = 0.2, seed=seed)
             px,py,pz,x,y,z,particle,W = muon_shield.simulate(torch.as_tensor(phi))
-            x,y,z = muon_shield.propagate_to_sensitive_plane(px,py,pz,x,y,z)
             loss_muons = muon_shield.muon_loss(x,y,particle).sum()+1
         loss = loss_muons*muon_shield.weight_loss(W)
         loss = torch.where(W>3E6,1e8,loss)

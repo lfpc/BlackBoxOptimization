@@ -69,26 +69,27 @@ class OptimizerClass():
             for min_loss,phi,y in zip(self.loss(self.history[1]).cummin(0).values,*self.history[:2]):
                 log = {'loss':y.item(), 
                         'min_loss':min_loss}
-                for i,p in enumerate(phi.flatten()):
-                    log['phi_%d'%i] = p
+                #for i,p in enumerate(phi.flatten()):
+                #    log['phi_%d'%i] = p
                 wb.log(log)
             while not self.stopping_criterion(**convergence_params):
                 phi,loss = self.optimization_iteration()
                 pbar.update()
-                loss = self.loss(y)
-                log = {'loss':loss.min().item(), 
-                        'min_loss':loss.min().item()}
                 #for i,p in enumerate(phi.flatten()): #Send phi to wandb
                 #    log['phi_%d'%i] = p
-                if (loss<min_loss.to(self.device)) and save_optimal_phi:
+                if (loss<min_loss.to(self.device)):
                     min_loss = loss
-                    with open(join(self.outputs_dir,f'phi_optm.txt'), "w") as txt_file:
-                        for p in phi.view(-1):
-                            txt_file.write(str(p.item()) + "\n")
+                    if save_optimal_phi:
+                        with open(join(self.outputs_dir,f'phi_optm.txt'), "w") as txt_file:
+                            for p in phi.view(-1):
+                                txt_file.write(str(p.item()) + "\n")
+                log = {'loss':loss.item(), 
+                        'min_loss':min_loss.item()}
                 if save_history:
                     with gzip_open(join(self.outputs_dir,f'history.pkl'), "wb") as f:
                         dump(self.history, f)
                 wb.log(log)
+                self._i += 1
         wb.finish()
         return phi,loss
 
@@ -98,8 +99,8 @@ class LGSO(OptimizerClass):
     def __init__(self,true_model,
                  surrogate_model:torch.nn.Module,
                  bounds:tuple,
-                 epsilon:float,
                  samples_phi:int,
+                 epsilon:float = 0.2,
                  initial_phi:torch.tensor = None,
                  history:tuple = (),
                  WandB:dict = {'name': 'LGSOptimization'},
@@ -136,8 +137,9 @@ class LGSO(OptimizerClass):
     def optimization_iteration(self):
         sampled_phi = self.sample_phi(self.current_phi)
         x = self.true_model.sample_x(sampled_phi)
-        y = self.true_model.simulate(sampled_phi,x)
-        self.update_history(sampled_phi,y,x)
+        y = self.true_model.simulate(sampled_phi,x) #aqui já tem que transformar em concatenaçao...
+        mask = y.eq(0).all(-1)
+        self.update_history(sampled_phi[mask],y[mask],x[mask])
         self.fit_surrogate_model()
         self.get_new_phi()
         return self.get_optimal()
@@ -214,7 +216,9 @@ class BayesianOptimizer(OptimizerClass):
         phi = self.get_new_phi()
         y = self.true_model(phi)
         self.update_history(phi,y)
-        return self.get_optimal()
+
+        idx = self.loss(y).argmin()
+        return phi[idx],self.loss(y[idx])
     def clean_training_data(self):
         '''Remove samples in D that are not contained in the bounds.'''
         idx = self.bounds[0].le(self.history[0]).logical_and(self.bounds[1].ge(self.history[0])).all(-1)

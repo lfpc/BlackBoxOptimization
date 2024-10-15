@@ -2,7 +2,7 @@ import torch
 from botorch import acquisition, settings
 from src.optimizer import BayesianOptimizer,LGSO
 from src import problems
-from src.models import GP_RBF, GP_Cylindrical_Custom, SingleTaskIBNN
+from src.models import GP_RBF, GP_Cylindrical_Custom, SingleTaskIBNN, GANModel
 
 from matplotlib import pyplot as plt
 import argparse
@@ -44,7 +44,7 @@ wandb.login()
 WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': vars(args), 'name': args.name}
 
 if args.cuda: assert torch.cuda.is_available()
-if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda:2')
+if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda')
 else: dev = torch.device('cpu')
 print('Device:', dev)
 torch.manual_seed(args.seed);
@@ -62,7 +62,7 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, mo
 
     if args.optimization == 'bayesian':
         acquisition_fn = acquisition.qLogExpectedImprovement if args.parallel else acquisition.LogExpectedImprovement
-        q = 20 if args.parallel else 1
+        q = 64 if args.parallel else 1
         optimizer = BayesianOptimizer(problem_fn,model,
                                       phi_range,acquisition_fn=acquisition_fn,
                                       initial_phi = initial_phi,device = dev, 
@@ -74,10 +74,18 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, mo
                                       resume = args.resume)
 
     elif args.optimization == 'lgso':
-        optimizer = LGSO(problem_fn,model,phi_range,acquisition_fn=acquisition_fn,initial_phi = initial_phi,device = dev, WandB = WANDB)
+        optimizer = LGSO(problem_fn,
+                         model,
+                         phi_range,
+                         epsilon= 0.2,
+                         samples_phi = 42,
+                         initial_phi = initial_phi,
+                         device = dev, 
+                         WandB = WANDB,
+                         resume=args.resume)
 
-    optimizer.run_optimization(max_iter = max_iter,use_scipy=args.scipy, 
-                               save_optimal_phi=True,save_history=args.save_history)
+    optimizer.run_optimization(save_optimal_phi=True,save_history=args.save_history,
+                               max_iter = max_iter,use_scipy=args.scipy,)
 
     return optimizer
 
@@ -102,6 +110,7 @@ if __name__ == "__main__":
     if args.model == 'gp_rbf': model = GP_RBF(phi_range,dev)
     elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_range,dev)
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,dev)
+    elif args.model == 'gan': model = GANModel(42,484449,64,device = dev)
     model_scheduler = {args.model_switch:SingleTaskIBNN,
                        #args.reduce_bounds:GP_RBF,
                        }
@@ -123,11 +132,6 @@ if __name__ == "__main__":
         plt.xlabel('Iteration')
         plt.savefig(os.path.join(OUTPUTS_DIR,'min_loss.png'))
         plt.close()
-    
-
-
-    
-
 
 
 

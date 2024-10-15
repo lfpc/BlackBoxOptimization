@@ -12,8 +12,10 @@ class GP_RBF(botorch.models.SingleTaskGP):
     def __init__(self,bounds,device = 'cpu'):
         self.device = device
         self.bounds = bounds.to(device)
-    def fit(self,X,Y,use_scipy = True,options:dict = None,**kwargs):
+    def fit(self,X:torch.tensor,Y:torch.tensor,use_scipy = True,options:dict = None,**kwargs):
         #self.train()
+        X = X.to(self.device)
+        Y = Y.to(self.device)
         Y = standardize(Y)
         X = self.normalization(X,self.bounds)
         super().__init__(X,Y,**kwargs)
@@ -94,7 +96,6 @@ class SingleTaskIBNN(GP_RBF):
 
 class GANModel():
     def __init__(self,
-                 y_model,
                  psi_dim: int,
                  x_dim: int,
                  batch_size: int,
