@@ -37,7 +37,7 @@ parser.add_argument("--save_history", action='store_true')
 parser.add_argument("--model_switch", type=int,default = -1)
 parser.add_argument("--resume", action='store_true')
 parser.add_argument("--reduce_bounds", type=int, default=-1)
-parser.add_argument("--parallel", action='store_true', default=False)
+parser.add_argument("--parallel", type=int, default = 1)
 args = parser.parse_args()
 
 wandb.login()
@@ -55,14 +55,14 @@ if not os.path.exists(OUTPUTS_DIR):
     os.makedirs(OUTPUTS_DIR)
 
 
-def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, model_scheduler, n_tasks:int):
+def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, model_scheduler):
     if N_initial_points == -1: initial_phi = problem_fn.DEFAULT_PHI.to(dev)
     else: initial_phi = (phi_range[1]-phi_range[0])*torch.rand(N_initial_points,dimensions_phi,device=dev)+phi_range[0]
     #assert initial_phi.ge(phi_range[0]).logical_and(initial_phi.le(phi_range[1])).all()
 
     if args.optimization == 'bayesian':
         acquisition_fn = acquisition.qLogExpectedImprovement if args.parallel else acquisition.LogExpectedImprovement
-        q = 64 if args.parallel else 1
+        q = min(args.parallel,problem_fn.cores)
         optimizer = BayesianOptimizer(problem_fn,model,
                                       phi_range,acquisition_fn=acquisition_fn,
                                       initial_phi = initial_phi,device = dev, 
@@ -115,7 +115,7 @@ if __name__ == "__main__":
                        #args.reduce_bounds:GP_RBF,
                        }
 
-    optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range, model_scheduler, n_tasks)
+    optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range, model_scheduler)
 
     phi,y = optimizer.get_optimal()
     with open(os.path.join(OUTPUTS_DIR,"phi_optm.txt"), "w") as txt_file:

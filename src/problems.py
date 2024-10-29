@@ -124,7 +124,7 @@ class ShipMuonShield():
                  W0:float = 1558731.375,
                  cores:int = 45,
                  n_samples:int = 0,
-                 input_dist:float = 0.1,
+                 input_dist:float = 0.85,
                  sensitive_plane:float = 57,#distance between end of shield and sensplane
                  average_x:bool = True,
                  loss_with_weight:bool = True,
