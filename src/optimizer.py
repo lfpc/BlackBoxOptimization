@@ -204,7 +204,7 @@ class BayesianOptimizer(OptimizerClass):
                 self.reduce_bounds() 
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''
-        acquisition = self.acquisition_fn(self.model, self.history[1].max().to(self.device))
+        acquisition = self.acquisition_fn(self.model, (-1)*self.history[1].min().to(self.device)) #should we consider only cleaned data minimum?
         #acquisition = self.acquisition_fn(self.model, self.history[1].min().to(self.device), maximize=False)
         return botorch.optim.optimize.optimize_acqf(acquisition, self.bounds.to(self.device), **self.acquisition_params)[0]
     def optimization_iteration(self):
@@ -217,8 +217,8 @@ class BayesianOptimizer(OptimizerClass):
         y = self.true_model(phi)
         self.update_history(phi,y)
 
-        idx = self.loss(y).argmin()
-        return phi[idx],self.loss(y[idx])
+        y,idx = self.loss(y).flatten().min(0)
+        return phi[idx],y
     def clean_training_data(self):
         '''Remove samples in D that are not contained in the bounds.'''
         idx = self.bounds[0].le(self.history[0]).logical_and(self.bounds[1].ge(self.history[0])).all(-1)
