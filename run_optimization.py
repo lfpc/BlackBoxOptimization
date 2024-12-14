@@ -18,7 +18,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--cpu",dest = 'cuda', action = 'store_false')
 parser.add_argument("--seed", type=int, default=13)
 parser.add_argument("--maxiter", type=int, default=1000)
-parser.add_argument("--dimensions", type=int, default=42)
+parser.add_argument("--dimensions", type=int, default=35)
 parser.add_argument("--n_initial", type=int, default=-1)
 parser.add_argument('--phi_bounds', nargs='+', type=float, default=None)
 parser.add_argument('--problem', type=str, default='ship')
@@ -99,7 +99,7 @@ if __name__ == "__main__":
     if args.problem == 'stochastic_rosenbrock': problem_fn = problems.stochastic_RosenbrockProblem(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
-    elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel)
+    elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi)
 
     if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
     #add phi initial here?
