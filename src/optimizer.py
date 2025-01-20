@@ -7,6 +7,7 @@ from pickle import dump,  load
 import wandb
 from os.path import join
 from gzip import open as gzip_open
+from utils import standardize
 
 
 class OptimizerClass():
@@ -37,7 +38,7 @@ class OptimizerClass():
         self.bounds = bounds.cpu()
         self.wandb = WandB
         self.outputs_dir = outputs_dir
-    def loss(self,y):
+    def loss(self,x = None, y = None):
         return y
     def fit_surrogate_model(self,**kwargs):
         D = self.clean_training_data() #Should we do this here, in every iteration?
@@ -52,10 +53,11 @@ class OptimizerClass():
         return self.history[1].size(0)
     def stopping_criterion(self,**convergence_params):
         return self._i >= convergence_params['max_iter']
-    def get_optimal(self):
+    def get_optimal(self, return_idx = False):
         '''Get the current optimal'''
-        idx = self.loss(self.history[1]).argmin()
-        return self.history[0][idx],self.loss(self.history[1][idx])
+        idx = self.loss(*self.history).flatten().argmin()
+        if return_idx: return self.history[0][idx],self.loss(self.history[0][idx],self.history[1][idx]),idx
+        else: return self.history[0][idx],self.loss(self.history[0][idx],self.history[1][idx])
     def clean_training_data(self):
         '''Get samples on history for training'''
         return self.history
@@ -66,8 +68,8 @@ class OptimizerClass():
                          save_history:bool = False,
                          **convergence_params):
         with wandb.init(reinit = True,**self.wandb) as wb, tqdm(initial = self._i,total=convergence_params['max_iter']) as pbar:
-            for min_loss,phi,y in zip(self.loss(self.history[1]).cummin(0).values,*self.history[:2]):
-                log = {'loss':y.item(), 
+            for min_loss,phi,y in zip(self.loss(*self.history).cummin(0).values,*self.history[:2]):
+                log = {'loss':self.loss(phi,y).item(), 
                         'min_loss':min_loss}
                 #for i,p in enumerate(phi.flatten()):
                 #    log['phi_%d'%i] = p
@@ -163,7 +165,8 @@ class LGSO(OptimizerClass):
             self.history = (torch.cat([self.history[0], phi]),torch.cat([self.history[1], y]),torch.cat([self.history[2], x]))
     #def n_calls(self):
     #    return self._i*self.samples_phi*self.true_model.n_samples
-    
+
+
     
     
 
@@ -202,37 +205,52 @@ class BayesianOptimizer(OptimizerClass):
                     self.model = model_scheduler[i]
             if self._i > reduce_bounds and reduce_bounds>0:
                 self.reduce_bounds() 
+        self.model.deterministic_loss = true_model.deterministic_loss if hasattr(true_model,'deterministic_loss') else None
+        self.true_model.apply_det_loss = False
+        
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''
-        acquisition = self.acquisition_fn(self.model, (-1)*self.history[1].min().to(self.device)) #should we consider only cleaned data minimum?
-        #acquisition = self.acquisition_fn(self.model, self.history[1].min().to(self.device), maximize=False)
-        return botorch.optim.optimize.optimize_acqf(acquisition, self.bounds.to(self.device), **self.acquisition_params)[0]
+        
+        loss_best = self.get_optimal()[1].flatten()*(-1)
+        acquisition = self.acquisition_fn(self.model, loss_best.to(self.device)) 
+        #constraints = [(self.true_model.get_constraints_fn,1)]
+        return botorch.optim.optimize.optimize_acqf(acquisition, self.bounds.to(self.device),**self.acquisition_params)[0]
+    
     def optimization_iteration(self):
         if self._i in self.model_scheduler:
             self.model = self.model_scheduler[self._i](self.bounds,self.device)
         if self._i == self._iter_reduce_bounds:
             self.reduce_bounds()
         self.fit_surrogate_model()
-        phi = self.get_new_phi()
+        phi = self.get_new_phi().cpu()
         y = self.true_model(phi)
         self.update_history(phi,y)
-
-        y,idx = self.loss(y).flatten().min(0)
+        print('weight', self.true_model.get_weight(phi))
+        print('weight loss', self.true_model.weight_loss(self.true_model.get_weight(phi)))
+        print('LENGTH', self.true_model.get_total_length(phi))
+        print('constraints', self.true_model.get_constraints(phi))
+        print('det_loss', self.true_model.deterministic_loss(phi,y))
+        print('y:',y)
+        print('loss:', self.loss(phi,y))
+        y,idx = self.loss(phi,y).flatten().min(0)
         return phi[idx],y
+    
     def clean_training_data(self):
         '''Remove samples in D that are not contained in the bounds.'''
         idx = self.bounds[0].le(self.history[0]).logical_and(self.bounds[1].ge(self.history[0])).all(-1)
         return (self.history[0][idx],(-1)*self.history[1][idx])
+    
     def reduce_bounds(self,local_bounds:float = 0.1):
         '''Reduce the bounds to the region (+-local_bounds) of the current optimal, respecting also the previous bounds.'''
         phi = self.get_optimal()[0]
         new_bounds = torch.stack([phi*(1-local_bounds),phi*(1+local_bounds)])
         new_bounds[0] = torch.maximum(self.bounds[0],new_bounds[0])
         new_bounds[1] = torch.minimum(self.bounds[1],new_bounds[1])
+        new_bounds[1] = torch.maximum(new_bounds[1],0.15*torch.ones_like(new_bounds[1]))
         self.bounds = new_bounds
-        self.model.bounds = new_bounds.to(self.device)#should we change the bounds in the model (used to normalize samples)?
-        #Then we need to 'clean' D.
-        #Even if not, should we clean D?
+        self.model.bounds = new_bounds.to(self.device)
+    def loss(self,x,y):
+        return self.true_model.deterministic_loss(x,y)
     
     
 if __name__ == '__main__':
@@ -243,6 +261,7 @@ if __name__ == '__main__':
     dimensions_phi = 2
     bounds = [-10.,10.]
     bounds = torch.as_tensor(bounds,device=dev).view(2,-1)  
+    
     if bounds.size(0) != dimensions_phi: bounds = bounds.repeat(1,dimensions_phi)
     problem = stochastic_RosenbrockProblem(n_samples=n_samples_x,average_x=True)
     model = GP_RBF(bounds)#GANModel(problem,10,1,16,epochs = 20,iters_discriminator=25,iters_generator=5,device=dev)

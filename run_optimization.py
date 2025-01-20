@@ -38,6 +38,7 @@ parser.add_argument("--model_switch", type=int,default = -1)
 parser.add_argument("--resume", action='store_true')
 parser.add_argument("--reduce_bounds", type=int, default=-1)
 parser.add_argument("--parallel", type=int, default = 1)
+parser.add_argument("--simulated_fields", action='store_true')
 args = parser.parse_args()
 
 wandb.login()
@@ -99,17 +100,17 @@ if __name__ == "__main__":
     if args.problem == 'stochastic_rosenbrock': problem_fn = problems.stochastic_RosenbrockProblem(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
-    elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi)
+    elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=True)
+    elif args.problem == 'ship_warm': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=False)
 
     if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
     #add phi initial here?
     else:
         phi_range = torch.as_tensor(args.phi_bounds,device=dev,dtype=torch.get_default_dtype()).view(2,-1)  
         if phi_range.size(1) != args.dimensions: phi_range = phi_range.repeat(1,args.dimensions)
-
-    if args.model == 'gp_rbf': model = GP_RBF(phi_range,dev)
-    elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_range,dev)
-    elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,dev)
+    if args.model == 'gp_rbf': model = GP_RBF(phi_range,device = dev)
+    elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_range,device = dev)
+    elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,device = dev)
     elif args.model == 'gan': model = GANModel(42,484449,64,device = dev)
     model_scheduler = {args.model_switch:SingleTaskIBNN,
                        #args.reduce_bounds:GP_RBF,
@@ -117,12 +118,12 @@ if __name__ == "__main__":
 
     optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range, model_scheduler)
 
-    phi,y = optimizer.get_optimal()
+    phi,y,idx = optimizer.get_optimal(return_idx=True)
     with open(os.path.join(OUTPUTS_DIR,"phi_optm.txt"), "w") as txt_file:
         for p in phi.flatten():
             txt_file.write(str(p.item()) + "\n")
     print('Optimal phi', phi)
-    print('Optimal y', y.item(),'|')
+    print('Optimal y', y.item(),f' at iteration {idx}')
     print(f'Calls to the function: {optimizer.n_calls()}')
     min_loss = torch.cummin(optimizer.history[1],dim=0).values
     

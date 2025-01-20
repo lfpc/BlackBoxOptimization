@@ -9,39 +9,50 @@ from matplotlib import pyplot as plt
 from utils import standardize
 
 class GP_RBF(botorch.models.SingleTaskGP):
-    def __init__(self,bounds,device = 'cpu'):
+    def __init__(self,bounds,device = 'cpu', deterministic_loss = None):
         self.device = device
         self.bounds = bounds.to(device)
+        self.deterministic_loss = deterministic_loss
+        self.mean_y = 0
+        self.std_y = 0
     def fit(self,X:torch.tensor,Y:torch.tensor,use_scipy = True,options:dict = None,**kwargs):
-        #self.train()
         X = X.to(self.device)
         Y = Y.to(self.device)
-        Y = standardize(Y)
+        #Y = standardize(Y)
         X = self.normalization(X,self.bounds)
-        super().__init__(X,Y,**kwargs)
+        super().__init__(X,Y,outcome_transform = botorch.models.transforms.Standardize(m=1),**kwargs)
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self)
         if use_scipy:
             botorch.fit.fit_gpytorch_mll(mll)
         else:
             botorch.fit.fit_gpytorch_mll(mll,optimizer=botorch.optim.fit.fit_gpytorch_mll_torch, options=options)
         return self
-    def forward(self,x):
-        x = self.normalization(x, bounds=self.bounds)
-        return super().forward(x)
     @staticmethod
-    def normalization(X, bounds):
+    def normalization(X:torch.tensor, bounds):
+        if X.le(1).all(): print('Warning: X is already normalized')
         return (X - bounds[0,:]) / (bounds[1,:] - bounds[0,:])
-    def predict(self,x,return_std = False,**kwargs):
+    def _predict(self,x,return_std = False,**kwargs):
         #self.eval()
-        x = self.normalization(x,self.bounds)
         observed_pred = self.posterior(x,**kwargs)
         y_pred = observed_pred.mean.cpu()
         std_pred = observed_pred.mvn.covariance_matrix.diag().sqrt().cpu()
         if return_std: return y_pred,std_pred
         else: return y_pred
-    
-class GP_Cylindrical_Custom(GP_RBF):#, botorch.models.gpytorch.GPyTorchModel):  # FixedNoiseGP SingleTaskGP
-    def __init__(self, bounds:torch.tensor,device = 'cpu'):
+    def posterior(self, X, **kwargs):
+        """
+        Override posterior to apply weight loss transformation for scalar outputs
+        """
+        posterior = super().posterior(self.normalization(X, self.bounds), **kwargs)
+        mean = posterior.loc*(-1) #we are fitting -y so we minimize
+        if self.deterministic_loss is not None: 
+            mean = self.deterministic_loss(X.reshape(-1,self.bounds.size(-1)),mean.reshape(-1,1)).reshape(mean.shape)
+        #mean = self.deterministic_loss(X.squeeze(1),mean.squeeze(1)).reshape(mean.shape)
+        posterior.loc = mean*(-1)
+        return posterior
+
+
+class GP_Cylindrical_Custom(GP_RBF):
+    def __init__(self, bounds:torch.tensor,device = 'cpu', deterministic_loss = None):
         super().__init__(bounds,device)
         self.bounds = self.bounds.t().to(device)
         if self.bounds.dim() == 1: self.bounds = self.bounds.unsqueeze(-1)
@@ -61,14 +72,8 @@ class GP_Cylindrical_Custom(GP_RBF):#, botorch.models.gpytorch.GPyTorchModel):  
             angular_weights_prior=AngularWeightsPrior()
         ))
         return self.to(self.device)
-    
-    def forward(self, x):
-        x = self.normalization_s(x, bounds=self.bounds)
-        mean_x = self.mean_module(x)
-        covar_x = self.covar_module(x)
-        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
     @staticmethod
-    def normalization_s(x, bounds):
+    def normalization(x, bounds):
         dim = len(bounds)
         # from bounds to [-1, 1]^d
         x = (x - bounds.mean(dim=-1)) / ((bounds[:,1] - bounds[:,0]) / 2)
@@ -79,15 +84,15 @@ class GP_Cylindrical_Custom(GP_RBF):#, botorch.models.gpytorch.GPyTorchModel):  
 
 class SingleTaskIBNN(GP_RBF):
     def __init__(self, bounds, device = torch.device('cpu'),
-                 var_w = 10.,var_b = 1.3,depth = 3
+                 var_w = None,var_b = None,depth = 3, deterministic_loss = None
                 ):
         super().__init__(bounds,device)
         self.model_args = {'var_w':var_w,'var_b':var_b, 'depth':depth}
-        self._kernel = None #IBNN_ReLU(bounds.size(-1), var_w, var_b, depth)
+        self._kernel = None
     def fit(self,X,Y,use_scipy = True,options:dict = None,**kwargs):
-        if self._kernel is None: kernel = IBNN_ReLU(self.bounds.size(-1), **self.model_args)
+        if self._kernel is None: kernel = botorch.models.kernels.InfiniteWidthBNNKernel(depth=self.model_args['depth'])
         else: kernel = self._kernel
-        super().fit(X,Y,covar_module=kernel, outcome_transform=botorch.models.transforms.outcome.Standardize(m=1),use_scipy = use_scipy,options= options,**kwargs)
+        super().fit(X,Y,covar_module=kernel,use_scipy = use_scipy,options= options,**kwargs)
         self._kernel = kernel
         return self
     

@@ -43,7 +43,6 @@ def split_array_parallel(phi,
     return splits
 
 
-
 def split_array(arr, K):
     N = len(arr)
     base_size = N // K
