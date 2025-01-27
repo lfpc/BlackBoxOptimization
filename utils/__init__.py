@@ -5,6 +5,9 @@ def standardize(y:torch.tensor):
     std = y.std() if y.std()>0 else 1
     return (y-y.mean())/std
 
+def soft_clamp(x, max_mean = 1.E6):
+    return torch.tanh(x/max_mean)*max_mean
+
 def get_split_indices(num_splits, N):
     '''Get indices that divide array of size N into num_splits splits.
     If R := N%num_splits > 0, the rest is divided into the R new divisions'''

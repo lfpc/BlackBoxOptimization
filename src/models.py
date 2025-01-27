@@ -9,12 +9,9 @@ from matplotlib import pyplot as plt
 from utils import standardize
 
 class GP_RBF(botorch.models.SingleTaskGP):
-    def __init__(self,bounds,device = 'cpu', deterministic_loss = None):
+    def __init__(self,bounds,device = 'cpu'):
         self.device = device
         self.bounds = bounds.to(device)
-        self.deterministic_loss = deterministic_loss
-        self.mean_y = 0
-        self.std_y = 0
     def fit(self,X:torch.tensor,Y:torch.tensor,use_scipy = True,options:dict = None,**kwargs):
         X = X.to(self.device)
         Y = Y.to(self.device)
@@ -35,20 +32,11 @@ class GP_RBF(botorch.models.SingleTaskGP):
         #self.eval()
         observed_pred = self.posterior(x,**kwargs)
         y_pred = observed_pred.mean.cpu()
-        std_pred = observed_pred.mvn.covariance_matrix.diag().sqrt().cpu()
+        std_pred = observed_pred.variance.diag().sqrt().cpu()
         if return_std: return y_pred,std_pred
-        else: return y_pred
+        else: return 
     def posterior(self, X, **kwargs):
-        """
-        Override posterior to apply weight loss transformation for scalar outputs
-        """
-        posterior = super().posterior(self.normalization(X, self.bounds), **kwargs)
-        mean = posterior.loc*(-1) #we are fitting -y so we minimize
-        if self.deterministic_loss is not None: 
-            mean = self.deterministic_loss(X.reshape(-1,self.bounds.size(-1)),mean.reshape(-1,1)).reshape(mean.shape)
-        #mean = self.deterministic_loss(X.squeeze(1),mean.squeeze(1)).reshape(mean.shape)
-        posterior.loc = mean*(-1)
-        return posterior
+        return super().posterior(self.normalization(X, self.bounds), **kwargs)
 
 
 class GP_Cylindrical_Custom(GP_RBF):

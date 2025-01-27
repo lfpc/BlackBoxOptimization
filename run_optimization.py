@@ -3,7 +3,7 @@ from botorch import acquisition, settings
 from src.optimizer import BayesianOptimizer,LGSO
 from src import problems
 from src.models import GP_RBF, GP_Cylindrical_Custom, SingleTaskIBNN, GANModel
-
+from utils.acquisition_functions import Custom_LogEI
 from matplotlib import pyplot as plt
 import argparse
 import wandb
@@ -62,7 +62,7 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, mo
     #assert initial_phi.ge(phi_range[0]).logical_and(initial_phi.le(phi_range[1])).all()
 
     if args.optimization == 'bayesian':
-        acquisition_fn = acquisition.qLogExpectedImprovement if args.parallel else acquisition.LogExpectedImprovement
+        acquisition_fn = Custom_LogEI#acquisition.qLogExpectedImprovement if args.parallel>1 else acquisition.LogExpectedImprovement
         q = min(args.parallel,problem_fn.cores)
         optimizer = BayesianOptimizer(problem_fn,model,
                                       phi_range,acquisition_fn=acquisition_fn,

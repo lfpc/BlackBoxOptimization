@@ -6,8 +6,11 @@ from matplotlib import pyplot as plt
 from pickle import dump,  load
 import wandb
 from os.path import join
-from gzip import open as gzip_open
+#from gzip import open as gzip_open
 from utils import standardize
+from utils.acquisition_functions import Custom_LogEI
+torch.set_default_dtype(torch.float64)
+from time import time
 
 
 class OptimizerClass():
@@ -26,7 +29,7 @@ class OptimizerClass():
         self.true_model = true_model
         if len(history)==0:
             if resume: 
-                with gzip_open(join(outputs_dir,'history.pkl')) as f:
+                with open(join(outputs_dir,'history.pkl'), "rb") as f:
                     self.history = load(f)
             else: self.history = (initial_phi.cpu().view(-1,initial_phi.size(0)),
                       true_model(initial_phi).cpu().view(-1,1))
@@ -75,20 +78,19 @@ class OptimizerClass():
                 #    log['phi_%d'%i] = p
                 wb.log(log)
             while not self.stopping_criterion(**convergence_params):
-                phi,loss = self.optimization_iteration()
-                pbar.update()
-                #for i,p in enumerate(phi.flatten()): #Send phi to wandb
-                #    log['phi_%d'%i] = p
+                phi,loss, idx = self.optimization_iteration()
                 if (loss<min_loss.to(self.device)):
                     min_loss = loss
                     if save_optimal_phi:
                         with open(join(self.outputs_dir,f'phi_optm.txt'), "w") as txt_file:
                             for p in phi.view(-1):
                                 txt_file.write(str(p.item()) + "\n")
+                    pbar.set_description(f"Opt: {min_loss.item()} (it. {idx})")
+                pbar.update()
                 log = {'loss':loss.item(), 
                         'min_loss':min_loss.item()}
                 if save_history:
-                    with gzip_open(join(self.outputs_dir,f'history.pkl'), "wb") as f:
+                    with open(join(self.outputs_dir,f'history.pkl'), "wb") as f:
                         dump(self.history, f)
                 wb.log(log)
                 self._i += 1
@@ -169,7 +171,6 @@ class LGSO(OptimizerClass):
 
     
     
-
 class BayesianOptimizer(OptimizerClass):
     
     def __init__(self,true_model,
@@ -177,8 +178,8 @@ class BayesianOptimizer(OptimizerClass):
                  bounds:tuple,
                  initial_phi:torch.tensor = None,
                  device = torch.device('cuda'),
-                 acquisition_fn = botorch.acquisition.LogExpectedImprovement,
-                 acquisition_params = {'q':1,'num_restarts': 30, 'raw_samples':5000},
+                 acquisition_fn = Custom_LogEI,
+                 acquisition_params = {'q':1,'num_restarts': 30, 'raw_samples':4096},
                  history:tuple = (),
                  model_scheduler:dict = {},
                  WandB:dict = {'name': 'BayesianOptimization'},
@@ -205,35 +206,38 @@ class BayesianOptimizer(OptimizerClass):
                     self.model = model_scheduler[i]
             if self._i > reduce_bounds and reduce_bounds>0:
                 self.reduce_bounds() 
-        self.model.deterministic_loss = true_model.deterministic_loss if hasattr(true_model,'deterministic_loss') else None
         self.true_model.apply_det_loss = False
-        
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''
-        
+        t1 = time()
         loss_best = self.get_optimal()[1].flatten()*(-1)
-        acquisition = self.acquisition_fn(self.model, loss_best.to(self.device)) 
-        #constraints = [(self.true_model.get_constraints_fn,1)]
+        acquisition = self.acquisition_fn(self.model, 
+                                        loss_best.to(self.device), 
+                                        deterministic_fn=self.true_model.deterministic_loss if hasattr(self.true_model,'deterministic_loss') else None,
+                                        constraint_fn=self.true_model.get_constraints if hasattr(self.true_model,'get_constraints') else None)
         return botorch.optim.optimize.optimize_acqf(acquisition, self.bounds.to(self.device),**self.acquisition_params)[0]
     
     def optimization_iteration(self):
         if self._i in self.model_scheduler:
             self.model = self.model_scheduler[self._i](self.bounds,self.device)
-        if self._i == self._iter_reduce_bounds:
+        if self._i in (self._iter_reduce_bounds, self._iter_reduce_bounds+100):
             self.reduce_bounds()
+        t1 = time()
         self.fit_surrogate_model()
+        print('model fit time: ', time()-t1)
+        t1 = time()
         phi = self.get_new_phi().cpu()
+        print('acquisition function optimization time: ', time()-t1)
         y = self.true_model(phi)
         self.update_history(phi,y)
         print('weight', self.true_model.get_weight(phi))
         print('weight loss', self.true_model.weight_loss(self.true_model.get_weight(phi)))
         print('LENGTH', self.true_model.get_total_length(phi))
         print('constraints', self.true_model.get_constraints(phi))
-        print('det_loss', self.true_model.deterministic_loss(phi,y))
-        print('y:',y)
+        print('muon loss:', y)
         print('loss:', self.loss(phi,y))
         y,idx = self.loss(phi,y).flatten().min(0)
-        return phi[idx],y
+        return phi[idx],y, idx
     
     def clean_training_data(self):
         '''Remove samples in D that are not contained in the bounds.'''
@@ -246,7 +250,7 @@ class BayesianOptimizer(OptimizerClass):
         new_bounds = torch.stack([phi*(1-local_bounds),phi*(1+local_bounds)])
         new_bounds[0] = torch.maximum(self.bounds[0],new_bounds[0])
         new_bounds[1] = torch.minimum(self.bounds[1],new_bounds[1])
-        new_bounds[1] = torch.maximum(new_bounds[1],0.15*torch.ones_like(new_bounds[1]))
+        new_bounds[1] = torch.maximum(new_bounds[1],0.1*torch.ones_like(new_bounds[1]))
         self.bounds = new_bounds
         self.model.bounds = new_bounds.to(self.device)
     def loss(self,x,y):
