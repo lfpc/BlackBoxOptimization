@@ -142,15 +142,16 @@ class ShipMuonShield():
            parametrization['M4'] + parametrization['M5'] + parametrization['M6']
     
     DEFAULT_PHI = warm_opt#sc_v6
+    DEF_N_SAMPLES = 643118
     full_dim = 63
 
     def __init__(self,
-                 W0:float = 1501716.875,#1558731.375,
-                 L0:float = 29.6,
+                 W0:float = 1700000.,
+                 L0:float = 29.7,
                  cores:int = 45,
                  n_samples:int = 0,
-                 input_dist:float = 2.,
-                 sensitive_plane:float = 82,#distance between end of shield and sensplane
+                 input_dist:float = None,
+                 sensitive_plane:float = 82,
                  average_x:bool = True,
                  apply_det_loss:bool = True,
                  weight_loss_fn:bool = 'exponential',
@@ -163,6 +164,7 @@ class ShipMuonShield():
                  y_margin = 3,
                  dimensions_phi = 34,
                 muons_file = join(PROJECTS_DIR,'MuonsAndMatter/data/enriched_input.pkl'),
+                fields_file = None,
                  ) -> None:
         
         self.left_margin = left_margin
@@ -185,7 +187,7 @@ class ShipMuonShield():
         self.dimensions_phi = dimensions_phi   
         self.cavern = cavern
         self.apply_det_loss = apply_det_loss
-        self.lambda_constraints = 1000
+        self.lambda_constraints = 50
 
         if dimensions_phi == 29: self.params_idx = self.fixed_sc
         elif dimensions_phi == 31: self.params_idx = self.hybrid_no_xmgap_idx   
@@ -194,12 +196,12 @@ class ShipMuonShield():
         elif dimensions_phi == 72: self.params_idx = slice(None)
         self.DEFAULT_PHI = self.DEFAULT_PHI[self.params_idx]
 
-        
+
         sys.path.insert(1, join(PROJECTS_DIR,'MuonsAndMatter/python/bin'))
         from run_simulation import run, get_field
         self.run_muonshield = run
         self.run_magnet = get_field
-        self.fields_file = join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.pkl')
+        self.fields_file = fields_file#join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.pkl')
 
     def sample_x(self,phi=None):
         with gzip.open(self.muons_file, 'rb') as f:
@@ -226,13 +228,13 @@ class ShipMuonShield():
         self.run_magnet(True,phi.cpu().numpy(),file_name = self.fields_file,d_space = d_space,resol = resol, cores = cores, fSC_mag = self.fSC_mag)
 
     def simulate(self,phi:torch.tensor,muons = None, return_nan = False): 
-        phi = phi.flatten() 
         phi = self.add_fixed_params(phi)
         if muons is None: muons = self.sample_x()
 
         workloads = split_array(muons,self.cores)
-        #if self.simulate_fields: 
-        #    self.simulate_mag_fields(phi)
+        if self.simulate_fields: 
+            print('SIMULATING MAGNETIC FIELDS')
+            self.simulate_mag_fields(phi)
         with Pool(self.cores) as pool:
             result = pool.starmap(self.run_muonshield, 
                                   [(workload,phi.cpu().numpy(),self.input_dist,True,self.fSC_mag,self.sensitive_film_params,self.cavern,
@@ -246,9 +248,7 @@ class ShipMuonShield():
         if len(all_results) == 0:
             all_results = [[np.nan]*8]
         all_results = torch.as_tensor(np.concatenate(all_results, axis=0).T,device = phi.device,dtype=torch.get_default_dtype())
-        #all_results[3],all_results[4],all_results[5] = self.propagate_to_sensitive_plane(*all_results[:6])
-        #return all_results
-        return *all_results, torch.as_tensor(weight,device = phi.device)
+        return all_results
     
     def muon_loss(self,x,y,particle, weight = None):
         charge = -1*torch.sign(particle)
@@ -297,10 +297,10 @@ class ShipMuonShield():
         elif self.weight_loss_fn == 'linear_length':
             return W/(1-L/self.L0)
         else: return 1
-    def calc_loss(self,px,py,pz,x,y,z,particle,W = None, L = None):
-        loss = self.muon_loss(x,y,particle).sum()+1
+    def calc_loss(self,px,py,pz,x,y,z,particle,factor,W = None, L = None):
+        loss = self.muon_loss(x,y,particle,factor).sum()+1
         if self.apply_det_loss: loss *= self.weight_loss(W,L)+self.get_constraints(phi)
-        return loss.to(torch.get_default_dtype())
+        return loss.to(torch.get_default_dtype()).view(-1,1)
     def __call__(self,phi,muons = None):
         L = self.get_total_length(phi)
         W = self.get_weight(phi)
@@ -311,8 +311,8 @@ class ShipMuonShield():
             for p in phi:
                 y.append(self(p))
             return torch.stack(y)
-        px,py,pz,x,y,z,particle,geant_magnet_weight = self.simulate(phi,muons)
-        return self.calc_loss(None,None,None,x,y,None,particle,W,L)
+        
+        return self.calc_loss(*self.simulate(phi,muons),W,L)
     
     def propagate_to_sensitive_plane(self,px,py,pz,x,y,z, epsilon = 1e-12):
         '''Deprecated'''
@@ -359,6 +359,7 @@ class ShipMuonShield():
         y = y.view(-1,1)
         W = self.get_weight(phi)
         loss = self.weight_loss(W)*y
+        return loss
         #loss = loss + self.get_constraints(phi)
         loss = soft_clamp(loss,1.E8)
         return loss
@@ -432,7 +433,6 @@ class ShipMuonShield():
 
 
 class ShipMuonShieldCluster(ShipMuonShield):
-    DEF_N_SAMPLES = 484449
     def __init__(self,
                  W0:float = 1700000.,
                  L0:float = 29.7,
@@ -450,43 +450,26 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  return_files:bool = False,
                  apply_det_loss:bool = True,
                  **kwargs) -> None:
+        super().__init__(W0 = W0, L0 = L0, cores = cores, n_samples = n_samples, weight_loss_fn = weight_loss_fn,
+                         fSC_mag = fSC_mag, simulate_fields = simulate_fields,
+                         dimensions_phi = dimensions_phi, apply_det_loss = apply_det_loss, seed = seed)
 
-        self.W0 = W0
-        self.L0 = L0
-        self.cores = cores
-        self.weight_loss_fn = weight_loss_fn
         if 0<n_samples<self.DEF_N_SAMPLES: self.n_samples = n_samples
         else: self.n_samples = self.DEF_N_SAMPLES
 
-        self.dimensions_phi = dimensions_phi
-        self.simulate_fields = simulate_fields
-
+        self.parallel = parallel
         self.manager_cert_path = getenv('STARCOMPUTE_MANAGER_CERT_PATH')
         self.client_cert_path = getenv('STARCOMPUTE_CLIENT_CERT_PATH')
         self.client_key_path = getenv('STARCOMPUTE_CLIENT_KEY_PATH')
         self.server_url = 'wss://%s:%s'%(manager_ip, port)
-        self.fSC_mag = fSC_mag
         self.local = local
         self.return_files = return_files
-        self.seed = seed
-        self.apply_det_loss = apply_det_loss
-        self.lambda_constraints = 50
         if not local:
             from starcompute.star_client import StarClient
             self.star_client = StarClient(self.server_url, self.manager_cert_path, 
                                     self.client_cert_path, self.client_key_path)
-        self.parallel = parallel
-        if dimensions_phi == 29: self.params_idx = self.fixed_sc
-        elif dimensions_phi == 31: self.params_idx = self.hybrid_no_xmgap_idx
-        elif dimensions_phi == 34: self.params_idx = self.hybrid_idx
-        elif dimensions_phi == 54: self.params_idx = self.warm_idx
-        elif dimensions_phi == self.full_dim: self.params_idx = slice(None)
-        self.DEFAULT_PHI = self.DEFAULT_PHI[self.params_idx]
-
-        sys.path.insert(1, join(PROJECTS_DIR,'MuonsAndMatter/python/bin'))
-        from run_simulation import get_field
-        self.run_magnet = get_field
-        self.fields_file = join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.pkl')
+        if simulate_fields:
+            self.fields_file = join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.pkl')
         
     def sample_x(self,phi = None):
         if phi is not None and phi.dim()==2:
@@ -501,6 +484,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
         phi = self.add_fixed_params(phi)
         if muons is None: muons = self.sample_x(phi)
         if self.simulate_fields: 
+            print('SIMULATING MAGNETIC FIELDS')
             self.simulate_mag_fields(phi, cores = 9)
         inputs = split_array_idx(phi.cpu().to(torch.float16),muons, file = file) 
         result = self.star_client.run(inputs)
@@ -510,16 +494,14 @@ class ShipMuonShieldCluster(ShipMuonShield):
                 with open(file_name, 'rb') as f:
                     outputs.append(pickle.load(f))
             outputs = torch.cat(outputs,axis=1)
-            result,W = outputs[:-1],outputs[-1]
+            result = outputs[:-1]
         else:
-            result,W = torch.as_tensor(result,device = phi.device).T
+            result = torch.as_tensor(result,device = phi.device).T
 
         if not (phi.dim()==1 or phi.size(0)==1):
-            W = W.view(phi.size(0),-1)
             result = result.view(phi.size(0),-1)
-        W = W.mean(-1)
         if reduction == 'sum': result = result.sum(-1)
-        return result,W
+        return result
     
     def __call__(self,phi,muons = None, file = None):
         if phi.dim()>1 and not self.parallel:
@@ -529,17 +511,9 @@ class ShipMuonShieldCluster(ShipMuonShield):
             return torch.stack(y)
         W = self.get_weight(phi)
         if self.get_constraints(phi) > 100 or W>3E6: return torch.ones((phi.size(0),1),device=phi.device)*1E6
-        #if W>=3E6: return torch.tensor([1e8])
-        try: 
-            loss,geant_magnet_weight = self.simulate(phi,muons, file)
-            loss += 1
-            if self.apply_det_loss: loss *= self.weight_loss(W).item()+self.get_constraints(phi).item()
-        except: #If cluster fails, use local simulation
-            print('USING LOCAL SIMULATION')
-            cores = self.cores
-            self.cores = 45
-            loss = super().__call__(phi)
-            self.cores = cores
+        loss = self.simulate(phi,muons, file)
+        loss += 1
+        if self.apply_det_loss: loss *= self.weight_loss(W).item()+self.get_constraints(phi).item()
         return loss.to(torch.get_default_dtype())    
     
 
@@ -588,15 +562,19 @@ if __name__ == '__main__':
             loss_muons += 1
         else:
             muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC, dimensions_phi=54,
-                                         sensitive_plane=82,input_dist = 2.,simulate_fields=args.field_map, seed=seed)
+                                         sensitive_plane=82,input_dist = None,simulate_fields=args.field_map, seed=seed
+                                         )
             muon_shield.fields_file = join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields_mm.pkl')
             if args.field_map: 
                 muon_shield.simulate_mag_fields(phi)
             t1 = time.time()
-            px,py,pz,x,y,z,particle,factor,W = muon_shield.simulate(torch.as_tensor(phi,dtype = torch.float32))
+            px,py,pz,x,y,z,particle,factor = muon_shield.simulate(torch.as_tensor(phi,dtype = torch.float32))
             print('n_hits: ',x.numel())
             t2 = time.time()
             loss_muons = muon_shield.muon_loss(x,y,particle, factor).sum()+1
+            n_hits = factor.sum()
+            n_inputs = muon_shield.sample_x()[:,7].sum()
+            rate = n_hits/n_inputs
         W_new = muon_shield.get_weight(torch.as_tensor(phi,dtype = torch.float32))
         L = muon_shield.get_total_length(torch.as_tensor(phi,dtype = torch.float))
         print('loss_muons',loss_muons)
@@ -605,17 +583,21 @@ if __name__ == '__main__':
         print('length', L)     
         loss = muon_shield.deterministic_loss(phi,loss_muons)
         print('loss',loss)
-        d[name] = (W,loss_muons,loss, W_new, L, C)
+        print('n_hits',n_hits)
+        print('n_inputs',n_inputs)
+        print(f'rate: {rate:.1e}')
+        d[name] = (loss_muons,loss, W_new, L, C, n_hits, rate)
         
         seed += 5
         print(f"took {t2-t1} sec")
     print('Results:')
-    for name,(W,loss_muons,loss,W_new, L, C) in d.items():
+    for name,(loss_muons,loss,W_new, L, C, n_hits, rate) in d.items():
         print(name)
-        print(f"Weight GEANT: {W}")
-        print(f"Weight PYTHON: {W_new}")
+        print(f"Weight: {W_new}")
         print(f"Length: {L}")
         print(f"Constraints Loss: {C}")
         print(f"Muon Loss: {loss_muons}")
         print(f"Total Loss: {loss}")
+        print(f"n_hits: {n_hits}")
+        print(f"rate: {rate:.1e}")
     print(f"Total Time: {time.time()-t0}")

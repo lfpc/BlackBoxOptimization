@@ -86,7 +86,7 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, mo
                          resume=args.resume)
 
     optimizer.run_optimization(save_optimal_phi=True,save_history=args.save_history,
-                               max_iter = max_iter,use_scipy=args.scipy,)
+                               max_iter = max_iter)
 
     return optimizer
 
@@ -111,7 +111,7 @@ if __name__ == "__main__":
     if args.model == 'gp_rbf': model = GP_RBF(phi_range,device = dev)
     elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_range,device = dev)
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,device = dev)
-    elif args.model == 'gan': model = GANModel(42,484449,64,device = dev)
+    elif args.model == 'gan': model = GANModel(42,problem_fn.DEF_N_SAMPLES,64,device = dev)
     model_scheduler = {args.model_switch:SingleTaskIBNN,
                        #args.reduce_bounds:GP_RBF,
                        }
