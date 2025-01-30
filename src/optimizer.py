@@ -7,9 +7,10 @@ from pickle import dump,  load
 import wandb
 from os.path import join
 #from gzip import open as gzip_open
-from utils import standardize
+import sys
+sys.path.append('..')
 from utils.acquisition_functions import Custom_LogEI
-torch.set_default_dtype(torch.float64)
+#torch.set_default_dtype(torch.float64)
 from time import time
 
 
@@ -18,7 +19,6 @@ class OptimizerClass():
     def __init__(self,true_model,
                  surrogate_model,
                  bounds:tuple,
-                 initial_phi:torch.tensor = None,
                  device = torch.device('cuda'),
                  history:tuple = (),
                  WandB:dict = {'name': 'Optimization'},
@@ -27,15 +27,10 @@ class OptimizerClass():
         
         self.device = device
         self.true_model = true_model
-        if len(history)==0:
-            if resume: 
-                with open(join(outputs_dir,'history.pkl'), "rb") as f:
-                    self.history = load(f)
-            else: self.history = (initial_phi.cpu().view(-1,initial_phi.size(0)),
-                      true_model(initial_phi).cpu().view(-1,1))
-        else: self.history = history
+        self.history = history
         #self.model = self.surrogate_model_class(*self.history).to(self.device)
-        self._i = len(self.history[0]) if resume else 0
+        if len(history)>0: self._i = len(self.history[0]) 
+        else: self._i =  0
         print('STARTING FROM i = ', self._i)
         self.model = surrogate_model
         self.bounds = bounds.cpu()
@@ -78,14 +73,14 @@ class OptimizerClass():
                 #    log['phi_%d'%i] = p
                 wb.log(log)
             while not self.stopping_criterion(**convergence_params):
-                phi,loss, idx = self.optimization_iteration()
+                phi,loss = self.optimization_iteration()
                 if (loss<min_loss.to(self.device)):
                     min_loss = loss
                     if save_optimal_phi:
                         with open(join(self.outputs_dir,f'phi_optm.txt'), "w") as txt_file:
                             for p in phi.view(-1):
                                 txt_file.write(str(p.item()) + "\n")
-                    pbar.set_description(f"Opt: {min_loss.item()} (it. {idx})")
+                    pbar.set_description(f"Opt: {min_loss.item()} (it. {self._i})")
                 pbar.update()
                 log = {'loss':loss.item(), 
                         'min_loss':min_loss.item()}
@@ -115,35 +110,45 @@ class LGSO(OptimizerClass):
         super().__init__(true_model,
                  surrogate_model,
                  bounds = bounds,
-                 initial_phi=initial_phi,
                  device = device,
                  history = history,
                  WandB = WandB,
                  outputs_dir = outputs_dir,
                  resume = resume)
-        
+        if resume: 
+            with open(join(outputs_dir,'history.pkl'), "rb") as f:
+                self.history = load(f)
+        else:
+            x = torch.as_tensor(self.true_model.sample_x(initial_phi),device=device)
+            y = self.true_model.simulate(initial_phi,x, return_nan = True).T
+            mask = y.eq(0).all(-1).logical_not()
+            self.update_history(initial_phi,y[mask],x[mask])
+            
+        self.current_phi = initial_phi if not resume else history[0][-1]
         self.epsilon = epsilon
         self.lhs_sampler = LatinHypercube(d=initial_phi.size(-1))
         self.samples_phi = samples_phi
-        self.current_phi = initial_phi if not resume else history[0][-1]
         self.phi_optimizer = torch.optim.SGD([self.current_phi],lr=0.1)
 
     def sample_phi(self,current_phi):
         sample = (2*self.lhs_sampler.random(n=self.samples_phi)-1)*self.epsilon
         sample = torch.as_tensor(sample,device=current_phi.device,dtype=torch.get_default_dtype())
         return sample+current_phi
-    def loss_fn(self,y):
-        return self.true_model.calc_loss(*y)
+    def loss(self,phi,y,x = None):
+        return self.true_model.calc_loss(*y.T)
     def clean_training_data(self):
         dist = (self.history[0]-self.current_phi).abs()#(self.history[0]-phi).norm(2,-1)
         is_local = dist.le(self.epsilon).all(-1)
         return self.history[0][is_local], self.history[1][is_local], self.history[2][is_local]
     def optimization_iteration(self):
         sampled_phi = self.sample_phi(self.current_phi)
-        x = self.true_model.sample_x(sampled_phi)
-        y = self.true_model.simulate(sampled_phi,x) #aqui já tem que transformar em concatenaçao...
-        mask = y.eq(0).all(-1)
-        self.update_history(sampled_phi[mask],y[mask],x[mask])
+        x = torch.as_tensor(self.true_model.sample_x(sampled_phi), device=self.device)
+        for phi in sampled_phi:
+            if phi.eq(self.current_phi).all(): continue
+            y = self.true_model.simulate(phi,x, return_nan = True).T
+            mask = y.eq(0).all(-1).logical_not()
+            assert y.shape[0] == x.shape[0]
+            self.update_history(phi,y[mask],x[mask])
         self.fit_surrogate_model()
         self.get_new_phi()
         return self.get_optimal()
@@ -156,18 +161,22 @@ class LGSO(OptimizerClass):
     def get_new_phi(self):
         self.phi_optimizer.zero_grad()
         x = self.true_model.sample_x(self.current_phi)
-        l = self.loss_fn(self.model(self.current_phi,x))
+        l = self.loss(self.model(self.current_phi,x))
         l.backward()
         self.phi_optimizer.step()
         return self.current_phi
     def update_history(self,phi,y,x):
-        if len(self.history) ==0: self.history = phi,y,x
+        phi,y,x = phi.cpu(),y.cpu(),x.cpu()
+        phi = phi.view(-1,phi.size(-1))
+        phi = phi.repeat(y.size(0), 1)
+        if len(self.history) ==0: 
+            self.history = phi,y.view(-1,y.size(-1)),x.view(-1,x.size(-1))
         else:
-            phi,y,x = phi.reshape(-1,self.history[0].shape[1]).to(phi.device), y.reshape(-1,self.history[1].shape[1]).to(phi.device),x.reshape(-1,self.history[2].shape[1]).to(phi.device)
+            phi,y,x = phi, y.reshape(-1,self.history[1].shape[1]).to(phi.device),x.reshape(-1,self.history[2].shape[1]).to(phi.device)
             self.history = (torch.cat([self.history[0], phi]),torch.cat([self.history[1], y]),torch.cat([self.history[2], x]))
-    #def n_calls(self):
-    #    return self._i*self.samples_phi*self.true_model.n_samples
 
+
+    
 
     
     
@@ -186,26 +195,38 @@ class BayesianOptimizer(OptimizerClass):
                  reduce_bounds:int = 4000,
                  outputs_dir = 'outputs',
                  resume:bool = False):
+        
         super().__init__(true_model,
                  surrogate_model,
                  bounds,
-                 initial_phi=initial_phi,
                  device = device,
                  history = history,
                  WandB = WandB,
                  outputs_dir = outputs_dir,
                  resume = resume)
-        
+        if len(history)==0:
+            if resume: 
+                with open(join(outputs_dir,'history.pkl'), "rb") as f:
+                    self.history = load(f)
+                    self.history = tuple(tensor.to(torch.get_default_dtype()) for tensor in self.history)
+                self._i = len(self.history[0])
+            else: 
+                self.history = (initial_phi.cpu().view(-1,initial_phi.size(0)),
+                true_model(initial_phi).cpu().view(-1,1))
+                self._i = 0
+        else: self.history = history
         self.acquisition_fn = acquisition_fn
         self.acquisition_params = acquisition_params
         self.model_scheduler = model_scheduler
         self._iter_reduce_bounds = reduce_bounds
-        if resume: #current model from model_scheduler
+        if resume: 
+            
             for i in model_scheduler:
                 if self._i > i and i>0:
                     self.model = model_scheduler[i]
             if self._i > reduce_bounds and reduce_bounds>0:
                 self.reduce_bounds() 
+                
         self.true_model.apply_det_loss = False
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''
@@ -220,7 +241,7 @@ class BayesianOptimizer(OptimizerClass):
     def optimization_iteration(self):
         if self._i in self.model_scheduler:
             self.model = self.model_scheduler[self._i](self.bounds,self.device)
-        if self._i in (self._iter_reduce_bounds, self._iter_reduce_bounds+100):
+        if self._i % 100 == 0 and self._i >= self._iter_reduce_bounds:
             self.reduce_bounds()
         t1 = time()
         self.fit_surrogate_model()
@@ -237,7 +258,7 @@ class BayesianOptimizer(OptimizerClass):
         print('muon loss:', y)
         print('loss:', self.loss(phi,y))
         y,idx = self.loss(phi,y).flatten().min(0)
-        return phi[idx],y, idx
+        return phi[idx],y
     
     def clean_training_data(self):
         '''Remove samples in D that are not contained in the bounds.'''

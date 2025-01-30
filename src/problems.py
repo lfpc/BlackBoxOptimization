@@ -112,6 +112,15 @@ class ShipMuonShield():
                        'M5': [5, 47, 48, 49, 50, 51, 52, 53, 54],
                        'M6': [6, 55, 56, 57, 58, 59, 60, 61, 62]}
     
+    old_warm_opt = torch.tensor([[231.00, 208.0, 207.0, 281.0, 248.0, 305.0, 242.0,
+                  50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00, 0.00,
+                  72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 1.0, 0.,
+                  54.0, 38.0, 46.0, 192.0, 14.0, 9.0, 1.0, 0.,
+                  10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 1.0, 0.,
+                  3.0, 32.0, 54.0, 24.0, 8.0, 8.0, 1.0, 0.,
+                  22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 1.0, 0.,
+                  33.0, 77.0, 85.0, 241.0, 9.0, 26.0, 1.0, 0.]])
+    
     warm_opt = torch.tensor([231.00, 170.89, 170.07, 230.87, 203.76, 250.59, 198.83,
                   50.00,  50.00, 118.00, 118.00,   2.00,   2.00, 1.00, 0.00,
                   72.00, 51.00, 29.00, 46.00, 10.00, 7.00, 1.00, 0.00,
@@ -193,7 +202,7 @@ class ShipMuonShield():
         elif dimensions_phi == 31: self.params_idx = self.hybrid_no_xmgap_idx   
         elif dimensions_phi == 34: self.params_idx = self.hybrid_idx
         elif dimensions_phi == 54: self.params_idx = self.warm_idx
-        elif dimensions_phi == 72: self.params_idx = slice(None)
+        elif dimensions_phi == self.full_dim: self.params_idx = slice(None)
         self.DEFAULT_PHI = self.DEFAULT_PHI[self.params_idx]
 
 
@@ -315,8 +324,6 @@ class ShipMuonShield():
         return self.calc_loss(*self.simulate(phi,muons),W,L)
     
     def propagate_to_sensitive_plane(self,px,py,pz,x,y,z, epsilon = 1e-12):
-        '''Deprecated'''
-        return x,y,z
         z += self.sensitive_plane
         x += self.sensitive_plane*px/(pz+epsilon)
         y += self.sensitive_plane*py/(pz+epsilon)
@@ -327,7 +334,7 @@ class ShipMuonShield():
         dX_bounds = [(5, 250)] * 2
         dY_bounds = [(5, 160)] * 2 
         gap_bounds = [(2, 150)] * 2 
-        yoke_bounds = [(0.25, 4)]
+        yoke_bounds = [(0.75,1.25)]#[(0.25, 4)]
         inner_gap_bounds = [(0., 150.)]
         bounds = magnet_lengths + 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + inner_gap_bounds)
         dY_bounds = [(5, 300)] * 2 
@@ -355,13 +362,12 @@ class ShipMuonShield():
         return new_phi.squeeze(0) if phi.size(0) == 1 else new_phi
     
     def deterministic_loss(self,phi,y):
-        return y
         y = y.view(-1,1)
-        W = self.get_weight(phi)
-        loss = self.weight_loss(W)*y
-        return loss
-        #loss = loss + self.get_constraints(phi)
-        loss = soft_clamp(loss,1.E8)
+        #W = self.get_weight(phi)
+        #loss = self.weight_loss(W)*y
+        loss = y
+        loss = loss + self.get_constraints(phi)
+        #loss = soft_clamp(loss,1.E8)
         return loss
     
     def get_constraints(self,phi):
@@ -369,6 +375,7 @@ class ShipMuonShield():
         phi = self.add_fixed_params(phi)
         phi = phi.view(-1,self.full_dim)
         constraints = fn_pen((self.get_total_length(phi)-self.L0)*100)
+        #return (constraints.reshape(-1,1)*self.lambda_constraints)#.clamp(1E8)
         #cavern constraints
         wall_gap = 2
         def get_cavern_bounds(z):
@@ -448,7 +455,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  fSC_mag:bool = True, 
                  simulate_fields:bool = False,
                  return_files:bool = False,
-                 apply_det_loss:bool = True,
+                 apply_det_loss:bool = False,
                  **kwargs) -> None:
         super().__init__(W0 = W0, L0 = L0, cores = cores, n_samples = n_samples, weight_loss_fn = weight_loss_fn,
                          fSC_mag = fSC_mag, simulate_fields = simulate_fields,
@@ -510,7 +517,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
                 y.append(self(p))
             return torch.stack(y)
         W = self.get_weight(phi)
-        if self.get_constraints(phi) > 100 or W>3E6: return torch.ones((phi.size(0),1),device=phi.device)*1E6
+        #if self.get_constraints(phi) > 100 or W>3E6: return torch.ones((phi.size(0),1),device=phi.device)*1E6
         loss = self.simulate(phi,muons, file)
         loss += 1
         if self.apply_det_loss: loss *= self.weight_loss(W).item()+self.get_constraints(phi).item()

@@ -257,19 +257,22 @@ class GANModel():
                 weight.data = av_weight.data
         return self
 
-    def generate(self, phi,x, normalise=True):
-        condition = torch.cat([phi,x],dim=-1)
+    def generate(self, condition, normalise=True):
+        #condition = torch.cat([phi,x],dim=-1)
         if normalise:
             condition = (condition - self._cond_mean) / self._cond_std
             condition[torch.isnan(condition)] = 0
         n = len(condition)
         z = torch.randn(n, self._noise_dim,device=self.device)
+        print('JSHDJAKSDHASKJDHAKSHJ')
+        print(z.shape,condition.shape)
         y = self._generator(z, condition)
         if normalise:
             y = y * self._y_std + self._y_mean
         return y
     def __call__(self,phi,x, normalise=True):
-        return self.generate(phi,x, normalise)
+        condition = torch.cat([phi,x],dim=-1)
+        return self.generate(condition, normalise)
     
     
 class VAEModel(torch.nn.Module):
