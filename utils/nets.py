@@ -164,9 +164,16 @@ class Discriminator(nn.Module):
     def forward(self, x, params):
         if self.attention_net:
             params = self.attention_net(params)
+        print('KSDJKALSDKADHASD')
+        print(x)
+        assert not torch.isnan(x).any(), "x have NaN values"
+        print(params)
+        assert not torch.isnan(params).any(), "params have NaN values"
         x = torch.cat([x, params], dim=1)
         # psi_embedding = self.pc(params[:, :self.psi_dim])
         # x = torch.cat([x, psi_embedding, params[:, self.psi_dim:]], dim=1)
+        print(self.fc1(x))
+        assert not torch.isnan(self.fc1.weight).any(), "fc1 weights have NaN values"
         h1 = torch.tanh(self.fc1(x))
         h2 = F.leaky_relu(self.fc2(h1))
         # h3 = F.leaky_relu(self.fc3(h2))

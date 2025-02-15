@@ -80,7 +80,7 @@ class SingleTaskIBNN(GP_RBF):
     def fit(self,X,Y,use_scipy = True,options:dict = None,**kwargs):
         if self._kernel is None: kernel = botorch.models.kernels.InfiniteWidthBNNKernel(depth=self.model_args['depth'])
         else: kernel = self._kernel
-        super().fit(X,Y,covar_module=kernel,use_scipy = use_scipy,options= options,**kwargs)
+        super().fit(X,Y,use_scipy = use_scipy,options= options,covar_module=kernel,**kwargs)
         self._kernel = kernel
         return self
     
@@ -264,8 +264,6 @@ class GANModel():
             condition[torch.isnan(condition)] = 0
         n = len(condition)
         z = torch.randn(n, self._noise_dim,device=self.device)
-        print('JSHDJAKSDHASKJDHAKSHJ')
-        print(z.shape,condition.shape)
         y = self._generator(z, condition)
         if normalise:
             y = y * self._y_std + self._y_mean
@@ -334,7 +332,6 @@ if __name__ == '__main__':
     model = GP_RBF(phi_range,device=dev)#VAEModel(11,epochs = 50)
     #GANModel(problem,10,1,10,epochs = 50,iters_discriminator=25,iters_generator=5)
     phi = torch.rand(100,dimensions_phi,device=dev)
-    print(phi)
     n_samples_x = 11
     x = problem.sample_x(phi,n_samples_x).view(-1,1)
     phi = phi.repeat(n_samples_x,1)

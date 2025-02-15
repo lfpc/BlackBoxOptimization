@@ -39,7 +39,7 @@ class OptimizerClass():
     def loss(self,x = None, y = None):
         return y
     def fit_surrogate_model(self,**kwargs):
-        D = self.clean_training_data() #Should we do this here, in every iteration?
+        D = self.clean_training_data()
         self.model = self.model.fit(*D,**kwargs)
     def update_history(self,phi,y):
         '''Append phi and y to D'''
@@ -119,7 +119,7 @@ class LGSO(OptimizerClass):
             with open(join(outputs_dir,'history.pkl'), "rb") as f:
                 self.history = load(f)
         else:
-            x = torch.as_tensor(self.true_model.sample_x(initial_phi),device=device)
+            x = torch.as_tensor(self.true_model.sample_x(initial_phi),device=device, dtype=torch.get_default_dtype())
             y = self.true_model.simulate(initial_phi,x, return_nan = True).T
             mask = y.eq(0).all(-1).logical_not()
             self.update_history(initial_phi,y[mask],x[mask])
@@ -142,7 +142,7 @@ class LGSO(OptimizerClass):
         return self.history[0][is_local], self.history[1][is_local], self.history[2][is_local]
     def optimization_iteration(self):
         sampled_phi = self.sample_phi(self.current_phi)
-        x = torch.as_tensor(self.true_model.sample_x(sampled_phi), device=self.device)
+        x = torch.as_tensor(self.true_model.sample_x(sampled_phi), device=self.device, dtype=torch.get_default_dtype())
         for phi in sampled_phi:
             if phi.eq(self.current_phi).all(): continue
             y = self.true_model.simulate(phi,x, return_nan = True).T
@@ -160,8 +160,9 @@ class LGSO(OptimizerClass):
         return self.get_optimal()
     def get_new_phi(self):
         self.phi_optimizer.zero_grad()
-        x = self.true_model.sample_x(self.current_phi)
-        l = self.loss(self.model(self.current_phi,x))
+        x = torch.as_tensor(self.true_model.sample_x(self.current_phi), device=self.device, dtype=torch.get_default_dtype())
+        phi = self.current_phi.repeat(x.size(0), 1)
+        l = self.loss(phi,self.model(phi,x))
         l.backward()
         self.phi_optimizer.step()
         return self.current_phi
@@ -174,7 +175,6 @@ class LGSO(OptimizerClass):
         else:
             phi,y,x = phi, y.reshape(-1,self.history[1].shape[1]).to(phi.device),x.reshape(-1,self.history[2].shape[1]).to(phi.device)
             self.history = (torch.cat([self.history[0], phi]),torch.cat([self.history[1], y]),torch.cat([self.history[2], x]))
-
 
     
 
@@ -230,7 +230,6 @@ class BayesianOptimizer(OptimizerClass):
         self.true_model.apply_det_loss = False
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''
-        t1 = time()
         loss_best = self.get_optimal()[1].flatten()*(-1)
         acquisition = self.acquisition_fn(self.model, 
                                         loss_best.to(self.device), 

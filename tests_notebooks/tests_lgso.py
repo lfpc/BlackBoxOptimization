@@ -4,7 +4,7 @@ os.environ['PROJECTS_DIR'] = '/home/hep/lprate/projects'
 sys.path.append('/home/hep/lprate/projects/BlackBoxOptimization/src')
 from optimizer import LGSO
 from problems import ShipMuonShield
-from models import GANModel, Classifier
+from models import GANModel
 import torch
 import wandb
 
@@ -61,13 +61,15 @@ class LCSO(LGSO):
     def __init__(self,problem,surrogate_model,bounds,epsilon,samples_phi,initial_phi,device):
         super().__init__(problem,surrogate_model,bounds,epsilon,samples_phi,initial_phi,device)
 
-problem = ShipMuonShield(n_samples = 20000,cores = 45,fSC_mag=False, dimensions_phi=54,
-                                        sensitive_plane=82,simulate_fields=False, apply_det_loss = False)
-phi_range = problem.GetBounds(device=dev)
-optimizer = LGSO(problem, surrogate_model=GANModel(54,643118,64,device = dev), bounds = phi_range,
-                    epsilon = 0.2, samples_phi = 3, initial_phi = problem.DEFAULT_PHI,
-                    device = dev)
+if __name__ == '__main__':
+    with torch.autograd.set_detect_anomaly(True):
 
+        problem = ShipMuonShield(n_samples = 20000,cores = 45,fSC_mag=False, dimensions_phi=54,
+                                                sensitive_plane=82,simulate_fields=False, apply_det_loss = False)
+        phi_range = problem.GetBounds(device=dev)
+        optimizer = LGSO(problem, surrogate_model=GANModel(54,8,64,y_dim = 8,device = dev), bounds = phi_range,
+                            epsilon = 0.2, samples_phi = 1, initial_phi = problem.DEFAULT_PHI,
+                            device = dev)
 
-optimizer.run_optimization(save_optimal_phi=True,save_history=True,
-                               max_iter = 100,use_scipy=False)
+        optimizer.run_optimization(save_optimal_phi=True,save_history=True,
+                                    max_iter = 100,use_scipy=False)
