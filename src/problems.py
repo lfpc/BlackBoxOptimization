@@ -3,11 +3,10 @@ import gzip
 import pickle
 import sys
 import numpy as np
-from os import getenv
-from os.path import join
+import os
 from multiprocessing import Pool
-PROJECTS_DIR = getenv('PROJECTS_DIR')
-sys.path.insert(1, join(PROJECTS_DIR,'BlackBoxOptimization'))
+PROJECTS_DIR = os.getenv('PROJECTS_DIR')
+sys.path.insert(1, os.path.join(PROJECTS_DIR,'BlackBoxOptimization'))
 from utils import split_array, split_array_idx, get_split_indices, soft_clamp
 import logging
 logging.basicConfig(level=logging.WARNING)
@@ -172,8 +171,10 @@ class ShipMuonShield():
                  right_margin = 2,
                  y_margin = 3,
                  dimensions_phi = 34,
-                muons_file = join(PROJECTS_DIR,'MuonsAndMatter/data/enriched_input.pkl'),
+                muons_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/enriched_input.pkl'),
                 fields_file = None,
+                extra_magnet = False,
+                cut_P:float = None,
                  ) -> None:
         
         self.left_margin = left_margin
@@ -196,7 +197,9 @@ class ShipMuonShield():
         self.dimensions_phi = dimensions_phi   
         self.cavern = cavern
         self.apply_det_loss = apply_det_loss
+        self.extra_magnet = extra_magnet    
         self.lambda_constraints = 50
+        self.cut_P = cut_P
 
         if dimensions_phi == 29: self.params_idx = self.fixed_sc
         elif dimensions_phi == 31: self.params_idx = self.hybrid_no_xmgap_idx   
@@ -206,17 +209,23 @@ class ShipMuonShield():
         self.DEFAULT_PHI = self.DEFAULT_PHI[self.params_idx]
 
 
-        sys.path.insert(1, join(PROJECTS_DIR,'MuonsAndMatter/python/bin'))
+        sys.path.insert(1, os.path.join(PROJECTS_DIR,'MuonsAndMatter/python/bin'))
         from run_simulation import run, get_field
         self.run_muonshield = run
         self.run_magnet = get_field
-        self.fields_file = fields_file#join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.pkl')
+        self.fields_file = fields_file#os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.pkl')
 
     def sample_x(self,phi=None):
-        with gzip.open(self.muons_file, 'rb') as f:
-            x = pickle.load(f)
-        if 0<self.n_samples<=x.shape[0]: x = x[:self.n_samples]
-        return x
+        try: 
+            with open(self.muons_file, 'rb') as f:
+                x = pickle.load(f)
+        except:
+            with gzip.open(self.muons_file, 'rb') as f:
+                x = pickle.load(f)
+        if 0<self.n_samples<=x.shape[0]: 
+            indices = np.random.choice(x.shape[0], self.n_samples, replace=False)
+            x = x[indices]
+        return torch.as_tensor(x, dtype=torch.get_default_dtype())
     def simulate_mag_fields(self,phi:torch.tensor, cores:int = 1):
         phi = self.add_fixed_params(phi)
         Z = phi[0:7].sum().item()*2/100 + 0.1
@@ -247,7 +256,7 @@ class ShipMuonShield():
         with Pool(self.cores) as pool:
             result = pool.starmap(self.run_muonshield, 
                                   [(workload,phi.cpu().numpy(),self.input_dist,True,self.fSC_mag,self.sensitive_film_params,self.cavern,
-                                    self.simulate_fields,self.fields_file,return_nan,self.seed, False) for workload in workloads])
+                                    self.simulate_fields,self.fields_file,return_nan,self.seed, False, 5., True, False, self.extra_magnet) for workload in workloads])
         print('SIMULATION FINISHED')
         all_results = []
         for rr in result:
@@ -258,10 +267,16 @@ class ShipMuonShield():
             all_results = [[np.nan]*8]
         all_results = torch.as_tensor(np.concatenate(all_results, axis=0).T,device = phi.device,dtype=torch.get_default_dtype())
         return all_results
-    
-    def muon_loss(self,x,y,particle, weight = None):
+    def is_hit(self,px,py,pz,x,y,z,particle,factor = None):
+        p = torch.sqrt(px**2+py**2+pz**2)
         charge = -1*torch.sign(particle)
-        mask = (-charge*x <= self.left_margin) & (-self.right_margin <= -charge*x) & (torch.abs(y) <= self.y_margin) & ((torch.abs(particle).to(torch.int))==self.MUON)
+        mask = (-charge*x <= self.left_margin) & (-self.right_margin <= -charge*x) & (torch.abs(y) <= self.y_margin)
+        mask = mask & (torch.abs(particle).to(torch.int)==self.MUON)
+        if self.cut_P is not None: mask = mask & p.ge(self.cut_P)
+        return mask.to(torch.int)
+    def muon_loss(self,px,py,pz,x,y,z,particle, weight = None):
+        charge = -1*torch.sign(particle)
+        mask = self.is_hit(px,py,pz,x,y,z,particle)
         x = x[mask]
         charge = charge[mask]
         loss = torch.sqrt(1 + (charge*x-self.right_margin)/(self.left_margin+self.right_margin)) 
@@ -307,7 +322,7 @@ class ShipMuonShield():
             return W/(1-L/self.L0)
         else: return 1
     def calc_loss(self,px,py,pz,x,y,z,particle,factor,W = None, L = None):
-        loss = self.muon_loss(x,y,particle,factor).sum()+1
+        loss = self.muon_loss(px,py,pz,x,y,z,particle,factor).sum()+1
         if self.apply_det_loss: loss *= self.weight_loss(W,L)+self.get_constraints(phi)
         return loss.to(torch.get_default_dtype()).view(-1,1)
     def __call__(self,phi,muons = None):
@@ -363,11 +378,10 @@ class ShipMuonShield():
     
     def deterministic_loss(self,phi,y):
         y = y.view(-1,1)
-        #W = self.get_weight(phi)
-        #loss = self.weight_loss(W)*y
-        loss = y
+        W = self.get_weight(phi)
+        loss = self.weight_loss(W)*y
         loss = loss + self.get_constraints(phi)
-        #loss = soft_clamp(loss,1.E8)
+        loss = loss.clamp(max=1E6)#soft_clamp(loss,1.E8)
         return loss
     
     def get_constraints(self,phi):
@@ -375,7 +389,7 @@ class ShipMuonShield():
         phi = self.add_fixed_params(phi)
         phi = phi.view(-1,self.full_dim)
         constraints = fn_pen((self.get_total_length(phi)-self.L0)*100)
-        #return (constraints.reshape(-1,1)*self.lambda_constraints)#.clamp(1E8)
+        #return (constraints.reshape(-1,1)*self.lambda_constraints)#.clamp(max=1E8)
         #cavern constraints
         wall_gap = 2
         def get_cavern_bounds(z):
@@ -451,34 +465,31 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  local:bool = False,
                  parallel:bool = False,
                  seed = None,
-                 dimensions_phi = 34,
+                 dimensions_phi = 54,
                  fSC_mag:bool = True, 
                  simulate_fields:bool = False,
-                 return_files:bool = False,
+                 return_files = None,
                  apply_det_loss:bool = False,
                  **kwargs) -> None:
         super().__init__(W0 = W0, L0 = L0, cores = cores, n_samples = n_samples, weight_loss_fn = weight_loss_fn,
                          fSC_mag = fSC_mag, simulate_fields = simulate_fields,
-                         dimensions_phi = dimensions_phi, apply_det_loss = apply_det_loss, seed = seed)
-
-        if 0<n_samples<self.DEF_N_SAMPLES: self.n_samples = n_samples
-        else: self.n_samples = self.DEF_N_SAMPLES
+                         dimensions_phi = dimensions_phi, apply_det_loss = apply_det_loss, seed = seed, **kwargs)
 
         self.parallel = parallel
-        self.manager_cert_path = getenv('STARCOMPUTE_MANAGER_CERT_PATH')
-        self.client_cert_path = getenv('STARCOMPUTE_CLIENT_CERT_PATH')
-        self.client_key_path = getenv('STARCOMPUTE_CLIENT_KEY_PATH')
+        self.manager_cert_path = os.getenv('STARCOMPUTE_MANAGER_CERT_PATH')
+        self.client_cert_path = os.getenv('STARCOMPUTE_CLIENT_CERT_PATH')
+        self.client_key_path = os.getenv('STARCOMPUTE_CLIENT_KEY_PATH')
         self.server_url = 'wss://%s:%s'%(manager_ip, port)
-        self.local = local
         self.return_files = return_files
         if not local:
             from starcompute.star_client import StarClient
             self.star_client = StarClient(self.server_url, self.manager_cert_path, 
                                     self.client_cert_path, self.client_key_path)
         if simulate_fields:
-            self.fields_file = join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.pkl')
+            self.fields_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.pkl')
         
-    def sample_x(self,phi = None):
+    def sample_x_idx(self,phi = None, slice = True):
+        if not slice: return super().sample_x_idx(phi)
         if phi is not None and phi.dim()==2:
             cores = int(self.cores/phi.size(0))
         else: cores = self.cores
@@ -489,22 +500,30 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  file = None,
                  reduction = 'sum'):
         phi = self.add_fixed_params(phi)
-        if muons is None: muons = self.sample_x(phi)
+        if muons is not None:
+            with open(os.path.join(PROJECTS_DIR,'cluster/muons.pkl'),'wb') as f: pickle.dump(muons.cpu(),f)
+            self.n_samples = muons.size(0)
+        muons = self.sample_x_idx(phi)
         if self.simulate_fields: 
             print('SIMULATING MAGNETIC FIELDS')
             self.simulate_mag_fields(phi, cores = 9)
-        inputs = split_array_idx(phi.cpu().to(torch.float16),muons, file = file) 
+        t1 = time.time()
+        inputs = split_array_idx(phi.cpu(),muons, file = file) 
         result = self.star_client.run(inputs)
-        if self.local:
-            outputs = []
-            for file_name in result:
-                with open(file_name, 'rb') as f:
-                    outputs.append(pickle.load(f))
-            outputs = torch.cat(outputs,axis=1)
-            result = outputs[:-1]
-        else:
-            result = torch.as_tensor(result,device = phi.device).T
-
+        print('SIMULATION FINISHED, took',time.time()-t1)
+        t1 = time.time()
+        if self.return_files is not None:
+            results = []
+            for filename in result:
+                if filename == -1: continue
+                m_file = os.path.join(self.return_files,str(filename)+'.pkl')
+                with open(m_file, "rb") as f:
+                    results.append(pickle.load(f))
+                #os.remove(m_file)
+            result = torch.cat(results, dim=1)
+            del results
+        result = torch.as_tensor(result,device = phi.device)
+        print('result shape',result.shape, 'took',time.time()-t1)
         if not (phi.dim()==1 or phi.size(0)==1):
             result = result.view(phi.size(0),-1)
         if reduction == 'sum': result = result.sum(-1)
@@ -571,7 +590,7 @@ if __name__ == '__main__':
             muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC, dimensions_phi=54,
                                          sensitive_plane=82,input_dist = None,simulate_fields=args.field_map, seed=seed
                                          )
-            muon_shield.fields_file = join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields_mm.pkl')
+            muon_shield.fields_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields_mm.pkl')
             if args.field_map: 
                 muon_shield.simulate_mag_fields(phi)
             t1 = time.time()
