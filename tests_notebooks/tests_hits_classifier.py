@@ -202,7 +202,19 @@ def get_subsample(muons,hits = None, size:int = 100000):
     idx = torch.randperm(muons.shape[0])[:size]
     if hits is None: return muons[idx]
     else: return muons[idx], hits[idx]
+def print_metrics(classifier, inputs, hits):
+    predictions = classifier.get_predictions(inputs)
 
+    hits_sum = hits.sum().item()
+    expected_hits = predictions.sum().item()
+    error = expected_hits - hits_sum
+
+    accuracy = ((predictions > 0.5) == hits).float().mean().item() * 100
+    perc_error = (error / hits_sum) * 100
+    print(f"Accuracy: {accuracy:.2f}%")
+    print(f"Hits: {hits_sum}")
+    print(f"Expected number of hits: {expected_hits}")
+    print(f"Error: {error}, Percentage Error: {perc_error:.2f}%")
 
 if __name__ == '__main__':
     hits = []

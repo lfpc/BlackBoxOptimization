@@ -216,16 +216,15 @@ class ShipMuonShield():
         self.fields_file = fields_file#os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.pkl')
 
     def sample_x(self,phi=None):
-        try: 
-            with open(self.muons_file, 'rb') as f:
-                x = pickle.load(f)
-        except:
+        if self.muons_file.endswith('.npy'):
+            x = np.load(self.muons_file)
+        else:
             with gzip.open(self.muons_file, 'rb') as f:
                 x = pickle.load(f)
         if 0<self.n_samples<=x.shape[0]: 
             indices = np.random.choice(x.shape[0], self.n_samples, replace=False)
             x = x[indices]
-        return torch.as_tensor(x, dtype=torch.get_default_dtype())
+        return x
     def simulate_mag_fields(self,phi:torch.tensor, cores:int = 1):
         phi = self.add_fixed_params(phi)
         Z = phi[0:7].sum().item()*2/100 + 0.1
@@ -488,27 +487,30 @@ class ShipMuonShieldCluster(ShipMuonShield):
         if simulate_fields:
             self.fields_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.pkl')
         
-    def sample_x_idx(self,phi = None, slice = True):
-        if not slice: return super().sample_x_idx(phi)
-        if phi is not None and phi.dim()==2:
+    def sample_x_idx(self,phi = None, n_samples = None):
+        if n_samples is None: n_samples = self.n_samples
+        if phi is not None and phi.dim()==2 and self.parallel:
             cores = int(self.cores/phi.size(0))
         else: cores = self.cores
-        return get_split_indices(cores,self.n_samples) 
+        cores = min(cores,n_samples)
+        return get_split_indices(cores,n_samples) 
     
     def simulate(self,phi:torch.tensor,
                  muons = None, 
                  file = None,
                  reduction = 'sum'):
         phi = self.add_fixed_params(phi)
+        muons_idx = self.sample_x_idx(n_samples=muons.shape[0])
+        t1 = time.time()
         if muons is not None:
-            with open(os.path.join(PROJECTS_DIR,'cluster/muons.pkl'),'wb') as f: pickle.dump(muons.cpu(),f)
-            self.n_samples = muons.size(0)
-        muons = self.sample_x_idx(phi)
+            for idx in muons_idx:
+                np.save(os.path.join(PROJECTS_DIR,f'cluster/files/muons_{idx[0]}.npy'),muons[idx[0]:idx[1]])
+        print('SAVING MUONS',time.time()-t1)
         if self.simulate_fields: 
             print('SIMULATING MAGNETIC FIELDS')
             self.simulate_mag_fields(phi, cores = 9)
         t1 = time.time()
-        inputs = split_array_idx(phi.cpu(),muons, file = file) 
+        inputs = split_array_idx(phi.detach().cpu(),muons_idx, file = file) 
         result = self.star_client.run(inputs)
         print('SIMULATION FINISHED, took',time.time()-t1)
         t1 = time.time()
@@ -516,14 +518,12 @@ class ShipMuonShieldCluster(ShipMuonShield):
             results = []
             for filename in result:
                 if filename == -1: continue
-                m_file = os.path.join(self.return_files,str(filename)+'.pkl')
-                with open(m_file, "rb") as f:
-                    results.append(pickle.load(f))
+                m_file = os.path.join(self.return_files,str(filename)+'.npy')
+                results.append(torch.as_tensor(np.load(m_file),dtype=torch.get_default_dtype()))
                 #os.remove(m_file)
             result = torch.cat(results, dim=1)
             del results
         result = torch.as_tensor(result,device = phi.device)
-        print('result shape',result.shape, 'took',time.time()-t1)
         if not (phi.dim()==1 or phi.size(0)==1):
             result = result.view(phi.size(0),-1)
         if reduction == 'sum': result = result.sum(-1)
