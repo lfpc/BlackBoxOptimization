@@ -4,7 +4,7 @@ import pickle
 import sys
 import numpy as np
 import os
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 PROJECTS_DIR = os.getenv('PROJECTS_DIR')
 sys.path.insert(1, os.path.join(PROJECTS_DIR,'BlackBoxOptimization'))
 from utils import split_array, split_array_idx, get_split_indices, soft_clamp
@@ -120,14 +120,21 @@ class ShipMuonShield():
                   22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 1.0, 0.,
                   33.0, 77.0, 85.0, 241.0, 9.0, 26.0, 1.0, 0.]])
     
-    warm_opt = torch.tensor([231.00, 170.89, 170.07, 230.87, 203.76, 250.59, 198.83,
+    warm_baseline = torch.tensor([231.00, 170.89, 170.07, 230.87, 203.76, 250.59, 198.83,
                   50.00,  50.00, 118.00, 118.00,   2.00,   2.00, 1.00, 0.00,
                   72.00, 51.00, 29.00, 46.00, 10.00, 7.00, 1.00, 0.00,
                   54.00, 38.00, 46.00, 130.00, 14.00, 9.00, 1.00, 0.00,
                   10.00, 31.00, 35.00, 31.00, 51.00, 11.00, 1.00, 0.00,
                   5.00, 32.00, 54.00, 24.00, 8.00, 8.00, 1.00, 0.00,
-                  22.00, 32.00, 130.00, 35.00, 8.00, 13.00, 1.00, 0.00,
-                  33.00, 77.00, 85.00, 90.00, 9.00, 26.00, 1.00, 0.00])
+                  22.00, 32.00, 130.00, 35.00, 8.00, 13.00, 1.00, 1.00,
+                  33.00, 77.00, 85.00, 90.00, 9.00, 26.00, 1.00, 5.])
+    warm_opt = torch.tensor([231.0, 171.0, 198.9, 280.4, 150.7, 259.2, 190.2, 50.0,
+                             50.0, 119.0, 119.0, 2.0, 2.0, 1.0, 0.0, 86.7, 66.2, 20.4,
+                             51.5, 8.4, 2.2, 1.2, 0.0, 44.4, 41.6, 78.6, 91.8, 6.4,
+                             2.2, 1.1, 0.1, 6.2, 35.5, 76.8, 13.9, 41.4, 2.2, 1.0,
+                             0.0, 5.3, 16.7, 98.3, 65.7, 3.1, 2.0, 1.1, 0.1, 5.0,
+                             38.8, 118.1, 74.6, 3.8, 2.0, 1.0, 0.0, 5.0, 57.2, 84.1,
+                             50.5, 2.0, 23.5, 1.0, 0.0])
 
     sc_v6 = torch.tensor([231.00,  0., 353.08, 125.08, 184.83, 150.19, 186.81, 
          50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00, 0.00,
@@ -221,7 +228,7 @@ class ShipMuonShield():
         else:
             with gzip.open(self.muons_file, 'rb') as f:
                 x = pickle.load(f)
-        if 0<self.n_samples<=x.shape[0]: 
+        if 0<self.n_samples<x.shape[0]: 
             indices = np.random.choice(x.shape[0], self.n_samples, replace=False)
             x = x[indices]
         return x
@@ -272,13 +279,15 @@ class ShipMuonShield():
         mask = (-charge*x <= self.left_margin) & (-self.right_margin <= -charge*x) & (torch.abs(y) <= self.y_margin)
         mask = mask & (torch.abs(particle).to(torch.int)==self.MUON)
         if self.cut_P is not None: mask = mask & p.ge(self.cut_P)
-        return mask.to(torch.int)
+        return mask.to(torch.bool)
     def muon_loss(self,px,py,pz,x,y,z,particle, weight = None):
         charge = -1*torch.sign(particle)
-        mask = self.is_hit(px,py,pz,x,y,z,particle)
+        mask = self.is_hit(px,py,pz,x,y,z,particle).to(torch.bool)
+        assert mask.shape == x.shape, f"MASK SHAPE: {mask.shape}, X SHAPE: {x.shape}"
         x = x[mask]
         charge = charge[mask]
         loss = torch.sqrt(1 + (charge*x-self.right_margin)/(self.left_margin+self.right_margin)) 
+        assert loss.numel() == mask.sum(), f"LOSS SHAPE: {loss.shape}, MASK SUM: {mask.sum()}, x SHAPE: {x.shape}, CHARGE SHAPE: {charge.shape}, mask SHAPE: {mask.shape}"
         if weight is not None:
             weight = weight[mask]
             loss *= weight
@@ -348,7 +357,7 @@ class ShipMuonShield():
         dX_bounds = [(5, 250)] * 2
         dY_bounds = [(5, 160)] * 2 
         gap_bounds = [(2, 150)] * 2 
-        yoke_bounds = [(0.75,1.25)]#[(0.25, 4)]
+        yoke_bounds = [(0.5,2)]#[(0.25, 4)]
         inner_gap_bounds = [(0., 150.)]
         bounds = magnet_lengths + 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + inner_gap_bounds)
         dY_bounds = [(5, 300)] * 2 
@@ -388,7 +397,7 @@ class ShipMuonShield():
         phi = self.add_fixed_params(phi)
         phi = phi.view(-1,self.full_dim)
         constraints = fn_pen((self.get_total_length(phi)-self.L0)*100)
-        #return (constraints.reshape(-1,1)*self.lambda_constraints)#.clamp(max=1E8)
+        return (constraints.reshape(-1,1)*self.lambda_constraints)#.clamp(max=1E8)
         #cavern constraints
         wall_gap = 2
         def get_cavern_bounds(z):
@@ -451,6 +460,8 @@ class ShipMuonShield():
 
         
 
+def save_muons(muons:np.array,tag):
+    np.save(os.path.join(PROJECTS_DIR, f'cluster/files/muons_{tag}.npy'), muons)
 
 class ShipMuonShieldCluster(ShipMuonShield):
     def __init__(self,
@@ -500,12 +511,13 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  file = None,
                  reduction = 'sum'):
         phi = self.add_fixed_params(phi)
-        muons_idx = self.sample_x_idx(n_samples=muons.shape[0])
-        t1 = time.time()
+        n_samples = muons.shape[0] if muons is not None else self.DEF_N_SAMPLES#n_samples
+        muons_idx = self.sample_x_idx(n_samples=n_samples)
         if muons is not None:
-            for idx in muons_idx:
-                np.save(os.path.join(PROJECTS_DIR,f'cluster/files/muons_{idx[0]}.npy'),muons[idx[0]:idx[1]])
-        print('SAVING MUONS',time.time()-t1)
+            t1 = time.time()
+            with Pool(cpu_count()) as pool:
+                pool.starmap(save_muons, [(muons[idx[0]:idx[1]], idx[0]) for idx in muons_idx])
+            #print('SAVING MUONS',time.time()-t1)
         if self.simulate_fields: 
             print('SIMULATING MAGNETIC FIELDS')
             self.simulate_mag_fields(phi, cores = 9)
@@ -536,11 +548,11 @@ class ShipMuonShieldCluster(ShipMuonShield):
                 y.append(self(p))
             return torch.stack(y)
         W = self.get_weight(phi)
-        #if self.get_constraints(phi) > 100 or W>3E6: return torch.ones((phi.size(0),1),device=phi.device)*1E6
+        if self.get_constraints(phi) > 100 or W>3E6: return torch.ones((phi.size(0),1),device=phi.device)*1E6
         loss = self.simulate(phi,muons, file)
         loss += 1
         if self.apply_det_loss: loss *= self.weight_loss(W).item()+self.get_constraints(phi).item()
-        return loss.to(torch.get_default_dtype())    
+        return loss.to(torch.get_default_dtype())   
     
 
 

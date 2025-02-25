@@ -71,15 +71,21 @@ class HitsClassifier():
         for e in tqdm(range(n_epochs), desc="Training Progress"):
             epoch_losses = []
             permutation = torch.randperm(inputs.size(0))
+            n_hits = 0
+            n_hits_pred = 0
             for i in range(0, inputs.size(0), batch_size):
                 indices = permutation[i:i + batch_size]
                 batch_inputs, batch_y = inputs[indices].to(dev), y[indices].to(dev)
                 optimizer.zero_grad()
                 p_hits = self.model(batch_inputs)
                 loss = self.loss_fn(p_hits, batch_y)
+                n_hits += batch_y.sum().item()
+                n_hits_pred += p_hits.sigmoid().sum().item()
                 loss.backward()
                 optimizer.step()
                 epoch_losses.append(loss.item())
+            if abs(n_hits.item() - n_hits_pred) / n_hits > 0.5:
+                print(f"Warning: The difference between predicted hits and actual hits is high ({n_hits_pred} and {n_hits})")
             scheduler.step()
             losses.append(sum(epoch_losses) / len(epoch_losses))
         plt.plot(losses, color = 'b', label = 'Train')
@@ -94,7 +100,10 @@ class HitsClassifier():
         inputs = inputs.to(self.device)
         return self.model(inputs).sigmoid()
     def __call__(self,phi,x):
-        return self.get_predictions(phi,x).sum()
+        pred = self.get_predictions(phi,x)
+        print('precictions')
+        print(pred)
+        return pred.sum()
     def print_metrics(self,phi,x, hits):
         inputs = self.concatenate_inputs(phi,x)
         predictions = self.get_predictions(inputs)
@@ -141,12 +150,13 @@ class LCSO(OptimizerClass):
             x = self.true_model.sample_x(initial_phi)
             y = self.calc_y(initial_phi,x)
             self.update_history(initial_phi,y,x)
-            self.current_phi = initial_phi
+            self.current_phi = torch.nn.Parameter(initial_phi)
         self.local_history = ()
         self.epsilon = epsilon
         self.lhs_sampler = LatinHypercube(d=initial_phi.size(-1))
         self.samples_phi = samples_phi
-        self.phi_optimizer = torch.optim.Adam([self.current_phi],lr=0.1)#torch.optim.SGD([self.current_phi],lr=0.1, momentum=0.9)
+        self.phi_optimizer = torch.optim.Adam([self.current_phi],lr=1)#torch.optim.SGD([self.current_phi],lr=0.1, momentum=0.9)
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.phi_optimizer, step_size=50, gamma=0.1)
         self.n_epochs = 5
         self.batch_size = batch_size
         self.subsamples = subsamples
@@ -222,11 +232,12 @@ class LCSO(OptimizerClass):
             selected_indices = torch.cat([low_indices, high_indices, mid_indices])
         
         return x[:, selected_indices]
-    def active_sample_x(self,phi):
-        x = torch.as_tensor(self.true_model.sample_x(phi),dtype=torch.get_default_dtype())
-        x = x.repeat(phi.size(0), 1,1)
-        idx = torch.randperm(x.shape[1])[:self.subsamples]
-        return x[:,idx]
+    def active_sample_x(self, phi):
+        x = torch.as_tensor(self.true_model.sample_x(phi), dtype=torch.get_default_dtype())
+        x = x.repeat(phi.size(0), 1, 1)
+        idx = [torch.randperm(x.shape[1])[:self.subsamples] for _ in range(phi.size(0))]
+        idx = torch.stack(idx)
+        return torch.stack([x[i, idx[i]] for i in range(phi.size(0))])
         
     def sample_phi(self,current_phi):
         sample = (2*self.lhs_sampler.random(n=self.samples_phi)-1)*self.epsilon
@@ -257,15 +268,23 @@ class LCSO(OptimizerClass):
     
     def get_new_phi(self):
         self.phi_optimizer.zero_grad()
-        x = torch.as_tensor(self.true_model.sample_x(self.current_phi),dtype=torch.get_default_dtype())
-        x.requires_grad = False
-        for i in range(0, x.size(0), self.batch_size):
-            x = x[i:i + self.batch_size]#.to(dev)
+        for param in self.phi_optimizer.param_groups[0]['params']:
+            print('klsajdlkasjdlkasj')
+            print(param.grad)
+        old_phi = self.current_phi.clone().detach()
+        x_sample = torch.as_tensor(self.true_model.sample_x(self.current_phi),dtype=torch.get_default_dtype())
+        x_sample.requires_grad = False
+        for i in range(0, x_sample.size(0), self.batch_size):
+            x = x_sample[i:i + self.batch_size]
             batch_loss = self.model(self.current_phi,x)
             batch_loss.backward()
-
+        for param in self.phi_optimizer.param_groups[0]['params']:
+            assert param.grad is not None, "Gradient is None"
+            assert torch.any(param.grad != 0), "Gradient is zero"
         self.phi_optimizer.step()
-        self.current_phi = torch.clamp(self.current_phi, *self.true_model.GetBounds()).cpu()
+        assert not (self.current_phi-old_phi == 0).all(), "Phi did not change"
+        self.scheduler.step()
+        with torch.no_grad(): self.current_phi.copy_(torch.clamp(self.current_phi, *self.true_model.GetBounds()))
         return self.current_phi
     
     def update_history(self,phi,y,x):
@@ -303,9 +322,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='LCSO Optimization')
     parser.add_argument('--resume', action='store_true', help='Resume optimization from previous state')
     parser.add_argument('--n_samples_main', type=int, default=0, help='Number of main samples')
-    parser.add_argument('--samples_phi', type=int, default=90, help='Number of phi samples')
-    parser.add_argument('--subsamples', type=int, default=500_000, help='Number of subsamples')
-    parser.add_argument('--max_iter', type=int, default=500, help='Maximum number of iterations')
+    parser.add_argument('--samples_phi', type=int, default=100, help='Number of phi samples')
+    parser.add_argument('--subsamples', type=int, default=700_000, help='Number of subsamples')
+    parser.add_argument('--max_iter', type=int, default=1000, help='Maximum number of iterations')
     parser.add_argument('--batch_size', type=int, default=1_000_000, help='Batch size')
     parser.add_argument('--epsilon', type=float, default=0.2, help='Epsilon value')
     parser.add_argument('--muons_file', type=str, default='/home/hep/lprate/projects/MuonsAndMatter/data/full_sample/full_sample_0.pkl', help='Path to muons file')
@@ -321,5 +340,6 @@ if __name__ == '__main__':
                      samples_phi=args.samples_phi,
                      epsilon=args.epsilon,
                      subsamples=args.subsamples,
-                     initial_phi=ship_problem.DEFAULT_PHI.cpu())
+                     initial_phi=ship_problem.DEFAULT_PHI.cpu(),
+                     resume=args.resume,)
     optimizer.run_optimization(save_optimal_phi=True, save_history=True, max_iter=args.max_iter)

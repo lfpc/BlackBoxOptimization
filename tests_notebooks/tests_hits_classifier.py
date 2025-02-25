@@ -202,9 +202,7 @@ def get_subsample(muons,hits = None, size:int = 100000):
     idx = torch.randperm(muons.shape[0])[:size]
     if hits is None: return muons[idx]
     else: return muons[idx], hits[idx]
-def print_metrics(classifier, inputs, hits):
-    predictions = classifier.get_predictions(inputs)
-
+def print_metrics(predictions, hits):
     hits_sum = hits.sum().item()
     expected_hits = predictions.sum().item()
     error = expected_hits - hits_sum
