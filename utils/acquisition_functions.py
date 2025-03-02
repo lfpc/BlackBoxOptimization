@@ -10,7 +10,7 @@ class Custom_LogEI(botorch.acquisition.LogExpectedImprovement):
         self._size_x = model.bounds.shape[-1]
         super().__init__(model = model, best_f = best_f)
     
-    def _mean_and_sigma(self, X, compute_sigma = True, min_var = 1e-12):
+    '''def _mean_and_sigma(self, X, compute_sigma = True, min_var = 1e-12):
         mean, sigma = super()._mean_and_sigma(X, compute_sigma, min_var)
         return mean,sigma
         mean = -1 * mean
@@ -24,5 +24,5 @@ class Custom_LogEI(botorch.acquisition.LogExpectedImprovement):
         assert not torch.isinf(mean).any(), f"Há valores infinitos nos dados de entrada!, {mean.max()}, {mean.min()}"
         assert not torch.isnan(sigma).any(), "Há valores NaN nos dados de entrada!"
         assert not torch.isinf(sigma).any(), "Há valores infinitos nos dados de entrada!"
-        return mean, sigma
+        return mean, sigma'''
     

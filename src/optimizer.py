@@ -250,8 +250,9 @@ class BayesianOptimizer(OptimizerClass):
         print('acquisition function optimization time: ', time()-t1)
         y = self.true_model(phi)
         self.update_history(phi,y)
-        print('weight', self.true_model.get_weight(phi))
-        print('weight loss', self.true_model.weight_loss(self.true_model.get_weight(phi)))
+        cost = self.true_model.get_total_cost(phi)
+        print('cost', cost)
+        print('cost loss', self.true_model.cost_loss(cost))
         print('LENGTH', self.true_model.get_total_length(phi))
         print('constraints', self.true_model.get_constraints(phi))
         print('muon loss:', y)
@@ -274,6 +275,7 @@ class BayesianOptimizer(OptimizerClass):
         self.bounds = new_bounds
         self.model.bounds = new_bounds.to(self.device)
     def loss(self,x,y):
+        return y
         return self.true_model.deterministic_loss(x,y)
     
     
