@@ -12,6 +12,7 @@ import logging
 import json
 from functools import partial
 logging.basicConfig(level=logging.WARNING)
+import time
 #torch.set_default_dtype(torch.float64)
 
 
@@ -114,7 +115,7 @@ class ShipMuonShield():
                        'M6': [6, 61, 62, 63, 64, 65, 66, 67, 68, 69]}
     
     old_warm_opt = [231.00, 208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 
-                  50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00, 0.00, 12273.19,
+                  50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00, 0.00, 16606.00,
                   72.0, 51.0, 29.0, 46.0, 10.0, 7.0, 1.0, 0., 15402.24,
                   54.0, 38.0, 46.0, 192.0, 14.0, 9.0, 1.0, 0., 22226.01,  
                   10.0, 31.0, 35.0, 31.0, 51.0, 11.0, 1.0, 0., 10555.96,
@@ -123,7 +124,7 @@ class ShipMuonShield():
                   33.0, 77.0, 85.0, 241.0, 9.0, 26.0, 1.0, 0., 29300.46]
     
     warm_scaled_baseline = [231.00, 170.89, 170.07, 230.87, 203.76, 250.59, 198.83, 
-                  50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00, 0.00, 12273.19,
+                  50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00, 0.00, 16606.00,
                   72.00, 51.00, 29.00, 46.00, 10.00, 7.00, 1.00, 0.00, 15402.24,
                   54.00, 38.00, 46.00, 130.00, 14.00, 9.00, 1.00, 0.00, 18772.36,
                   10.00, 31.00, 35.00, 31.00, 51.00, 11.00, 1.00, 0.00, 10555.96,
@@ -143,7 +144,7 @@ class ShipMuonShield():
     
 
     sc_v6 = [231.00,  0., 353.08, 125.08, 184.83, 150.19, 186.81, 
-         50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00, 0.00, 12273.19,
+         50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00, 0.00, 16606.00,
         0.,  0.,  0.,  0.,  0.,   0., 1., 0.,0.,
         45.69,  45.69,  22.18,  22.18,  27.01,  16.24, 3.00, 0.00, 3200000.0,
         0.,  0.,  0.,  0.,  0.,  0., 1., 0., 0.,
@@ -305,7 +306,6 @@ class ShipMuonShield():
         x = x[mask]
         charge = charge[mask]
         loss = torch.sqrt(1 + (charge*x-self.right_margin)/(self.left_margin+self.right_margin)) 
-        assert loss.numel() == mask.sum(), f"LOSS SHAPE: {loss.shape}, MASK SUM: {mask.sum()}, x SHAPE: {x.shape}, CHARGE SHAPE: {charge.shape}, mask SHAPE: {mask.shape}"
         if weight is not None:
             weight = weight[mask]
             loss *= weight
@@ -316,33 +316,15 @@ class ShipMuonShield():
         length = torch.zeros(phi.size(0), device=phi.device)
         for m, idx in self.parametrization.items():
             params = phi[:, idx]
-            length = length + 2*params[:, 0]
-        return length / 100
-    def get_weight_old(self,phi,z_gap = 10,density = 7.874E-3):
-        '''Get the weight of the muon shield.
-        phi: torch.tensor with the parameters of the muon shield.
-        density: density of iron in kg/cm^3'''
-        def volume_block(dz,dx1,dx2,dy1,dy2):
-            return (dz/3)*(dx1*dy1+dx2*dy2+torch.sqrt(dx1*dy1*dx2*dy2))
-        phi = self.add_fixed_params(phi)
-        phi = phi.view(-1,self.full_dim)
-        volume = torch.zeros(phi.size(0), device=phi.device)
-        for m,idx in self.parametrization.items():
-            if self.fSC_mag and (m in ['M1', 'M3']): continue
-            params = phi[:,idx]
-            Ymgap = 5 if self.fSC_mag and m == 'M2' else 0
-            dz = 2*params[:,0]-z_gap
-            volume = volume + volume_block(dz, params[:, 1], params[:, 2], params[:, 3], params[:, 4])  # core
-            volume = volume + volume_block(dz, params[:, 1] * params[:, 7], params[:, 2] * params[:, 7], params[:, 3] + Ymgap, params[:, 4] + Ymgap)  # lateral yoke
-            volume = volume + volume_block(dz, params[:, 1] + params[:, 5] + params[:, 1] * params[:, 7] , params[:, 2] + params[:, 6] + params[:, 2] * params[:, 7], params[:, 1] * params[:, 7], params[:, 2] * params[:, 7])  # upper yoke
-        return 4*volume.view(-1,1)*density 
-    
+            length = length + params[:, 0]
+        return 2 * length / 100
 
     def get_electrical_cost(self,phi):
         '''Adapt for multidimensional phi'''
         phi = self.add_fixed_params(phi).detach().cpu()
         cost = 0
         for m,idx in self.parametrization.items():
+            if self.fSC_mag and m in ['M1', 'M3']: continue
             params = phi[idx].numpy()
             Ymgap = 0
             yoke_type = 'Mag1' if m in ['HA','M1','M2','M3'] else 'Mag3'
@@ -361,6 +343,7 @@ class ShipMuonShield():
         volume = 0#torch.zeros(phi.size(0), device=phi.device)
         for m,idx in self.parametrization.items():
             Ymgap = 5 if self.fSC_mag and m == 'M2' else 0
+            if self.fSC_mag and m in ['M1', 'M3']: continue
             params = phi[idx]
             dZ = params[0] - zGap/2
             dX = params[1]
@@ -498,7 +481,7 @@ class ShipMuonShield():
         def get_cavern_bounds(z):
             x_min = torch.zeros_like(z)
             y_min = torch.zeros_like(z)
-            mask = z <= 2200-234.5
+            mask = z <= 2051.8-234.5
             x_min[mask] = 356#min(np.abs(-3.56), 6.43)
             y_min[mask] = 170#min(np.abs(-1.7), 5.8)
             x_min[~mask] = 456#min(np.abs(-4.56), 11.43)
@@ -535,7 +518,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  local:bool = False,
                  parallel:bool = False,
                  seed = None,
-                 dimensions_phi = 54,
+                 dimensions_phi = 60,
                  fSC_mag:bool = True, 
                  simulate_fields:bool = False,
                  return_files = None,
@@ -616,7 +599,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
     
 
 
-import time
+
 import argparse
 
 if __name__ == '__main__':
@@ -626,21 +609,23 @@ if __name__ == '__main__':
     parser.add_argument("--n_tasks_per_node", type=int, default=32)
     parser.add_argument("--n_tasks", type=int, default=None)
     parser.add_argument("--warm", dest = 'SC', action='store_false')
-    parser.add_argument("--muons_file", type=str, default=None)
+    parser.add_argument("--muons_file", type=str, default=os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/enriched_input_no_weights.pkl'))
     parser.add_argument("--params_name", type=str, default=None)
     parser.add_argument("--cluster", action='store_true')
     parser.add_argument("--field_map", action='store_true')
+    parser.add_argument("--remove_cavern", dest = "cavern", action='store_false')
     args = parser.parse_args()
-    params_dict = {'baseline':torch.tensor(ShipMuonShield.warm_opt),
-                    'sc_v6':torch.tensor(ShipMuonShield.sc_v6), 
+    params_dict = {#'baseline':torch.tensor(ShipMuonShield.warm_scaled_baseline),
+                   #'baseline_optm':torch.tensor(ShipMuonShield.warm_opt),
+                   'old_warm_opt':torch.tensor(ShipMuonShield.old_warm_opt),
+                    #'sc_v6':torch.tensor(ShipMuonShield.sc_v6), 
                      #'combi':ShipMuonShield.combi, 
-                     'old_warm_opt':torch.tensor(ShipMuonShield.old_warm_opt),
                      }
     if args.params_name is not None:
         with open(f'/home/hep/lprate/projects/BlackBoxOptimization/outputs/{args.params_name}/phi_optm.txt', "r") as txt_file:
             data = [float(line.strip()) for line in txt_file]
         phi_newparameters = torch.tensor(data)
-        params_dict[args.params_name] = phi_newparameters
+        #params_dict[args.params_name] = phi_newparameters
     d = {}
     t0 = time.time()
     
@@ -650,13 +635,14 @@ if __name__ == '__main__':
     for name,phi in params_dict.items(): #
         print(name)
         
-        if name == 'sc_v6' and not args.SC: continue
+        if name == 'sc_v6': fSC_mag = True
+        else: fSC_mag = args.SC
         if args.n_tasks is None and args.cluster: n_tasks = args.nodes*args.n_tasks_per_node
         elif args.n_tasks is None: n_tasks = 45
         else: n_tasks = args.n_tasks
         if args.cluster:
-            muon_shield = ShipMuonShieldCluster(cores = n_tasks,dimensions_phi=60,sensitive_plane=0,simulate_fields=args.field_map, fSC_mag=args.SC, seed=seed)
-            muon_shield.fields_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.npy')
+            muon_shield = ShipMuonShieldCluster(cores = n_tasks,dimensions_phi=60,sensitive_plane=0,simulate_fields=args.field_map, fSC_mag=fSC_mag, seed=seed)
+            muon_shield.fields_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields_mm.npy')
             t1 = time.time()
             loss_muons = muon_shield.simulate(torch.as_tensor(phi), file = args.muons_file)
             t2 = time.time()
@@ -664,13 +650,14 @@ if __name__ == '__main__':
             n_hits = 0
             rate = 0
         else:
-            muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC, dimensions_phi=60,
-                                         sensitive_plane=82,simulate_fields=False, seed=seed)
+            muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=fSC_mag, dimensions_phi=60,
+                                         sensitive_plane=82,simulate_fields=False, seed=seed, cavern=args.cavern, muons_file = args.muons_file)
             if args.field_map: 
-                muon_shield.fields_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.npy')
+                muon_shield.fields_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields_mm.npy')
                 muon_shield.simulate_mag_fields(torch.as_tensor(phi))
             t1 = time.time()
             px,py,pz,x,y,z,particle,factor = muon_shield.simulate(torch.as_tensor(phi))
+            assert factor.eq(1).all()
             print('n_hits: ',x.numel())
             t2 = time.time()
             loss_muons = muon_shield.muon_loss(px,py,pz,x,y,z,particle,factor).sum()+1
