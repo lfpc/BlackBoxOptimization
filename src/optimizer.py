@@ -227,14 +227,14 @@ class BayesianOptimizer(OptimizerClass):
             if self._i > reduce_bounds and reduce_bounds>0:
                 self.reduce_bounds() 
                 
-        self.true_model.apply_det_loss = False
+        #self.true_model.apply_det_loss = False
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''
         loss_best = self.get_optimal()[1].flatten()*(-1)
         acquisition = self.acquisition_fn(self.model, 
                                         loss_best.to(self.device), 
-                                        deterministic_fn=self.true_model.deterministic_loss if hasattr(self.true_model,'deterministic_loss') else None,
-                                        constraint_fn=self.true_model.get_constraints if hasattr(self.true_model,'get_constraints') else None)
+                                        deterministic_fn=None,#self.true_model.deterministic_loss if hasattr(self.true_model,'deterministic_loss') else None,
+                                        constraint_fn=None)#self.true_model.get_constraints if hasattr(self.true_model,'get_constraints') else None)
         return botorch.optim.optimize.optimize_acqf(acquisition, self.bounds.to(self.device),**self.acquisition_params)[0]
     
     def optimization_iteration(self):

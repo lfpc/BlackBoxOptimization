@@ -157,12 +157,12 @@ class ShipMuonShield():
     warm_idx = parametrization['M1'] + parametrization['M2'] + parametrization['M3'] + parametrization['M4'] + parametrization['M5'] + parametrization['M6']
     
     
-    DEFAULT_PHI = torch.tensor(warm_opt)#warm_opt)
+    DEFAULT_PHI = torch.tensor(warm_scaled_baseline)#warm_opt)
     DEF_N_SAMPLES = 643118
     full_dim = 70
 
     def __init__(self,
-                 W0:float = 1700000.,
+                 W0:float = 1.5E7,
                  L0:float = 29.7,
                  cores:int = 45,
                  n_samples:int = 0,
@@ -179,7 +179,7 @@ class ShipMuonShield():
                  right_margin = 2,
                  y_margin = 3,
                  dimensions_phi = 34,
-                muons_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/enriched_input.pkl'),
+                muons_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/enriched_input_no_weights.pkl'),
                 fields_file = None,
                 extra_magnet = False,
                 cut_P:float = None,
@@ -407,7 +407,7 @@ class ShipMuonShield():
         M_iron = 4*volume*density
         C_iron = M_iron*(iron_material_data["material_cost(CHF/kg)"]
                      +  iron_material_data["manufacturing_cost(CHF/kg)"])
-        return C_iron
+        return C_iron.detach()
     def get_total_cost(self,phi):
         M = self.get_iron_cost(phi)
         if self.simulate_fields or self.fields_file is not None: M += self.get_electrical_cost(phi)
@@ -451,9 +451,9 @@ class ShipMuonShield():
         dX_bounds = [(5, 250)] * 2
         dY_bounds = [(5, 160)] * 2 
         gap_bounds = [(2, 150)] * 2 
-        yoke_bounds = [(0.5,2)]#[(0.25, 4)]
+        yoke_bounds = [(0.3,3)]#[(0.25, 4)]
         inner_gap_bounds = [(0., 150.)]
-        NI_bounds = [(0.,5E5)] #5E5
+        NI_bounds = [(0.,5E5)]
         bounds = magnet_lengths + 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + inner_gap_bounds + NI_bounds)
         dY_bounds = [(5, 300)] * 2 
         bounds += 5*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + inner_gap_bounds + NI_bounds)
@@ -527,8 +527,6 @@ def save_muons(muons:np.array,tag):
 
 class ShipMuonShieldCluster(ShipMuonShield):
     def __init__(self,
-                 W0:float = 1E7,
-                 L0:float = 29.7,
                  cores:int = 512,
                  n_samples:int = 0,
                  cost_loss_fn:bool = 'exponential',
@@ -543,7 +541,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  return_files = None,
                  apply_det_loss:bool = True,
                  **kwargs) -> None:
-        super().__init__(W0 = W0, L0 = L0, cores = cores, n_samples = n_samples, cost_loss_fn = cost_loss_fn,
+        super().__init__(cores = cores, n_samples = n_samples, cost_loss_fn = cost_loss_fn,
                          fSC_mag = fSC_mag, simulate_fields = simulate_fields,
                          dimensions_phi = dimensions_phi, apply_det_loss = apply_det_loss, seed = seed, **kwargs)
 
@@ -610,7 +608,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
                 y.append(self(p))
             return torch.stack(y)
         M = self.get_total_cost(phi)
-        if self.get_constraints(phi) > 100 or M>5E7: return torch.ones((phi.size(0),1),device=phi.device)*1E6
+        if self.get_constraints(phi) > 100 or M>3.5E7: return torch.ones((phi.size(0),1),device=phi.device)*1E6
         loss = self.simulate(phi,muons, file)
         loss += 1
         if self.apply_det_loss: loss = self.deterministic_loss(phi,loss)
@@ -633,10 +631,10 @@ if __name__ == '__main__':
     parser.add_argument("--cluster", action='store_true')
     parser.add_argument("--field_map", action='store_true')
     args = parser.parse_args()
-    params_dict = {#'baseline':torch.tensor(ShipMuonShield.warm_opt),
+    params_dict = {'baseline':torch.tensor(ShipMuonShield.warm_opt),
                     'sc_v6':torch.tensor(ShipMuonShield.sc_v6), 
                      #'combi':ShipMuonShield.combi, 
-                     #'old_warm_opt':torch.tensor(ShipMuonShield.old_warm_opt),
+                     'old_warm_opt':torch.tensor(ShipMuonShield.old_warm_opt),
                      }
     if args.params_name is not None:
         with open(f'/home/hep/lprate/projects/BlackBoxOptimization/outputs/{args.params_name}/phi_optm.txt', "r") as txt_file:
@@ -653,24 +651,26 @@ if __name__ == '__main__':
         print(name)
         
         if name == 'sc_v6' and not args.SC: continue
-        if args.n_tasks is None: n_tasks = args.nodes*args.n_tasks_per_node
+        if args.n_tasks is None and args.cluster: n_tasks = args.nodes*args.n_tasks_per_node
+        elif args.n_tasks is None: n_tasks = 45
         else: n_tasks = args.n_tasks
         if args.cluster:
-            muon_shield = ShipMuonShieldCluster(cores = n_tasks,dimensions_phi=60,sensitive_plane=0,simulate_fields=args.field_map)
+            muon_shield = ShipMuonShieldCluster(cores = n_tasks,dimensions_phi=60,sensitive_plane=0,simulate_fields=args.field_map, fSC_mag=args.SC, seed=seed)
             muon_shield.fields_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.npy')
             t1 = time.time()
             loss_muons = muon_shield.simulate(torch.as_tensor(phi), file = args.muons_file)
             t2 = time.time()
             loss_muons += 1
+            n_hits = 0
+            rate = 0
         else:
-            muon_shield = ShipMuonShield(n_samples = 10000,cores = n_tasks,fSC_mag=args.SC, dimensions_phi=60,
-                                         sensitive_plane=82,input_dist = None,simulate_fields=False, seed=seed
-                                         )
+            muon_shield = ShipMuonShield(cores = n_tasks,fSC_mag=args.SC, dimensions_phi=60,
+                                         sensitive_plane=82,simulate_fields=False, seed=seed)
             if args.field_map: 
                 muon_shield.fields_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.npy')
                 muon_shield.simulate_mag_fields(torch.as_tensor(phi))
             t1 = time.time()
-            px,py,pz,x,y,z,particle,factor = muon_shield.simulate(torch.as_tensor(phi,dtype = torch.float32))
+            px,py,pz,x,y,z,particle,factor = muon_shield.simulate(torch.as_tensor(phi))
             print('n_hits: ',x.numel())
             t2 = time.time()
             loss_muons = muon_shield.muon_loss(px,py,pz,x,y,z,particle,factor).sum()+1
@@ -687,9 +687,9 @@ if __name__ == '__main__':
         print('length', L)     
         loss = muon_shield.deterministic_loss(phi,loss_muons)
         print('loss',loss)
-        print('n_hits',n_hits)
-        print('n_inputs',n_inputs)
-        print(f'rate: {rate:.1e}')
+        #print('n_hits',n_hits)
+        #print('n_inputs',n_inputs)
+        #print(f'rate: {rate:.1e}')
         d[name] = (loss_muons,loss, M_i, M,C_e, L, C, n_hits, rate)
         
         seed += 5
