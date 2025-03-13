@@ -18,7 +18,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--cpu",dest = 'cuda', action = 'store_false')
 parser.add_argument("--seed", type=int, default=13)
 parser.add_argument("--maxiter", type=int, default=1000)
-parser.add_argument("--dimensions", type=int, default=60)
+parser.add_argument("--dimensions", type=int, default=84)
 parser.add_argument('--problem', type=str, default='ship_warm')
 parser.add_argument('--optimization', type=str, default='bayesian')
 parser.add_argument('--model', type=str, default='gp_rbf')
@@ -104,7 +104,7 @@ if __name__ == "__main__":
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=True)
-    elif args.problem == 'ship_warm': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=False)
+    elif args.problem == 'ship_warm': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=False, double_sample=True)
 
     if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
     #add phi initial here?
