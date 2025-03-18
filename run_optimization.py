@@ -31,6 +31,7 @@ parser.add_argument("--save_history", action='store_true')
 parser.add_argument("--resume", action='store_true')
 parser.add_argument("--reduce_bounds", type=int, default=-1)
 parser.add_argument("--simulated_fields", action='store_true')
+parser.add_argument("--multi_fidelity", action='store_true')
 
 #you wont neeed
 parser.add_argument("--parallel", type=int, default = 1)
@@ -48,7 +49,7 @@ wandb.login()
 WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': vars(args), 'name': args.name}
 
 if args.cuda: assert torch.cuda.is_available()
-if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda')
+if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda:1')
 else: dev = torch.device('cpu')
 print('Device:', dev)
 torch.manual_seed(args.seed);
@@ -60,7 +61,7 @@ if not os.path.exists(OUTPUTS_DIR):
 
 
 def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, model_scheduler):
-    if N_initial_points == -1: initial_phi = problem_fn.DEFAULT_PHI.to(dev)
+    if N_initial_points == -1: initial_phi = problem_fn.initial_phi.to(dev)
     else: initial_phi = (phi_range[1]-phi_range[0])*torch.rand(N_initial_points,dimensions_phi,device=dev)+phi_range[0]
     #assert initial_phi.ge(phi_range[0]).logical_and(initial_phi.le(phi_range[1])).all()
 
@@ -104,7 +105,7 @@ if __name__ == "__main__":
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=True)
-    elif args.problem == 'ship_warm': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=False, double_sample=True)
+    elif args.problem == 'ship_warm': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=False, double_sample=args.multi_fidelity)
 
     if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
     #add phi initial here?

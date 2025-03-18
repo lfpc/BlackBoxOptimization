@@ -123,15 +123,14 @@ class ShipMuonShield():
                   22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 1.0,1.0,22.0, 32.0,0.0, 0., 19273.68,
                   33.0, 77.0, 85.0, 241.0, 9.0, 26.0, 1.0,1.0,33.0, 77.0,0.0, 0., 29300.46]
     
-    warm_scaled_baseline = [231.00, 170.89, 170.07, 230.87, 203.76, 250.59, 198.83, 
-                  50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 45000,
-                  72.00, 51.00, 29.00, 46.00, 10.00, 7.00, 1.00,1.0,72.00, 51.00,0.0, 0.00, 15402.24,
-                  54.00, 38.00, 46.00, 130.00, 14.00, 9.00, 1.00,1.0,54.00, 38.00,0.0, 0.00, 18772.36,
-                  10.00, 31.00, 35.00, 31.00, 51.00, 11.00, 1.00,1.0,10.00, 31.00,0.0, 0.00, 10555.96,
-                  5.00, 32.00, 54.00, 24.00, 8.00, 8.00, 1.00,1.0,5.00, 32.00,0.0, 0.00, 8327.79,
-                  22.00, 32.00, 130.00, 35.00, 8.00, 13.00, 1.00,1.0,22.00, 32.00,0.0, 0.00, 14873.04,
-                  33.00, 77.00, 85.00, 90.00, 9.00, 26.00, 1.00,1.0,33.00, 77.00,0.0, 0.00, 20889.11]
-         
+    warm_scaled_baseline = [120.50, 127.5, 250., 372.5, 203.76, 200.59, 198.83, 
+                  50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 0.,
+                  72.00, 51.00, 29.00, 46.00, 10.00, 7.00, 1.00,1.0,72.00, 51.00,0.0, 0.00, 0.,
+                  54.00, 38.00, 46.00, 130.00, 14.00, 9.00, 1.00,1.0,54.00, 38.00,0.0, 0.00, 0.,
+                  10.00, 31.00, 35.00, 31.00, 51.00, 11.00, 1.00,1.0,10.00, 31.00,0.0, 0.00, 0.,
+                  5.00, 32.00, 54.00, 24.00, 8.00, 8.00, 1.00,1.0,5.00, 32.00,0.0, 0.00, 0.,
+                  22.00, 32.00, 130.00, 35.00, 8.00, 13.00, 1.00,1.0,22.00, 32.00,0.0, 0.00, 0.,
+                  33.00, 77.00, 85.00, 90.00, 9.00, 26.00, 1.00,1.0,33.00, 77.00,0.0, 0.00, 0.]
 
     warm_opt =  [231.00, 150.52, 169.20, 294.88, 132.53, 299.40, 154.77, 
      50.00, 50.00, 119.00, 119.00, 2.00, 2.00, 1.00,1.0,50.00, 50.00,0.0, 0.00, 45000, 
@@ -141,67 +140,15 @@ class ShipMuonShield():
      5.16, 5.11, 72.92, 55.70, 2.00, 2.01, 0.86,0.86,4.4376, 4.3946,1.49, 1.49, 70056.44, 
      5.00, 32.54, 77.57, 42.95, 2.00, 2.33, 1.26,1.26,6.3, 41.0004,0.07, 0.07, 67362.87, 
      5.19, 62.89, 79.89, 54.60, 2.00, 17.96, 1.32,1.32,6.8508, 83.0148,0.4, 0.40, 169937.25]
-    warm_opt = [231.00, 163.894257, 177.781921, 300.00,
-                150.05069, 300.00, 158.853531, 50.00,
-                50.00, 119.00, 119.00, 2.00,
-                2.00, 1.00, 1.00, 50.00,
-                50.00, 0.00, 0.00, 45000.00,
-                67.73345, 59.105698, 7.45389605, 45.602890,
-                21.4819679, 2.00, 1.50288999, 1.4517225,
-                101.795766, 85.8050713, 0.00232410361, 0.00232410361,
-                55216.4531, 43.5412445, 17.4195728, 50.8280907,
-                16.1780338, 2.3139441, 2.00, 1.10637438,
-                1.74846506, 48.1729175, 30.4575145, 0.00,
-                0.00, 59774.8789, 7.35576057, 63.8845139,
-                61.7614441, 5.00, 14.0293846, 2.00,
-                1.37505352, 1.36389768, 10.1145645, 87.1319403,
-                0.610923648, 0.610923648, 3233.22925, 5.00,
-                5.00, 70.5881577, 64.4583435, 2.0412662,
-                2.96179652, 0.900299132, 0.901348472, 4.50149566,
-                4.50674236, 1.89399397, 1.89399397, 64579.6641,
-                7.8171649, 44.1301689, 70.4480896, 43.4346008,
-                2.00, 14.4380083, 1.2761848, 0.93286556,
-                9.976147, 41.1675147, 0.00, 0.00,
-                27701.9688, 5.00, 70.98703, 84.3564987,
-                46.7529526, 2.0003192, 33.4555359, 1.34503603,
-                1.04867125, 6.72518015, 74.4420572, 4.57639408,
-                4.57639408, 28655.9395]
     
-    
-    
-    warm_opt_scaled = [231.00, 163.894257, 177.781921, 300.00,
-                150.05069, 300.00, 158.853531, 50.00,
-                50.00, 119.00, 119.00, 2.00,
-                2.00, 1.00, 1.00, 50.00,
-                50.00, 0.00, 0.00, 45000.00,
-                67.73345, 59.105698, 7.45389605, 45.602890,
-                21.4819679, 2.00, 1.50288999, 1.4517225,
-                101.795766, 85.8050713, 0.00232410361, 0.00232410361,
-                50E3, 43.5412445, 17.4195728, 50.8280907,
-                16.1780338, 2.3139441, 2.00, 1.10637438,
-                1.74846506, 48.1729175, 30.4575145, 0.00,
-                0.00, 50E3, 7.35576057, 63.8845139,
-                61.7614441, 5.00, 14.0293846, 2.00,
-                1.37505352, 1.36389768, 10.1145645, 87.1319403,
-                0.610923648, 0.610923648, 3233.22925, 5.00,
-                5.00, 70.5881577, 64.4583435, 2.0412662,
-                2.96179652, 0.900299132, 0.901348472, 4.50149566,
-                4.50674236, 1.89399397, 1.89399397, 50E3,
-                7.8171649, 44.1301689, 70.4480896, 43.4346008,
-                2.00, 14.4380083, 1.2761848, 0.93286556,
-                9.976147, 41.1675147, 0.00, 0.00,
-                27701.9688, 5.00, 70.98703, 84.3564987,
-                46.7529526, 2.0003192, 33.4555359, 1.34503603,
-                1.04867125, 6.72518015, 74.4420572, 4.57639408,
-                4.57639408, 28655.9395]
     warm_opt_scaled = [231.00, 150.52, 169.20, 294.88, 132.53, 299.40, 194.77, 
      50.00, 50.00, 119.00, 119.00, 2.00, 2.00, 1.00,1.0,50.00, 50.00,0.0, 0.00, 45000,
      64.83, 60.14, 11.46, 37.37, 17.35, 2.00, 1.47,1.47,95.3, 88.41,0.0, 0.00, 12000, #12000
      54.16, 27.55, 47.72, 14.10, 6.90, 3.34, 1.09,1.78,35.75  , 45.9,0.0, 0.00, 12000, #12000
      5.00, 52.14, 65.64, 5.00, 9.88, 2.00, 1.40,1.4,7. , 73,0.0, 0.00, 8000, #8000
      5.16, 5.11, 72.92, 55.70, 2.00, 2.01, 0.86,0.86,4.44,  4.39, 1.49, 1.49, 5000, #5000
-     5.00, 32.54, 77.57, 42.95, 2.00, 12.39, 1.26,0.95,6.3, 41.,0.07, 0.07, 50E3, #10E3 
-     5.19, 62.89, 79.89, 54.60, 2.00, 36.71, 1.32,1.02,6.85, 83.,0.4, 0.4, 70E3] #20E3
+     5.00, 32.54, 77.57, 42.95, 2.00, 12.39, 1.26,0.95,6.3, 41.,0.07, 0.07, 10E3, #10E3 
+     5.19, 62.89, 79.89, 54.60, 2.00, 36.71, 1.32,1.02,6.85, 83.,0.4, 0.4, 20E3] #20E3
 
     sc_v6 = [231.00,  0., 353.08, 125.08, 184.83, 150.19, 186.81, 
          50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 45000,
@@ -216,15 +163,16 @@ class ShipMuonShield():
            parametrization['M4'] + parametrization['M5'] + parametrization['M6']
     
     warm_idx = parametrization['M1'] + parametrization['M2'] + parametrization['M3'] + parametrization['M4'] + parametrization['M5'] + parametrization['M6']
-    warm_idx_eq_gap = parametrization['M1'][:9] + parametrization['M1'][12:] + \
-                      parametrization['M2'][:9] + parametrization['M2'][12:] + \
-                      parametrization['M3'][:9] + parametrization['M3'][12:] + \
-                      parametrization['M4'][:9] + parametrization['M4'][12:] + \
-                      parametrization['M5'][:9] + parametrization['M5'][12:] + \
-                      parametrization['M6'][:9] + parametrization['M6'][12:]
+
+    warm_idx_eq_gap = parametrization['M1'][1:9] + parametrization['M1'][12:13] + \
+                      parametrization['M2'][1:9] + parametrization['M2'][12:13] + \
+                      parametrization['M3'][1:9] + parametrization['M3'][12:13] + \
+                      parametrization['M4'][:9] + parametrization['M4'][12:13] + \
+                      parametrization['M5'][:9] + parametrization['M5'][12:13] + \
+                      parametrization['M6'][:9] + parametrization['M6'][12:13]
     
-    
-    DEFAULT_PHI = torch.tensor(warm_opt_scaled)
+    DEFAULT_PHI = torch.tensor(warm_scaled_baseline)
+    initial_phi = DEFAULT_PHI.clone()
     full_dim = 98
 
     def __init__(self,
@@ -244,7 +192,7 @@ class ShipMuonShield():
                  right_margin = 2,
                  y_margin = 3,
                  dimensions_phi = 34,
-                muons_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/enriched_subsample.pkl'),
+                muons_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample_mid_biased.pkl'),
                 fields_file = None,
                 extra_magnet = False,
                 cut_P:float = None,
@@ -276,10 +224,10 @@ class ShipMuonShield():
         if dimensions_phi == 29: self.params_idx = self.fixed_sc
         elif dimensions_phi == 31: self.params_idx = self.hybrid_no_xmgap_idx   
         elif dimensions_phi == 34: self.params_idx = self.hybrid_idx
-        elif dimensions_phi == 66: self.params_idx = self.warm_idx_eq_gap
+        elif dimensions_phi == 57: self.params_idx = self.warm_idx_eq_gap
         elif dimensions_phi == 84: self.params_idx = self.warm_idx
         elif dimensions_phi == self.full_dim: self.params_idx = slice(None)
-        self.DEFAULT_PHI = self.DEFAULT_PHI[self.params_idx]
+        self.initial_phi = self.DEFAULT_PHI[self.params_idx]
 
         self.materials_directory = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/materials')
         sys.path.insert(1, os.path.join(PROJECTS_DIR,'MuonsAndMatter/python/bin'))
@@ -320,7 +268,7 @@ class ShipMuonShield():
                 max_y = dY
         max_x = np.round(max_x,decimals=1).item()
         max_y = np.round(max_y,decimals=1).item()
-        d_space = (max_x+0.5, max_y+0.5, (-1, np.ceil(Z+0.5).item()))
+        d_space = (max_x+0.3, max_y+0.3, (-0.5, np.ceil(Z+0.5).item()))
         resol = self.resol
         self.run_magnet(True,phi.cpu().numpy(),file_name = self.fields_file,d_space = d_space,resol = resol, cores = cores, fSC_mag = self.fSC_mag)
 
@@ -507,14 +455,16 @@ class ShipMuonShield():
         dX_bounds = [(5, 250)] * 2
         dY_bounds = [(4, 160)] * 2 
         gap_bounds = [(2, 150)] * 2 
-        yoke_bounds = [(0.3,3)]*2#[(0.25, 4)]
+        yoke_bounds = [(1,3)]*2#[(0.25, 4)]
         dY_yoke_bounds = [(5, 160)]*2
         inner_gap_bounds = [(0., 150.)]*2
         NI_bounds = [(1.,50E3)]
         bounds = magnet_lengths + 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
         dY_yoke_bounds = [(4, 300)] *2
         dY_bounds = [(5, 300)] * 2 
-        bounds += 5*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
+        bounds += 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
+        yoke_bounds = [(0.3,1)]*2
+        bounds += 3*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
         if self.fSC_mag: 
             assert False #TODO: fix this
             bounds[self.parametrization['M2'][0]] = (50,400)
@@ -529,16 +479,16 @@ class ShipMuonShield():
             phi = phi.unsqueeze(0)
         if phi.size(-1) != self.full_dim:
             assert phi.squeeze().size(-1) == len(self.params_idx), f"INPUT SHAPE: {phi.shape}"
-            new_phi = torch.tensor(self.warm_opt_scaled).clone().to(phi.device).repeat(phi.size(0), 1)
+            new_phi = self.DEFAULT_PHI.clone().to(phi.device).repeat(phi.size(0), 1)
             new_phi[:, torch.as_tensor(self.params_idx, device=phi.device)] = phi
             if self.fSC_mag:
                 new_phi[:, self.parametrization['M2'][2]] = new_phi[:, self.parametrization['M2'][1]]
                 new_phi[:, self.parametrization['M2'][4]] = new_phi[:, self.parametrization['M2'][3]]
-            if self.dimensions_phi == 66:
+            if self.dimensions_phi == len(self.warm_idx_eq_gap):
                 for m,idx in self.parametrization.items():
-                    new_phi[:, idx[11]] = new_phi[:, idx[12]]
-                    new_phi[:, idx[9]] = new_phi[:, idx[1]]*new_phi[:, idx[7]]
-                    new_phi[:, idx[10]] = new_phi[:, idx[2]]*new_phi[:, idx[8]]
+                    new_phi[:, idx[11]] = new_phi[:, idx[12]] #fix Xmgap_1 = Xmgap_2
+                    new_phi[:, idx[9]] = new_phi[:, idx[1]]*new_phi[:, idx[7]] #Fix dY_yoke = dX_core*ratio_yoke
+                    new_phi[:, idx[10]] = new_phi[:, idx[2]]*new_phi[:, idx[8]] #Fix dY_yoke = dX_core*ratio_yoke
         else:
             new_phi = phi
         assert new_phi.size(-1) == self.full_dim, f"FINAL SHAPE: {new_phi.shape}"
@@ -710,20 +660,20 @@ if __name__ == '__main__':
     parser.add_argument("--n_tasks_per_node", type=int, default=32)
     parser.add_argument("--n_tasks", type=int, default=None)
     parser.add_argument("--warm", dest = 'SC', action='store_false')
-    parser.add_argument("--muons_file", type=str, default=os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/enriched_subsample.pkl'))
+    parser.add_argument("--muons_file", type=str, default=os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample_4M.pkl'))
     parser.add_argument("--params_name", type=str, default=None)
     parser.add_argument("--cluster", action='store_true')
     parser.add_argument("--field_map", action='store_true')
     parser.add_argument("--double_sample", action='store_true')
     parser.add_argument("--remove_cavern", dest = "cavern", action='store_false')
     args = parser.parse_args()
-    params_dict = {#'baseline':torch.tensor(ShipMuonShield.warm_scaled_baseline),
-                   #'warm_optm':torch.tensor(ShipMuonShield.warm_opt),
-                   #'old_warm_opt':torch.tensor(ShipMuonShield.old_warm_opt),
+    params_dict = {'warm_optm':torch.tensor(ShipMuonShield.warm_opt),
+                   'old_warm_opt':torch.tensor(ShipMuonShield.old_warm_opt),
                     'sc_v6':torch.tensor(ShipMuonShield.sc_v6),
+                    'baseline':torch.tensor(ShipMuonShield.warm_scaled_baseline),
                     'warm_optm_scaled':torch.tensor(ShipMuonShield.warm_opt_scaled),
                      }
-    dim = 66#ShipMuonShield.full_dim
+    dim = ShipMuonShield.full_dim
     if args.params_name is not None:
         with open(f'/home/hep/lprate/projects/BlackBoxOptimization/outputs/{args.params_name}/phi_optm.txt', "r") as txt_file:
             data = [float(line.strip()) for line in txt_file]
@@ -732,7 +682,7 @@ if __name__ == '__main__':
         dim = len(phi_newparameters.flatten())
     d = {}
     t0 = time.time()
-    
+    print(dim)
     
     
     
