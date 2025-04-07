@@ -105,7 +105,7 @@ if __name__ == "__main__":
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=True)
-    elif args.problem == 'ship_warm': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=False, double_sample=args.multi_fidelity)
+    elif args.problem == 'ship_warm': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=False, multi_fidelity=args.multi_fidelity)
 
     if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
     #add phi initial here?
@@ -117,7 +117,7 @@ if __name__ == "__main__":
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,device = dev)
     elif args.model == 'gan': model = GANModel(42,problem_fn.DEF_N_SAMPLES,64,device = dev)
     model_scheduler = {args.model_switch:SingleTaskIBNN,
-                       #args.reduce_bounds:GP_RBF,
+                       args.reduce_bounds:GP_RBF,
                        }
 
     optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range, model_scheduler)

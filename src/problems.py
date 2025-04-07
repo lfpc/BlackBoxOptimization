@@ -113,6 +113,14 @@ class ShipMuonShield():
                        'M4': [4, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71],
                        'M5': [5, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84],
                        'M6': [6, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97]}
+    idx_mag = {0:'Z_len[cm]',
+                  1:'dXIn[cm]', 2:'dXOut[cm]', 
+                  3:'dYIn[cm]', 4:'dYOut[cm]', 
+                  5:'gapIn[cm]', 6:'gapOut[cm]', 
+                  7:'ratio_yokesIn', 8:'ratio_yokesOut',
+                  9:'dY_yokeIn[cm]', 10: 'dY_yokeOut[cm]',
+                  11:'XmgapIn[cm]', 12:'XmgapOut[cm]',
+                  13:'NI[A]'}
 
     old_warm_opt = [231.00, 208.0, 207.0, 281.0, 248.0, 305.0, 242.0, 
                   50.00,  50.00, 119.00, 119.00,   2.00, 2.00, 1.00,1.0,50.,50.,0.0, 0.00, 45000,
@@ -123,23 +131,49 @@ class ShipMuonShield():
                   22.0, 32.0, 209.0, 35.0, 8.0, 13.0, 1.0,1.0,22.0, 32.0,0.0, 0., 19273.68,
                   33.0, 77.0, 85.0, 241.0, 9.0, 26.0, 1.0,1.0,33.0, 77.0,0.0, 0., 29300.46]
     
-    warm_scaled_baseline = [120.50, 127.5, 250., 372.5, 203.76, 200.59, 198.83, 
+    warm_scaled_baseline = [120.50, 250, 250., 250., 200., 200., 195., 
                   50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 0.,
                   72.00, 51.00, 29.00, 46.00, 10.00, 7.00, 1.00,1.0,72.00, 51.00,0.0, 0.00, 0.,
                   54.00, 38.00, 46.00, 130.00, 14.00, 9.00, 1.00,1.0,54.00, 38.00,0.0, 0.00, 0.,
                   10.00, 31.00, 35.00, 31.00, 51.00, 11.00, 1.00,1.0,10.00, 31.00,0.0, 0.00, 0.,
                   5.00, 32.00, 54.00, 24.00, 8.00, 8.00, 1.00,1.0,5.00, 32.00,0.0, 0.00, 0.,
                   22.00, 32.00, 130.00, 35.00, 8.00, 13.00, 1.00,1.0,22.00, 32.00,0.0, 0.00, 0.,
-                  33.00, 77.00, 85.00, 90.00, 9.00, 26.00, 1.00,1.0,33.00, 77.00,0.0, 0.00, 0.]
-
-    warm_opt =  [231.00, 150.52, 169.20, 294.88, 132.53, 299.40, 154.77, 
-     50.00, 50.00, 119.00, 119.00, 2.00, 2.00, 1.00,1.0,50.00, 50.00,0.0, 0.00, 45000, 
-     64.83, 60.14, 11.46, 37.37, 17.35, 2.00, 1.47,1.47,95.3001, 88.4058,0.0, 0.00, 161542.17, 
-     54.16, 27.55, 47.72, 14.10, 6.90, 3.34, 0.66,0.66,35.7456, 18.183,0.0, 0.00, 85249.97, 
-     5.00, 52.14, 65.64, 5.00, 9.88, 2.00, 1.40,1.4,7.0, 72.996,0.0, 0.00, 34327.29, 
-     5.16, 5.11, 72.92, 55.70, 2.00, 2.01, 0.86,0.86,4.4376, 4.3946,1.49, 1.49, 70056.44, 
-     5.00, 32.54, 77.57, 42.95, 2.00, 2.33, 1.26,1.26,6.3, 41.0004,0.07, 0.07, 67362.87, 
-     5.19, 62.89, 79.89, 54.60, 2.00, 17.96, 1.32,1.32,6.8508, 83.0148,0.4, 0.40, 169937.25]
+                  33.00, 77.00, 85.00, 90.00, 9.00, 26.00, 1.00,1.0,33.00, 77.00,5.0, 5.00, 0.]
+    
+    hybrid_baseline = [120.50, 250, 250., 250., 200., 200., 195., 
+                    50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 0.,
+                    0.,  0.,  0.,  0.,  0.,   0., 1.,1.0,0.,0.,0.0, 0.,0.,
+                    45.69,  45.69,  22.18,  22.18,  27.01,  16.24, 3.00,3.0,137.1,137.1,0.0, 0.00, 3360000.0,
+                    0.,  0.,  0.,  0.,  0.,  0., 1.,1.0,0.,0.,0.0, 0., 0.,
+                    24.80,  48.76,   8.00, 104.73,  15.80,  16.78, 1.00,1.0,24.80,  48.76,0.0, 0.00, 0.0,
+                    3.00, 100.00, 192.00, 192.00,   2.00,   4.80, 1.00,1.0,3.00, 100.00,0.0, 0.00, 0.0,
+                    3.00, 100.00,   8.00, 172.73,  46.83,   2.00, 1.00,1.0,3.00, 100.00,0.0, 0.00, 0.0]
+    
+    tokanut_v2 = [120.500, 208.882, 265.111, 264.502,
+                  173.762, 165.456, 216.073, 50.000,
+                  50.000, 119.000, 119.000, 2.000,
+                  2.000, 1.000, 1.000, 50.000,
+                  50.000, 0.000, 0.000, 0.000,
+                  68.750, 67.437, 9.014, 58.625,
+                  2.000, 36.974, 1.000, 1.025,
+                  68.750, 69.147, 0.000, 0.000,
+                  0.000, 62.626, 9.709, 46.703,
+                  88.739, 2.108, 2.081, 1.000,
+                  1.000, 62.626, 9.709, 0.000,
+                  0.000, 0.000, 19.072, 34.606,
+                  45.668, 46.926, 108.437, 2.200,
+                  1.000, 1.000, 19.072, 34.606,
+                  0.000, 0.000, 0.000, 5.263,
+                  55.632, 39.860, 5.278, 2.000,
+                  2.000, 1.000, 0.900, 5.263,
+                  50.069, 0.100, 0.100, 0.000,
+                  33.016, 12.833, 123.270, 78.523,
+                  22.414, 2.001, 0.959, 0.953,
+                  31.663, 12.233, 0.100, 0.100,
+                  0.000, 15.755, 77.293, 69.398,
+                  152.828, 2.000, 35.402, 1.000,
+                  0.900, 15.755, 69.564, 0.0,
+                  0.0, 0.000]
     
     warm_opt_scaled = [231.00, 150.52, 169.20, 294.88, 132.53, 299.40, 194.77, 
      50.00, 50.00, 119.00, 119.00, 2.00, 2.00, 1.00,1.0,50.00, 50.00,0.0, 0.00, 45000,
@@ -162,16 +196,31 @@ class ShipMuonShield():
     hybrid_idx = (np.array(parametrization['M2'])[[0, 1, 3, 5, 6, 7]]).tolist() + [parametrization['M3'][0]]+\
            parametrization['M4'] + parametrization['M5'] + parametrization['M6']
     
-    warm_idx = parametrization['M1'] + parametrization['M2'] + parametrization['M3'] + parametrization['M4'] + parametrization['M5'] + parametrization['M6']
+    #warm_idx = parametrization['M1'][:-1] + parametrization['M2'][:-1] + parametrization['M3'][:-1] + parametrization['M4'][:-1] + parametrization['M5'][:-1] + parametrization['M6'][:-1]
 
-    warm_idx_eq_gap = parametrization['M1'][1:9] + parametrization['M1'][12:13] + \
+    warm_idx_fixed_length = parametrization['M1'][1:9] + parametrization['M1'][12:13] + \
                       parametrization['M2'][1:9] + parametrization['M2'][12:13] + \
                       parametrization['M3'][1:9] + parametrization['M3'][12:13] + \
                       parametrization['M4'][:9] + parametrization['M4'][12:13] + \
                       parametrization['M5'][:9] + parametrization['M5'][12:13] + \
                       parametrization['M6'][:9] + parametrization['M6'][12:13]
     
-    DEFAULT_PHI = torch.tensor(warm_scaled_baseline)
+    warm_idx =         parametrization['M1'][:9] + parametrization['M1'][11:13] + \
+                      parametrization['M2'][:9] + parametrization['M2'][11:13] + \
+                      parametrization['M3'][:9] + parametrization['M3'][11:13] + \
+                      parametrization['M4'][:9] + parametrization['M4'][11:13] + \
+                      parametrization['M5'][:9] + parametrization['M5'][11:13] + \
+                      parametrization['M6'][:9] + parametrization['M6'][11:13]
+    
+    warm_idx_eq_gap = parametrization['M1'][:9] + parametrization['M1'][12:13] + \
+                      parametrization['M2'][:9] + parametrization['M2'][12:13] + \
+                      parametrization['M3'][:9] + parametrization['M3'][12:13] + \
+                      parametrization['M4'][:9] + parametrization['M4'][12:13] + \
+                      parametrization['M5'][:9] + parametrization['M5'][12:13] + \
+                      parametrization['M6'][:9] + parametrization['M6'][12:13]
+    
+    
+    DEFAULT_PHI = torch.tensor(hybrid_baseline)
     initial_phi = DEFAULT_PHI.clone()
     full_dim = 98
 
@@ -191,8 +240,8 @@ class ShipMuonShield():
                  left_margin = 2,
                  right_margin = 2,
                  y_margin = 3,
-                 dimensions_phi = 34,
-                muons_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample_mid_biased.pkl'),
+                 dimensions_phi = 98,
+                muons_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/mixed_subsample.pkl'),
                 fields_file = None,
                 extra_magnet = False,
                 cut_P:float = None,
@@ -220,12 +269,12 @@ class ShipMuonShield():
         self.extra_magnet = extra_magnet    
         self.lambda_constraints = 50
         self.cut_P = cut_P
+        self.use_B_goal = True
 
-        if dimensions_phi == 29: self.params_idx = self.fixed_sc
-        elif dimensions_phi == 31: self.params_idx = self.hybrid_no_xmgap_idx   
-        elif dimensions_phi == 34: self.params_idx = self.hybrid_idx
-        elif dimensions_phi == 57: self.params_idx = self.warm_idx_eq_gap
-        elif dimensions_phi == 84: self.params_idx = self.warm_idx
+        if dimensions_phi == len(self.hybrid_idx): self.params_idx = self.hybrid_idx
+        elif dimensions_phi == len(self.warm_idx_fixed_length): self.params_idx = self.warm_idx_fixed_length
+        elif dimensions_phi == len(self.warm_idx_eq_gap): self.params_idx = self.warm_idx_eq_gap
+        elif dimensions_phi == len(self.warm_idx): self.params_idx = self.warm_idx
         elif dimensions_phi == self.full_dim: self.params_idx = slice(None)
         self.initial_phi = self.DEFAULT_PHI[self.params_idx]
 
@@ -295,7 +344,8 @@ class ShipMuonShield():
                       SmearBeamRadius=5., 
                       add_target=True, 
                       keep_tracks_of_hits=False, 
-                      extra_magnet=self.extra_magnet)
+                      extra_magnet=self.extra_magnet,
+                      NI_from_B = self.use_B_goal)
         with Pool(self.cores) as pool:
             result = pool.map(run_partial, workloads)
         print('SIMULATION FINISHED')
@@ -345,7 +395,7 @@ class ShipMuonShield():
             Ymgap = 0
             yoke_type = 'Mag1' if m in ['HA','M1','M2','M3'] else 'Mag3'
             if m == 'M2' and self.fSC_mag: yoke_type = 'Mag2'; Ymgap = 5
-            cost+= self.estimate_electrical_cost(params,yoke_type,Ymgap,materials_directory = self.materials_directory)
+            cost+= self.estimate_electrical_cost(params,yoke_type,Ymgap,materials_directory = self.materials_directory, NI_from_B = self.use_B_goal)
         return cost
 
     def get_iron_cost(self, phi,  zGap= 10):
@@ -461,7 +511,7 @@ class ShipMuonShield():
         NI_bounds = [(1.,50E3)]
         bounds = magnet_lengths + 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
         dY_yoke_bounds = [(4, 300)] *2
-        dY_bounds = [(5, 300)] * 2 
+        dY_bounds = [(5, 250)] * 2 
         bounds += 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
         yoke_bounds = [(0.3,1)]*2
         bounds += 3*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
@@ -484,9 +534,15 @@ class ShipMuonShield():
             if self.fSC_mag:
                 new_phi[:, self.parametrization['M2'][2]] = new_phi[:, self.parametrization['M2'][1]]
                 new_phi[:, self.parametrization['M2'][4]] = new_phi[:, self.parametrization['M2'][3]]
-            if self.dimensions_phi == len(self.warm_idx_eq_gap):
+            if self.dimensions_phi in (len(self.warm_idx_eq_gap),len(self.warm_idx_fixed_length)):
                 for m,idx in self.parametrization.items():
                     new_phi[:, idx[11]] = new_phi[:, idx[12]] #fix Xmgap_1 = Xmgap_2
+                    new_phi[:, idx[9]] = new_phi[:, idx[1]]*new_phi[:, idx[7]] #Fix dY_yoke = dX_core*ratio_yoke
+                    new_phi[:, idx[10]] = new_phi[:, idx[2]]*new_phi[:, idx[8]] #Fix dY_yoke = dX_core*ratio_yoke
+            elif self.dimensions_phi == len(self.warm_idx):
+                for m,idx in self.parametrization.items():
+                    if 0<new_phi[:, idx[11]]<1: new_phi[:, idx[11]] = 2*torch.round(new_phi[:, idx[11]])
+                    if 0<new_phi[:, idx[12]]<1: new_phi[:, idx[12]] = 2*torch.round(new_phi[:, idx[12]])
                     new_phi[:, idx[9]] = new_phi[:, idx[1]]*new_phi[:, idx[7]] #Fix dY_yoke = dX_core*ratio_yoke
                     new_phi[:, idx[10]] = new_phi[:, idx[2]]*new_phi[:, idx[8]] #Fix dY_yoke = dX_core*ratio_yoke
         else:
@@ -515,17 +571,16 @@ class ShipMuonShield():
             x_min = torch.zeros_like(z)
             y_min = torch.zeros_like(z)
             mask = z <= 2051.8-234.5
-            x_min[mask] = 356#min(np.abs(-3.56), 6.43)
-            y_min[mask] = 170#min(np.abs(-1.7), 5.8)
-            x_min[~mask] = 456#min(np.abs(-4.56), 11.43)
-            y_min[~mask] = 336#min(np.abs(-3.36), 10)
+            x_min[mask] = 356
+            y_min[mask] = 170
+            x_min[~mask] = 456
+            y_min[~mask] = 336
             x_min -= wall_gap
             y_min -= wall_gap
             return x_min, y_min
 
         z = torch.zeros(phi.size(0),device=phi.device)
         for m,idx in self.parametrization.items():
-            if m == 'M4': continue
             p = phi[:,idx]
             z = z + 2*p[:,0]
             Ymgap = 5 if (self.fSC_mag and m =='M2') else 0
@@ -557,14 +612,14 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  simulate_fields:bool = False,
                  return_files = None,
                  apply_det_loss:bool = True,
-                 double_sample:bool = False,
+                 multi_fidelity:bool = False,
                  **kwargs) -> None:
         super().__init__(cores = cores, n_samples = n_samples, cost_loss_fn = cost_loss_fn,
                          fSC_mag = fSC_mag, simulate_fields = simulate_fields,
                          dimensions_phi = dimensions_phi, apply_det_loss = apply_det_loss, seed = seed, **kwargs)
 
         self.parallel = parallel
-        self.double_sample = double_sample
+        self.multi_fidelity = multi_fidelity
         self.manager_cert_path = os.getenv('STARCOMPUTE_MANAGER_CERT_PATH')
         self.client_cert_path = os.getenv('STARCOMPUTE_CLIENT_CERT_PATH')
         self.client_key_path = os.getenv('STARCOMPUTE_CLIENT_KEY_PATH')
@@ -620,7 +675,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
         if not (phi.dim()==1 or phi.size(0)==1):
             result = result.view(phi.size(0),-1)
         if reduction == 'sum': result = result.sum(-1)
-        if self.double_sample: result *= 1E6/n_samples
+        if self.multi_fidelity: result *= 1E6/n_samples
         return result
     
     def __call__(self,phi,muons = None, file = None):
@@ -629,21 +684,22 @@ class ShipMuonShieldCluster(ShipMuonShield):
             for p in phi:
                 y.append(self(p))
             return torch.stack(y)
+        phi = self.add_fixed_params(phi)
         M = self.get_total_cost(phi)
         if file is None: file = self.muons_file
-        if self.get_constraints(phi) > 100 or M>((6*np.log(10)/10+1)*self.W0): return torch.ones((phi.size(0),1),device=phi.device)*1E6
+        if self.get_constraints(phi) > 10 or M>((6*np.log(10)/10+1)*self.W0): 
+            return torch.ones((1,1),device=phi.device)*1E6
         try: loss = self.simulate(phi,muons, file)
         except Exception as e:
             print(f"Error occurred with input: {phi}")
             print(e)
             raise
-        if self.double_sample and loss < 5000:
-            file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample.pkl')
-            loss = (loss + 2*self.simulate(phi, file=file))/3
-            if loss < 500:
-                file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample_4M.pkl')
-                loss = (8*loss + 3*self.simulate(phi, file=file))/11
-
+        n_samples = self.n_samples
+        if self.multi_fidelity and loss < 5000:
+            self.n_samples = 0
+            loss = self.simulate(phi, file=file)
+            self.n_samples = n_samples
+        
         loss += 1
         if self.apply_det_loss: loss = self.deterministic_loss(phi,loss)
         return loss.to(torch.get_default_dtype())   
@@ -660,18 +716,18 @@ if __name__ == '__main__':
     parser.add_argument("--n_tasks_per_node", type=int, default=32)
     parser.add_argument("--n_tasks", type=int, default=None)
     parser.add_argument("--warm", dest = 'SC', action='store_false')
-    parser.add_argument("--muons_file", type=str, default=os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample_4M.pkl'))
+    parser.add_argument("--muons_file", type=str, default=os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample_mid_biased.pkl'))
     parser.add_argument("--params_name", type=str, default=None)
     parser.add_argument("--cluster", action='store_true')
     parser.add_argument("--field_map", action='store_true')
-    parser.add_argument("--double_sample", action='store_true')
+    parser.add_argument("--multi_fidelity", action='store_true')
     parser.add_argument("--remove_cavern", dest = "cavern", action='store_false')
     args = parser.parse_args()
-    params_dict = {'warm_optm':torch.tensor(ShipMuonShield.warm_opt),
-                   'old_warm_opt':torch.tensor(ShipMuonShield.old_warm_opt),
+    params_dict = {'old_warm_opt':torch.tensor(ShipMuonShield.old_warm_opt),
                     'sc_v6':torch.tensor(ShipMuonShield.sc_v6),
                     'baseline':torch.tensor(ShipMuonShield.warm_scaled_baseline),
                     'warm_optm_scaled':torch.tensor(ShipMuonShield.warm_opt_scaled),
+                    'warm_optm_scaled_2':torch.tensor(ShipMuonShield.warm_opt_scaled_2),
                      }
     dim = ShipMuonShield.full_dim
     if args.params_name is not None:
@@ -698,15 +754,16 @@ if __name__ == '__main__':
         elif args.n_tasks is None: n_tasks = 45
         else: n_tasks = args.n_tasks
         if args.cluster:
-            muon_shield = ShipMuonShieldCluster(cores = n_tasks,dimensions_phi=dim,simulate_fields=args.field_map, fSC_mag=fSC_mag, seed=seed, fields_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.npy'), double_sample=args.double_sample)
+            muon_shield = ShipMuonShieldCluster(cores = n_tasks,dimensions_phi=dim,simulate_fields=args.field_map, fSC_mag=fSC_mag, seed=seed, fields_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/outputs/fields.npy'), multi_fidelity=args.multi_fidelity)
             t1 = time.time()
             loss_muons = muon_shield.simulate(torch.as_tensor(phi), file = args.muons_file)
-            if args.double_sample and loss_muons < 5000:
+            if args.multi_fidelity and loss_muons < 5000:
                 file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample.pkl')
                 loss_muons = (loss_muons + 2*muon_shield.simulate(phi, file=file))/3
                 if loss_muons < 500:
                     file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample_4M.pkl')
                     loss_muons = (8*loss_muons + 3*muon_shield.simulate(phi, file=file))/11
+            print(muon_shield.add_fixed_params(phi))
             t2 = time.time()
             loss_muons += 1
             n_hits = 0

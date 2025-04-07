@@ -78,7 +78,7 @@ class OptimizerClass():
                     min_loss = loss
                     if save_optimal_phi:
                         with open(join(self.outputs_dir,f'phi_optm.txt'), "w") as txt_file:
-                            for p in phi.view(-1):
+                            for p in self.true_model.add_fixed_params(phi).view(-1):
                                 txt_file.write(str(p.item()) + "\n")
                     pbar.set_description(f"Opt: {min_loss.item()} (it. {self._i})")
                 pbar.update()
@@ -268,15 +268,241 @@ class BayesianOptimizer(OptimizerClass):
     def reduce_bounds(self,local_bounds:float = 0.1):
         '''Reduce the bounds to the region (+-local_bounds) of the current optimal, respecting also the previous bounds.'''
         phi = self.get_optimal()[0]
+        original_bounds = self.true_model.GetBounds()
         new_bounds = torch.stack([phi*(1-local_bounds),phi*(1+local_bounds)])
-        new_bounds[0] = torch.maximum(self.bounds[0],new_bounds[0])
-        new_bounds[1] = torch.minimum(self.bounds[1],new_bounds[1])
+        new_bounds[0] = torch.maximum(original_bounds[0],new_bounds[0])
+        new_bounds[1] = torch.minimum(original_bounds[1],new_bounds[1])
         new_bounds[1] = torch.maximum(new_bounds[1],0.1*torch.ones_like(new_bounds[1]))
         self.bounds = new_bounds
         self.model.bounds = new_bounds.to(self.device)
     def loss(self,x,y):
         return y
         return self.true_model.deterministic_loss(x,y)
+    
+from scipy.optimize import minimize, Bounds as ScipyBounds
+import numpy as np
+class PowellOptimizer(OptimizerClass):
+    """
+    Optimizer using Powell's conjugate direction method via scipy.optimize.minimize.
+    Logs individual function evaluations to WandB in real-time.
+    Preserves direction state between iterations to mimic a single longer run.
+    """
+    def __init__(self, true_model,
+                 bounds: torch.Tensor,
+                 initial_phi: torch.Tensor,
+                 device=torch.device('cuda'),
+                 history: tuple = (),
+                 WandB: dict = {'name': 'PowellOptimization'},
+                 outputs_dir='outputs',
+                 resume: bool = False,
+                 scipy_options: dict = None):
+
+        # --- History Initialization (same as before) ---
+        loaded_history = ()
+        if resume:
+            history_path = join(outputs_dir,'history.pkl')
+            try:
+                with open(history_path, "rb") as f:
+                    # Load history AND direction state if saved
+                    saved_state = load(f)
+                    if isinstance(saved_state, dict) and 'history' in saved_state and 'directions' in saved_state:
+                         loaded_history = saved_state['history']
+                         self._current_directions = saved_state['directions'] # Restore directions
+                         print(f"Resumed history ({len(loaded_history[0])} points) and Powell directions from {history_path}")
+                    else: # Handle old format history files
+                         loaded_history = saved_state
+                         self._current_directions = None # Cannot resume directions
+                         print(f"Resumed history ({len(loaded_history[0])} points) from {history_path}. Powell directions reset.")
+
+            except FileNotFoundError:
+                print(f"Resume requested, but state file not found at {history_path}. Starting fresh.")
+                resume = False
+                self._current_directions = None
+            except Exception as e:
+                print(f"Error loading state file: {e}. Starting fresh.")
+                resume = False
+                self._current_directions = None
+
+        else: # Not resuming
+             self._current_directions = None # Initialize directions state
+
+        if len(history) > 0:
+             effective_history = history
+             print("Using history provided via argument.")
+             # If history provided, directions cannot be known unless also provided (complex)
+             if self._current_directions is not None:
+                  print("Warning: Using provided history, ignoring any potentially resumed Powell directions.")
+             self._current_directions = None
+        elif resume and len(loaded_history) > 0:
+             effective_history = loaded_history
+             print("Using resumed history from file.")
+             # Directions were already handled during loading
+        else:
+             if initial_phi is None:
+                  raise ValueError("PowellOptimizer requires initial_phi if not resuming or providing history.")
+             print("Using initial_phi to start history.")
+             initial_phi_clipped = torch.max(torch.min(initial_phi.cpu(), bounds[1]), bounds[0])
+             if not torch.equal(initial_phi_clipped.cpu(), initial_phi.cpu()):
+                  print("Warning: Initial phi was outside bounds, clipped to:", initial_phi_clipped)
+             initial_phi_dev = initial_phi_clipped.to(device)
+             if initial_phi_dev.dim() == 1:
+                  initial_phi_dev = initial_phi_dev.unsqueeze(0)
+             y_init = true_model(initial_phi_dev).cpu()
+             effective_history = (initial_phi_clipped.cpu().view(-1, bounds.shape[1]),
+                                  y_init.view(-1,1))
+             self._current_directions = None # Start fresh
+
+        # --- Base Class Initialization (same as before) ---
+        super().__init__(true_model=true_model,
+                         surrogate_model=None,
+                         bounds=bounds,
+                         device=device,
+                         history=effective_history,
+                         WandB=WandB,
+                         outputs_dir=outputs_dir,
+                         resume=resume) # Resume status passed to base, though we handled state here
+
+        # --- Powell Specific Attributes (same as before, directions handled above) ---
+        self.scipy_options = scipy_options if scipy_options is not None else {}
+        if 'maxiter' in self.scipy_options:
+            # print("Warning: 'maxiter' in scipy_options ignored; controlled internally by PowellOptimizer.")
+            del self.scipy_options['maxiter']
+        if 'direc' in self.scipy_options:
+             print("Warning: 'direc' in scipy_options ignored; managed internally by PowellOptimizer state.")
+             del self.scipy_options['direc']
+        self.scipy_options.setdefault('xtol', 1e-4)
+        self.scipy_options.setdefault('ftol', 1e-4)
+        self.scipy_options.setdefault('disp', False)
+
+        bounds_np = self.bounds.numpy()
+        self.scipy_bounds = ScipyBounds(bounds_np[0], bounds_np[1])
+        self._last_scipy_result = None
+        self._wandb_run_active = wandb.run is not None
+
+    # --- _objective_wrapper remains the same ---
+    def _objective_wrapper(self, x_np: np.ndarray) -> float:
+        """
+        Wrapper for Scipy: Evaluates true_model, updates history, and logs to WandB.
+        (Code is identical to previous version)
+        """
+        phi = torch.from_numpy(x_np).to(dtype=self.history[0].dtype if self.n_calls() > 0 else torch.float32, device=self.device)
+        if phi.dim() == 1:
+             phi = phi.unsqueeze(0)
+
+        try:
+            y = self.true_model(phi)
+        except Exception as e:
+            print(f"\nError evaluating true_model at {phi.tolist()}: {e}")
+            return float('inf')
+
+        loss_val = self.loss(phi.cpu(), y.cpu())
+        self.update_history(phi.cpu(), y.cpu())
+
+        if self._wandb_run_active and wandb.run is not None:
+            try:
+                log_data = {'eval_loss': loss_val.item()}
+                wandb.log(log_data, step=self.n_calls())
+            except Exception as e:
+                 print(f"\nWarning: WandB logging failed in _objective_wrapper: {e}")
+
+        return loss_val.item()
+
+    def optimization_iteration(self):
+        """
+        Performs one major Powell iteration, preserving direction state.
+        """
+        print(f"\n--- Powell Iteration {self._i} (Calls: {self.n_calls()}) ---")
+        if self.n_calls() == 0:
+             raise RuntimeError("PowellOptimizer history is empty, cannot start iteration.")
+
+        phi_current, loss_current = self.get_optimal()
+        x0 = phi_current.cpu().numpy()
+
+        print(f"Starting Powell step from: {x0.tolist()}, Current Best Loss: {loss_current.item():.4f}")
+
+        # *** Prepare options, including current directions if available ***
+        current_options = {**self.scipy_options, 'maxiter': 1} # Base options + force maxiter=1
+        if self._current_directions is not None:
+            print("Using stored directions from previous iteration.")
+            current_options['direc'] = self._current_directions
+        else:
+            print("Initializing Powell directions (first iteration or after reset).")
+            # SciPy will initialize directions automatically if 'direc' is not provided
+
+        t1 = time()
+        try:
+            result = minimize(
+                fun=self._objective_wrapper,
+                x0=x0,
+                method='Powell',
+                bounds=self.scipy_bounds,
+                options=current_options, # Pass options with potential 'direc'
+            )
+            self._last_scipy_result = result
+            scipy_time = time() - t1
+            nfev_this_call = result.nfev
+            print(f"Scipy minimize (maxiter=1) completed in {scipy_time:.2f}s. Func Evals This Call: {nfev_this_call}. Success: {result.success}. Message: {result.message}")
+
+            # *** Store the final directions for the next iteration ***
+            if hasattr(result, 'direc'):
+                 self._current_directions = result.direc
+            else:
+                 # Should not happen with Powell, but handle defensively
+                 print("Warning: Result object did not contain 'direc'. Directions may reset.")
+                 self._current_directions = None
+
+        except Exception as e:
+            print(f"\nError during scipy.optimize.minimize: {e}")
+            # Optionally reset directions on error? Or keep the old ones?
+            # self._current_directions = None # Safer to reset if minimize failed badly
+            phi_best, loss_best = self.get_optimal()
+            return phi_best, loss_best # Return current best if minimize fails
+
+        # Get the best point found *overall* after this step
+        phi_best_after_step, loss_best_after_step = self.get_optimal()
+        return phi_best_after_step, loss_best_after_step
+
+    # --- Update saving/loading in OptimizerClass ---
+    # We need the main run_optimization loop to save/load the direction state too.
+    # This requires modifying OptimizerClass or making save/load specific here.
+    # Let's override save/load within PowellOptimizer for simplicity.
+
+    def save_state(self):
+        """Saves history and Powell directions."""
+        state_path = join(self.outputs_dir, 'optimizer_state.pkl') # Use a more descriptive name
+        state = {
+            'history': self.history,
+            'directions': self._current_directions
+        }
+        try:
+            with open(state_path, "wb") as f:
+                dump(state, f)
+            print(f"Saved optimizer state (history & directions) to {state_path}")
+        except Exception as e:
+            print(f"\nFailed to save optimizer state: {e}")
+
+    def stopping_criterion(self, **convergence_params):
+        """Checks stopping criteria: max iterations or Powell convergence."""
+        # 1. Check max iterations (from base class)
+        max_iter = convergence_params.get('max_iter', 100)
+        if self._i >= max_iter:
+            print(f"Stopping: Reached max iterations ({self._i} >= {max_iter}).")
+            return True
+
+        # 2. Check if the *last* scipy call reported convergence (optional)
+        # This might stop early if Powell converges quickly within one call.
+        check_scipy_convergence = convergence_params.get('check_scipy_convergence', False)
+        if check_scipy_convergence and self._last_scipy_result is not None:
+            # Check common scipy success flags or messages indicative of convergence
+            # Note: Powell's success/message might be less informative than gradient-based methods
+            # Check if function value change or parameter change is below tolerance
+            # This requires comparing previous results, which adds complexity.
+            # A simpler check: Did the last call succeed and report minimal change?
+            # result.success is often True even if maxiter is reached. A better check might be needed.
+            # For now, rely primarily on max_iter. Add tolerance checks if needed.
+            pass
+
+        return False # Continue optimization
     
     
 if __name__ == '__main__':

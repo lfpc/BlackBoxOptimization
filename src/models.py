@@ -7,6 +7,7 @@ from utils.nets import Generator, Discriminator,GANLosses, Encoder, Decoder, IBN
 from tqdm import trange
 from matplotlib import pyplot as plt
 from utils import standardize
+from gpytorch.kernels import ScaleKernel
 
 class GP_RBF(botorch.models.SingleTaskGP):
     def __init__(self,bounds,device = 'cpu'):
@@ -72,14 +73,17 @@ class GP_Cylindrical_Custom(GP_RBF):
 
 class SingleTaskIBNN(GP_RBF):
     def __init__(self, bounds, device = torch.device('cpu'),
-                 var_w = None,var_b = None,depth = 3, deterministic_loss = None
+                 var_w = 10.,var_b = 5.,depth = 3, deterministic_loss = None
                 ):
         super().__init__(bounds,device)
         self.model_args = {'var_w':var_w,'var_b':var_b, 'depth':depth}
         self._kernel = None
     def fit(self,X,Y,use_scipy = True,options:dict = None,**kwargs):
-        if self._kernel is None: kernel = botorch.models.kernels.InfiniteWidthBNNKernel(depth=self.model_args['depth'])
-        else: kernel = self._kernel
+        if self._kernel is None: ibnn_kernel = botorch.models.kernels.InfiniteWidthBNNKernel(depth=self.model_args['depth'])
+        else: ibnn_kernel = self._kernel
+        ibnn_kernel.weight_var = self.model_args['var_w']
+        ibnn_kernel.bias_var = self.model_args['var_b']
+        kernel = ScaleKernel(ibnn_kernel, device=self.device)
         super().fit(X,Y,use_scipy = use_scipy,options= options,covar_module=kernel,**kwargs)
         self._kernel = kernel
         return self
