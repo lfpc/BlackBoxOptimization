@@ -8,6 +8,7 @@ from matplotlib import pyplot as plt
 import argparse
 import wandb
 import os
+import json
 
 PROJECTS_DIR = os.getenv('PROJECTS_DIR', default = '~')
 
@@ -18,8 +19,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--cpu",dest = 'cuda', action = 'store_false')
 parser.add_argument("--seed", type=int, default=13)
 parser.add_argument("--maxiter", type=int, default=1000)
-parser.add_argument("--dimensions", type=int, default=84)
-parser.add_argument('--problem', type=str, default='ship_warm')
+parser.add_argument('--problem', type=str, default='ship')
 parser.add_argument('--optimization', type=str, default='bayesian')
 parser.add_argument('--model', type=str, default='gp_rbf')
 parser.add_argument('--name', type=str, default='optimizationtest')
@@ -27,37 +27,40 @@ parser.add_argument('--group', type=str, default='BayesianOptimization')
 parser.add_argument("--nodes",type=int,default = 16)
 parser.add_argument("--n_tasks_per_node", type=int, default=32)
 parser.add_argument("--n_tasks", type=int, default=None)
-parser.add_argument("--save_history", action='store_true')
+parser.add_argument("--not_save_history", action='store_false', dest='save_history')
 parser.add_argument("--resume", action='store_true')
 parser.add_argument("--reduce_bounds", type=int, default=-1)
-parser.add_argument("--simulated_fields", action='store_true')
 parser.add_argument("--multi_fidelity", action='store_true')
-
-#you wont neeed
 parser.add_argument("--parallel", type=int, default = 1)
 parser.add_argument("--model_switch", type=int,default = -1)
-parser.add_argument('--noise', type=float, default=1.0)
 parser.add_argument('--n_samples', type=int, default=0)
 parser.add_argument("--n_initial", type=int, default=-1)
-parser.add_argument('--phi_bounds', nargs='+', type=float, default=None)
-parser.add_argument('--torch_optimizer',dest='scipy', action = 'store_false')
 parser.add_argument('--float64', action = 'store_true')
 
 args = parser.parse_args()
 
+OUTPUTS_DIR = os.path.join(PROJECTS_DIR,'BlackBoxOptimization/outputs',args.name)
+config_file = os.path.join(OUTPUTS_DIR,'config.json')
+if not os.path.exists(OUTPUTS_DIR):
+    os.makedirs(OUTPUTS_DIR)
+    with open(os.path.join(PROJECTS_DIR, 'cluster', 'config.json'), 'r') as src, open(config_file, 'w') as dst:
+        CONFIG = json.load(src)
+        json.dump(CONFIG, dst, indent=4)
+else: 
+    with open(config_file, 'r') as f:
+        CONFIG = json.load(f)
+
+
 wandb.login()
-WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': vars(args), 'name': args.name}
+WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': {**vars(args), **CONFIG}, 'name': args.name}
 
 if args.cuda: assert torch.cuda.is_available()
-if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda:1')
+if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda')
 else: dev = torch.device('cpu')
 print('Device:', dev)
 torch.manual_seed(args.seed);
 if args.float64: torch.set_default_dtype(torch.float64)
 
-OUTPUTS_DIR = os.path.join(PROJECTS_DIR,'BlackBoxOptimization/outputs',args.name)
-if not os.path.exists(OUTPUTS_DIR):
-    os.makedirs(OUTPUTS_DIR)
 
 
 def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, model_scheduler):
@@ -96,6 +99,11 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, mo
 
 
 if __name__ == "__main__":
+    
+    
+    config_file = os.path.join(PROJECTS_DIR,'cluster','config.json')
+    with open(config_file, 'r') as f:
+        CONFIG = json.load(f)
 
     dimensions_phi = args.dimensions
     if args.n_tasks is None: n_tasks = args.nodes*args.n_tasks_per_node
@@ -104,11 +112,10 @@ if __name__ == "__main__":
     if args.problem == 'stochastic_rosenbrock': problem_fn = problems.stochastic_RosenbrockProblem(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
-    elif args.problem == 'ship': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=True)
-    elif args.problem == 'ship_warm': problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, dimensions_phi=dimensions_phi,simulate_fields=args.simulated_fields, fSC_mag=False, multi_fidelity=args.multi_fidelity)
+    elif args.problem == 'ship': 
+        problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, multi_fidelity=args.multi_fidelity,**CONFIG)
 
     if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
-    #add phi initial here?
     else:
         phi_range = torch.as_tensor(args.phi_bounds,device=dev,dtype=torch.get_default_dtype()).view(2,-1)  
         if phi_range.size(1) != args.dimensions: phi_range = phi_range.repeat(1,args.dimensions)
