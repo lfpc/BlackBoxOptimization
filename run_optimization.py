@@ -45,7 +45,13 @@ if not os.path.exists(OUTPUTS_DIR):
     os.makedirs(OUTPUTS_DIR)
     with open(os.path.join(PROJECTS_DIR, 'cluster', 'config.json'), 'r') as src, open(config_file, 'w') as dst:
         CONFIG = json.load(src)
+        CONFIG['W0'] = float(input("Enter Reference Cost (W0) [default: 11E6]: ") or 11E6)
+        CONFIG['L0'] = float(input("Enter Maximum Length (L0) [default: 29.7]: ") or 29.7)
+        CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 60]: ") or 60)
+        default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or None)
+        CONFIG['default_phi'] = getattr(problems.ShipMuonShield, default_phi_name, None)
         json.dump(CONFIG, dst, indent=4)
+
 else: 
     with open(config_file, 'r') as f:
         CONFIG = json.load(f)
@@ -63,16 +69,16 @@ if args.float64: torch.set_default_dtype(torch.float64)
 
 
 
-def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, model_scheduler):
+def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_bounds, model_scheduler):
     if N_initial_points == -1: initial_phi = problem_fn.initial_phi.to(dev)
-    else: initial_phi = (phi_range[1]-phi_range[0])*torch.rand(N_initial_points,dimensions_phi,device=dev)+phi_range[0]
-    #assert initial_phi.ge(phi_range[0]).logical_and(initial_phi.le(phi_range[1])).all()
+    else: initial_phi = (phi_bounds[1]-phi_bounds[0])*torch.rand(N_initial_points,dimensions_phi,device=dev)+phi_bounds[0]
+    #assert initial_phi.ge(phi_bounds[0]).logical_and(initial_phi.le(phi_bounds[1])).all()
 
     if args.optimization == 'bayesian':
         acquisition_fn = Custom_LogEI#acquisition.qLogExpectedImprovement if args.parallel>1 else acquisition.LogExpectedImprovement
         q = min(args.parallel,problem_fn.cores)
         optimizer = BayesianOptimizer(problem_fn,model,
-                                      phi_range,acquisition_fn=acquisition_fn,
+                                      phi_bounds,acquisition_fn=acquisition_fn,
                                       initial_phi = initial_phi,device = dev, 
                                       model_scheduler=model_scheduler,
                                       outputs_dir=OUTPUTS_DIR,
@@ -84,7 +90,7 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, mo
     elif args.optimization == 'lgso':
         optimizer = LGSO(problem_fn,
                          model,
-                         phi_range,
+                         phi_bounds,
                          epsilon= 0.2,
                          samples_phi = 42,
                          initial_phi = initial_phi,
@@ -101,11 +107,10 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_range, mo
 if __name__ == "__main__":
     
     
-    config_file = os.path.join(PROJECTS_DIR,'cluster','config.json')
+    config_file = os.path.join(OUTPUTS_DIR,'config.json')
     with open(config_file, 'r') as f:
         CONFIG = json.load(f)
 
-    dimensions_phi = args.dimensions
     if args.n_tasks is None: n_tasks = args.nodes*args.n_tasks_per_node
     else: n_tasks = args.n_tasks
 
@@ -113,21 +118,24 @@ if __name__ == "__main__":
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'ship': 
-        problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,seed=args.seed, parallel=args.parallel, multi_fidelity=args.multi_fidelity,**CONFIG)
+        problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,parallel=args.parallel, multi_fidelity=args.multi_fidelity,**CONFIG)
 
-    if args.phi_bounds is None: phi_range = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_range
+    phi_bounds = CONFIG.get('phi_bounds',None) 
+    dimensions = CONFIG.get('dimensions_phi')
+    if phi_bounds is None: phi_bounds = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_bounds
     else:
-        phi_range = torch.as_tensor(args.phi_bounds,device=dev,dtype=torch.get_default_dtype()).view(2,-1)  
-        if phi_range.size(1) != args.dimensions: phi_range = phi_range.repeat(1,args.dimensions)
-    if args.model == 'gp_rbf': model = GP_RBF(phi_range,device = dev)
-    elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_range,device = dev)
-    elif args.model == 'ibnn': model = SingleTaskIBNN(phi_range,device = dev)
+        phi_bounds = torch.as_tensor(args.phi_bounds,device=dev,dtype=torch.get_default_dtype()).view(2,-1)  
+        if phi_bounds.size(1) != dimensions: phi_bounds = phi_bounds.repeat(1,dimensions)
+
+    if args.model == 'gp_rbf': model = GP_RBF(phi_bounds,device = dev)
+    elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_bounds,device = dev)
+    elif args.model == 'ibnn': model = SingleTaskIBNN(phi_bounds,device = dev)
     elif args.model == 'gan': model = GANModel(42,problem_fn.DEF_N_SAMPLES,64,device = dev)
     model_scheduler = {args.model_switch:SingleTaskIBNN,
                        args.reduce_bounds:GP_RBF,
                        }
 
-    optimizer = main(model,problem_fn,args.dimensions,args.maxiter,args.n_initial,phi_range, model_scheduler)
+    optimizer = main(model,problem_fn,dimensions,args.maxiter,args.n_initial,phi_bounds, model_scheduler)
 
     phi,y,idx = optimizer.get_optimal(return_idx=True)
     with open(os.path.join(OUTPUTS_DIR,"phi_optm.txt"), "w") as txt_file:

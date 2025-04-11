@@ -236,7 +236,7 @@ class ShipMuonShield():
         self.use_B_goal = True
 
         if default_phi is not None:
-            self.DEFAULT_PHI = default_phi
+            self.DEFAULT_PHI = torch.as_tensor(default_phi)
         if dimensions_phi == len(self.hybrid_idx): self.params_idx = self.hybrid_idx
         elif dimensions_phi == len(self.warm_idx_fixed_length): self.params_idx = self.warm_idx_fixed_length
         elif dimensions_phi == len(self.warm_idx): self.params_idx = self.warm_idx
@@ -416,11 +416,11 @@ class ShipMuonShield():
             [X_mgap_1, dY, 0],
             [X_mgap_1 + dX + gap + dX * ratio_yoke_1, dY, 0],
             [X_mgap_1 + dX + gap + dX * ratio_yoke_1, dY + dY_yoke_1, 0],
-            [X_mgap_1, dY + dX * ratio_yoke_1, 0],
+            [X_mgap_1, dY + dY_yoke_1, 0],
             [X_mgap_2, dY2, 2 * dZ],
             [X_mgap_2 + dX2 + gap2 + dX2 * ratio_yoke_2, dY2, 2 * dZ],
             [X_mgap_2 + dX2 + gap2 + dX2 * ratio_yoke_2, dY2 + dY_yoke_2, 2 * dZ],
-            [X_mgap_2, dY2 + dX2 * ratio_yoke_2, 2 * dZ],
+            [X_mgap_2, dY2 + dY_yoke_2, 2 * dZ],
             ])
             volume += compute_solid_volume(corners)
         M_iron = 4*volume*density    
