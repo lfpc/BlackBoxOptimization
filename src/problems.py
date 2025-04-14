@@ -509,7 +509,7 @@ class ShipMuonShield():
             if self.fSC_mag:
                 new_phi[:, self.parametrization['M2'][2]] = new_phi[:, self.parametrization['M2'][1]]
                 new_phi[:, self.parametrization['M2'][4]] = new_phi[:, self.parametrization['M2'][3]]
-            if self.dimensions_phi == len(self.warm_idx_fixed_length):
+            if self.dimensions_phi in (len(self.warm_idx_fixed_length),len(self.warm_idx)):
                 for m,idx in self.parametrization.items():
                     new_phi[:, idx[9]] = new_phi[:, idx[1]]*new_phi[:, idx[7]] #Fix dY_yoke = dX_core*ratio_yoke
                     new_phi[:, idx[10]] = new_phi[:, idx[2]]*new_phi[:, idx[8]] #Fix dY_yoke = dX_core*ratio_yoke
