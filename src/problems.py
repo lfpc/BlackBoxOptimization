@@ -5,7 +5,7 @@ import sys
 import numpy as np
 import os
 from multiprocessing import Pool, cpu_count
-PROJECTS_DIR = os.getenv('PROJECTS_DIR')
+PROJECTS_DIR = os.getenv('PROJECTS_DIR', '~/projects')
 sys.path.insert(1, os.path.join(PROJECTS_DIR,'BlackBoxOptimization'))
 from utils import split_array, split_array_idx, get_split_indices, compute_solid_volume
 import logging
@@ -133,7 +133,7 @@ class ShipMuonShield():
                   22.00, 32.00, 130.00, 35.00, 8.00, 13.00, 1.00,1.0,22.00, 32.00,0.0, 0.00, 0.,
                   33.00, 77.00, 85.00, 90.00, 9.00, 26.00, 1.00,1.0,33.00, 77.00,5.0, 5.00, 0.]
     
-    hybrid_baseline = [120.50, 0, 350., 125., 200., 200., 195., 
+    hybrid_baseline = [120.50, 30, 350., 125., 200., 200., 195., 
                     50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 0.,
                     0.,  0.,  0.,  0.,  0.,   0., 1.,1.0,0.,0.,0.0, 0.,0.,
                     45.,  45.,  25.,  25.,  35.,  35., 2.67,2.67,120.15,120.15,0.0, 0.00, 3200000.0,
@@ -141,7 +141,18 @@ class ShipMuonShield():
                     5.263,55.632, 39.860, 5.278, 2.000,2.000, 1.000, 0.900, 5.263,50.069, 0.100, 0.100, 0.000,
                     33.016, 12.833, 123.270, 78.523,22.414, 2.001, 0.959, 0.953,31.663, 12.233, 0.100, 0.100,0.000, 
                     15.755, 77.293, 69.398,152.828, 2.000, 35.402, 1.000,0.900, 15.755, 69.564, 0.0,0.0, 0.000]
-    
+    hybrid_baseline_2 = [
+        120.50, 30.00, 283.39, 259.09, 198.21, 185.42, 240.42,
+        50.00, 50.00, 119.00, 119.00, 2.00, 2.00, 1.00, 1.00, 50.00, 50.00, 0.00, 0.00, 0.00,
+        0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 1.00, 1.00, 0.00, 0.00, 0.00, 0.00, 0.00,
+        45.00, 45.00, 25.00, 25.00, 69.92, 33.35, 2.29, 3.12, 105.09, 89.71, 0.00, 0.00, 3200000.00,
+        0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 1.00, 1.00, 0.00, 0.00, 0.00, 0.00, 0.00,
+        7.25, 45.12, 62.24, 47.26, 28.48, 123.87, 1.00, 0.81, 5.26, 50.07, 111.63, 111.63, 0.00,
+        32.78, 10.05, 103.80, 80.39, 110.66, 29.47, 0.96, 0.92, 31.66, 12.23, 66.40, 66.40, 0.00,
+        9.17, 60.94, 223.09, 41.49, 2.04, 12.65, 1.00, 0.86, 15.76, 69.56, 18.74, 18.74, 0.00
+    ]
+
+
     tokanut_v2 = [120.500, 208.882, 265.111, 264.502,173.762, 165.456, 216.073, 
                   50.000,50.000, 119.000, 119.000, 2.000,2.000, 1.000, 1.000, 50.000,50.000, 0.000, 0.000, 0.000,
                   68.750, 67.437, 9.014, 58.625,2.000, 36.974, 1.000, 1.025,68.750, 69.147, 0.000, 0.000,0.000, 
@@ -162,15 +173,16 @@ class ShipMuonShield():
         17.694, 68.430, 67.914, 133.745, 2.000, 41.878, 1.000, 0.749, 17.694, 51.273, 0.000, 0.000, 0.000]
 
     sc_v6 = [231.00,  0., 353.08, 125.08, 184.83, 150.19, 186.81, 
-         50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 45000,
+         50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 0,
         0.,  0.,  0.,  0.,  0.,   0., 1.,1.0,0.,0.,0.0, 0.,0.,
         45.69,  45.69,  22.18,  22.18,  27.01,  16.24, 3.00,3.0,137.1,137.1,0.0, 0.00, 3200000.0,
         0.,  0.,  0.,  0.,  0.,  0., 1.,1.0,0.,0.,0.0, 0., 0.,
-        24.80,  48.76,   8.00, 104.73,  15.80,  16.78, 1.00,1.0,24.80,  48.76,0.0, 0.00, 14240.8,
-        3.00, 100.00, 192.00, 192.00,   2.00,   4.80, 1.00,1.0,3.00, 100.00,0.0, 0.00, 30375.55,
-        3.00, 100.00,   8.00, 172.73,  46.83,   2.00, 1.00,1.0,3.00, 100.00,0.0, 0.00, 21393.79]
+        24.80,  48.76,   8.00, 104.73,  15.80,  16.78, 1.00,1.0,24.80,  48.76,0.0, 0.00,0,
+        3.00, 100.00, 192.00, 192.00,   2.00,   4.80, 1.00,1.0,3.00, 100.00,0.0, 0.00, 0,
+        3.00, 100.00,   8.00, 172.73,  46.83,   2.00, 1.00,1.0,3.00, 100.00,0.0, 0.00, 0]
     
-    hybrid_idx = (np.array(parametrization['M2'])[[0, 5, 6, 7,8,9,10]]).tolist() + [parametrization['M3'][0]]+\
+    hybrid_idx = (np.array(parametrization['M2'])[[0, 5, 6, 7,8,9,10]]).tolist() + \
+                      [parametrization['M1'][0]]+ [parametrization['M3'][0]]+\
                       parametrization['M4'][:9] + parametrization['M4'][12:13] + \
                       parametrization['M5'][:9] + parametrization['M5'][12:13] + \
                       parametrization['M6'][:9] + parametrization['M6'][12:13]
@@ -213,6 +225,7 @@ class ShipMuonShield():
                  left_margin = 2,
                  right_margin = 2,
                  y_margin = 3,
+                 SmearBeamRadius = 5,
                  dimensions_phi = 98,
                 muons_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample_biased.pkl'),
                 fields_file = None,
@@ -233,7 +246,6 @@ class ShipMuonShield():
         self.input_dist = input_dist
         self.cost_loss_fn = cost_loss_fn
         self.sensitive_plane = sensitive_plane
-        self.sensitive_film_params = sensitive_plane,
         self.fSC_mag = fSC_mag
         self.simulate_fields = simulate_fields
         self.seed = seed
@@ -241,6 +253,7 @@ class ShipMuonShield():
         self.cavern = cavern
         self.apply_det_loss = apply_det_loss
         self.extra_magnet = extra_magnet    
+        self.SmearBeamRadius = SmearBeamRadius
         self.lambda_constraints = 50
         self.cut_P = cut_P
         self.use_B_goal = True
@@ -254,7 +267,7 @@ class ShipMuonShield():
         self.initial_phi = self.DEFAULT_PHI[self.params_idx]
 
         self.materials_directory = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/materials')
-        sys.path.insert(1, os.path.join(PROJECTS_DIR,'MuonsAndMatter/python/bin'))
+        sys.path.insert(1, os.path.join(PROJECTS_DIR,'MuonsAndMatter'))
         sys.path.insert(1, os.path.join(PROJECTS_DIR,'MuonsAndMatter/python/lib'))
         from run_simulation import run, get_field
         from ship_muon_shield_customfield import estimate_electrical_cost, RESOL_DEF
@@ -309,14 +322,14 @@ class ShipMuonShield():
                       input_dist=self.input_dist, 
                       return_cost=True, 
                       fSC_mag=self.fSC_mag, 
-                      sensitive_film_params=self.sensitive_film_params, 
+                      sensitive_film_params=self.sensitive_plane, 
                       add_cavern=self.cavern, 
                       simulate_fields=self.simulate_fields, 
                       field_map_file=self.fields_file, 
                       return_nan=return_nan, 
                       seed=self.seed, 
                       draw_magnet=False, 
-                      SmearBeamRadius=5., 
+                      SmearBeamRadius=self.SmearBeamRadius, 
                       add_target=True, 
                       keep_tracks_of_hits=False, 
                       extra_magnet=self.extra_magnet,
@@ -470,9 +483,10 @@ class ShipMuonShield():
         return self.calc_loss(*self.simulate(phi,muons),M,L)
     
     def propagate_to_sensitive_plane(self,px,py,pz,x,y,z, epsilon = 1e-12):
-        z += self.sensitive_plane
-        x += self.sensitive_plane*px/(pz+epsilon)
-        y += self.sensitive_plane*py/(pz+epsilon)
+        sensitive_plane = self.sensitive_plane['position']
+        z += sensitive_plane
+        x += sensitive_plane*px/(pz+epsilon)
+        y += sensitive_plane*py/(pz+epsilon)
         return x,y,z
 
     def GetBounds(self,device = torch.device('cpu'), correct_bounds = True):
@@ -491,6 +505,7 @@ class ShipMuonShield():
         yoke_bounds = [(0.3,1)]*2
         bounds += 3*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
         if self.fSC_mag: 
+            bounds[self.parametrization['M1'][0]] = (30,100)
             bounds[self.parametrization['M2'][0]] = (50,400)
             bounds[self.parametrization['M2'][5]] = (15,70)
             bounds[self.parametrization['M2'][6]] = (15,70)
