@@ -50,6 +50,8 @@ if not os.path.exists(OUTPUTS_DIR):
         CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 60]: ") or 60)
         default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or None)
         CONFIG['default_phi'] = getattr(problems.ShipMuonShield, default_phi_name, None)
+        if args.multi_fidelity and CONFIG['n_samples'] == 0:
+            CONFIG['n_samples'] = int(input("Enter number of samples for low_fidelity [default: 5E5]: ") or 5E5) 
         json.dump(CONFIG, dst, indent=4)
 
 else: 

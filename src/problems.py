@@ -232,6 +232,7 @@ class ShipMuonShield():
                 extra_magnet = False,
                 cut_P:float = None,
                 default_phi:torch.tensor = None,
+                multi_fidelity:float = False,
                  ) -> None:
         
         self.left_margin = left_margin
@@ -243,6 +244,7 @@ class ShipMuonShield():
         self.cores = cores
         self.muons_file = muons_file
         self.n_samples = n_samples
+        if n_samples==0: self.n_samples = self.sample_x(muons_file = muons_file).shape[0]
         self.input_dist = input_dist
         self.cost_loss_fn = cost_loss_fn
         self.sensitive_plane = sensitive_plane
@@ -276,6 +278,7 @@ class ShipMuonShield():
         self.run_magnet = get_field
         self.resol = RESOL_DEF
         self.fields_file = fields_file
+        self.multi_fidelity = multi_fidelity
 
     def sample_x(self,phi=None, muons_file = None):
         muons_file = muons_file if muons_file is not None else self.muons_file
@@ -506,6 +509,7 @@ class ShipMuonShield():
         bounds += 3*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
         if self.fSC_mag: 
             bounds[self.parametrization['M1'][0]] = (30,100)
+            bounds[self.parametrization['M3'][0]] = (30,300)
             bounds[self.parametrization['M2'][0]] = (50,400)
             bounds[self.parametrization['M2'][5]] = (15,70)
             bounds[self.parametrization['M2'][6]] = (15,70)
@@ -590,12 +594,10 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  local:bool = False,
                  parallel:bool = False,
                  return_files = None,
-                 multi_fidelity:bool = False,
                  **kwargs) -> None:
         super().__init__(**kwargs)
 
         self.parallel = parallel
-        self.multi_fidelity = multi_fidelity
         self.manager_cert_path = os.getenv('STARCOMPUTE_MANAGER_CERT_PATH')
         self.client_cert_path = os.getenv('STARCOMPUTE_CLIENT_CERT_PATH')
         self.client_key_path = os.getenv('STARCOMPUTE_CLIENT_KEY_PATH')
@@ -619,7 +621,6 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  file = None,
                  reduction = 'sum'):
         phi = self.add_fixed_params(phi)
-
         n_samples = muons.shape[0] if muons is not None else self.n_samples
         if n_samples==0: n_samples = self.sample_x(muons_file = file).shape[0]
         muons_idx = self.sample_x_idx(n_samples=n_samples)
@@ -670,7 +671,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
             print(e)
             raise
         n_samples = self.n_samples
-        if self.multi_fidelity and loss < 5000:
+        if self.multi_fidelity and loss < 3000:
             self.n_samples = 0
             loss = self.simulate(phi, file=file)
             self.n_samples = n_samples
