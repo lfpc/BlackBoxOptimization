@@ -36,12 +36,21 @@ parser.add_argument("--model_switch", type=int,default = -1)
 parser.add_argument('--n_samples', type=int, default=0)
 parser.add_argument("--n_initial", type=int, default=-1)
 parser.add_argument('--float64', action = 'store_true')
+parser.add_argument('--use_diluted', action = 'store_true')
 
 args = parser.parse_args()
 
 OUTPUTS_DIR = os.path.join(PROJECTS_DIR,'BlackBoxOptimization/outputs',args.name)
 config_file = os.path.join(OUTPUTS_DIR,'config.json')
-if not os.path.exists(OUTPUTS_DIR):
+
+if args.resume:
+    with open(config_file, 'r') as f:
+        CONFIG = json.load(f)
+else: 
+    if os.path.exists(OUTPUTS_DIR): 
+        for f in os.listdir(OUTPUTS_DIR):
+            os.remove(os.path.join(OUTPUTS_DIR,f))
+        os.rmdir(OUTPUTS_DIR)
     os.makedirs(OUTPUTS_DIR)
     with open(os.path.join(PROJECTS_DIR, 'cluster', 'config.json'), 'r') as src, open(config_file, 'w') as dst:
         CONFIG = json.load(src)
@@ -52,11 +61,7 @@ if not os.path.exists(OUTPUTS_DIR):
         CONFIG['default_phi'] = getattr(problems.ShipMuonShield, default_phi_name, None)
         if args.multi_fidelity and CONFIG['n_samples'] == 0:
             CONFIG['n_samples'] = int(input("Enter number of samples for low_fidelity [default: 5E5]: ") or 5E5) 
-        json.dump(CONFIG, dst, indent=4)
-
-else: 
-    with open(config_file, 'r') as f:
-        CONFIG = json.load(f)
+        json.dump(CONFIG, dst, indent=4) 
 
 
 wandb.login()
