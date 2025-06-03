@@ -187,8 +187,12 @@ class ShipMuonShield():
                       parametrization['M5'][:9] + parametrization['M5'][12:13] + \
                       parametrization['M6'][:9] + parametrization['M6'][12:13]
     
-    #warm_idx = parametrization['M1'][:-1] + parametrization['M2'][:-1] + parametrization['M3'][:-1] + parametrization['M4'][:-1] + parametrization['M5'][:-1] + parametrization['M6'][:-1]
-
+    warm_idx = parametrization['M1'][:9] + parametrization['M1'][12:13] + \
+                      parametrization['M2'][:9] + parametrization['M2'][12:13] + \
+                      parametrization['M3'][:9] + parametrization['M3'][12:13] + \
+                      parametrization['M4'][:9] + parametrization['M4'][12:13] + \
+                      parametrization['M5'][:9] + parametrization['M5'][12:13] + \
+                      parametrization['M6'][:9] + parametrization['M6'][12:13]
     warm_idx_fixed_length = parametrization['M1'][1:9] + parametrization['M1'][12:13] + \
                       parametrization['M2'][1:9] + parametrization['M2'][12:13] + \
                       parametrization['M3'][1:9] + parametrization['M3'][12:13] + \
@@ -196,22 +200,82 @@ class ShipMuonShield():
                       parametrization['M5'][:9] + parametrization['M5'][12:13] + \
                       parametrization['M6'][:9] + parametrization['M6'][12:13]
     
-    warm_idx =        parametrization['M1'][:9] + parametrization['M1'][12:13] + \
-                      parametrization['M2'][:9] + parametrization['M2'][12:13] + \
-                      parametrization['M3'][:9] + parametrization['M3'][12:13] + \
-                      parametrization['M4'][:9] + parametrization['M4'][12:13] + \
-                      parametrization['M5'][:9] + parametrization['M5'][12:13] + \
-                      parametrization['M6'][:9] + parametrization['M6'][12:13]
+    params_per_magnet = ['length', 'CoreWidth_1', 'CoreWidth_2', 
+                    'CoreHeight_1', 'CoreHeight_2', 
+                    'GapWidth_1', 'GapWidth_2',
+                    'RatioYoke_1', 'RationYoke_2',
+                    'dY_yoke_1','dY_Yoke_2',
+                    'CentralGap_1', 'CentralGap_2', 
+                    'NI']
     
+    Piet_solution = [230.0, 375.0, 245.0, 255.0, 0., 197.0, 197.0, 
+    30.0, 30.0, 20.0, 20.0, 30.0, 30.0, 1.1666666666666667, 1.1666666666666667, 144.0,144.0, 0.0, 0.0, -10000.0, 
+    30.0, 31.0, 27.0, 43.0, 6.0, 6.0, 4.29, 4.290322580645161, 34.0,34.0, 0.0, 0.0, -10000.0, 
+    31.0, 35.0, 43.0, 56.0, 6.0, 6.0, 4.290322580645161, 3.7857142857142856, 44.0,44.0, 0.0, 0.0, -10000.0, 
+    3.0, 18.6, 56.0, 56.0, 6.0, 6.0, 21.5 + (64.4*(1.45807453416149063) + 6.0 )/3 , 3.6666666666666656 + (68.1*(1.14977973568281922) + 6.0 )/18.6, 44.0,44.0, 0.0, 0.0, -10000.0, 
+    64.4, 68.1, 56.0, 56.0, 6.0, 6.0, 0.45807453416149063, 0.14977973568281922, 44.0,44.0, 0*73.6, 0*92.9, -10000.0, 
+    18.6, 31.8, 56.0, 56.0, 6.0, 5.9999999999999964, 8.204301075268816, 4.471698113207546, 44.0,44.0, 0.0, 0.0, -10000.0, 
+    31.8, 45.0, 56.0, 56.0, 5.9999999999999964, 6.0, 4.471698113207546, 2.8666666666666667, 44.0,44.0, 0.0, 0.0, -10000.0, ]
     
+    Piet_solution = [120.5, 485.5, 245.0,  0., 255.0, 197.0, 197.0, 
+    50.000, 50.000, 119.000, 119.000, 2.000, 2.000, 1.000, 1.000, 50.000, 50.000, 0.000, 0.000, 1.9,
+    30.0, 31.0, 27.0, 43.0, 6.0, 6.0, 4.29, 4.290322580645161, 34.0,34.0, 0.0, 0.0, 1.9, 
+    31.0, 35.0, 43.0, 56.0, 6.0, 6.0, 4.290322580645161, 3.7857142857142856, 44.0,44.0, 0.0, 0.0, 1.9, 
+    64.4, 68.1, 56.0, 56.0, 6.0, 6.0, 0.45807453416149063, 0.14977973568281922, 44.0,44.0, 0*73.6, 0*92.9, 1.7,
+    3.0, 18.6, 56.0, 56.0, 6.0, 6.0, 21.5 + (64.4*(1.45807453416149063) + 6.0 )/3 , 3.6666666666666656 + (68.1*(1.14977973568281922) + 6.0 )/18.6, 44.0,44.0, 0.0, 0.0, 1.7, 
+    18.6, 31.8, 56.0, 56.0, 6.0, 5.9999999999999964, 8.204301075268816, 4.471698113207546, 44.0,44.0, 0.0, 0.0, 1.7, 
+    31.8, 45.0, 56.0, 56.0, 5.9999999999999964, 6.0, 4.471698113207546, 2.8666666666666667, 44.0,44.0, 0.0, 0.0, 1.7 ]
+    # factor = 1
+    # Piet_solution_mod = [120.5, 485.5, 245.0,  0., 255.0, 197.0, 197.0, 
+    # 50.000, 50.000, 119.000, 119.000, 2.000, 2.000, 1.000, 1.000, 50.000, 50.000, 0.000, 0.000, 1.9,
+    # 30.0, 31.0, 27.0, 43.0, 6.0, 6.0, 4.29*factor, 4.290322580645161*factor, 34.0,34.0, 0.0, 0.0, 1.85, 
+    # 31.0, 35.0, 43.0, 56.0, 6.0, 6.0, 4.290322580645161*factor, 3.7857142857142856*factor, 44.0,44.0, 0.0, 0.0, 1.85, 
+    # 64.4, 68.1, 56.0, 56.0, 6.0, 6.0, 0.45807453416149063*factor, 0.14977973568281922*factor, 44.0,44.0, 0*73.6, 0*92.9, 1.7,
+    # 3.0, 18.6, 56.0, 56.0, 6.0, 6.0, (21.5 + (64.4*(1.45807453416149063) + 6.0 )/3)*factor , (3.6666666666666656 + (68.1*(1.14977973568281922) + 6.0 )/18.6)*factor, 44.0,44.0, 0.0, 0.0, 1.7, 
+    # 18.6, 31.8, 56.0, 56.0, 6.0, 5.9999999999999964, 8.204301075268816*factor, 4.471698113207546*factor, 44.0,44.0, 0.0, 0.0, 1.7, 
+    # 31.8, 45.0, 56.0, 56.0, 5.9999999999999964, 6.0, 4.471698113207546*factor, 2.8666666666666667*factor, 44.0,44.0, 0.0, 0.0, 1.7 ]
+                      
+    #1: Optimize the CoreWidth (taking fixed piet line => RatioYoke depends on CoreWidth);
+    #2: Gap width optimized (taking fixed piet line => RatioYoke depends on CoreWidth and gap width)
+    #3: MiddleGap optimized (taking fixed piet line => RatioYoke depends on CoreWidth and gap width and middlegap)
+    #1bis: for 2 part the relative length it is not fixed
+    #NB: CoreHeight fixed and dYoke fixed
+    #total 5*3 + 6*2 = 27
+    #                             #1                          #2                          #3
+    # Piet_line = parametrization['M1'][:3] + parametrization['M1'][5:7] + \
+    #                   parametrization['M2'][:3] + parametrization['M2'][5:7] + \
+    #                   parametrization['M4'][:3]  + parametrization['M4'][5:7] + \
+    #                   parametrization['M5'][:3]  + parametrization['M5'][5:7] + parametrization['M5'][12:13] + \
+    #                   parametrization['M6'][:3]  + parametrization['M6'][5:7] + parametrization['M6'][12:13]
+                      
+                      
+    # (3 + 2) x 5 + 3 + 3  +5= 36 pars
+    Piet_line = parametrization['M1'][:3] + parametrization['M1'][5:8] + \
+                      parametrization['M2'][:3] + parametrization['M2'][5:8] + \
+                      parametrization['M4'][:3]  + parametrization['M4'][5:8] + parametrization['M4'][12:] + \
+                      parametrization['M5'][:3]  + parametrization['M5'][5:8] + parametrization['M5'][12:] + \
+                      parametrization['M6'][:3]  + parametrization['M6'][5:8] + parametrization['M6'][12:]
     
-    DEFAULT_PHI = torch.tensor(tokanut_v3)
+    #1: Optimize the CoreWidth;
+    #2: Gap width optimized and RatioYoke;
+    #3: MiddleGap optimized
+    #1bis: for 2 part the relative length it is not fixed
+    #NB: CoreHeight fixed and dYoke fixed
+    #total 6*1 + 7 *1 + 8*3 = 37
+                                #1                          #2                          #3
+    No_Piet_line = parametrization['M1'][1:3] + parametrization['M1'][5:9] +  \
+                      parametrization['M2'][:3] + parametrization['M2'][5:9] + \
+                      parametrization['M4'][:3] + parametrization['M4'][5:9] +  parametrization['M4'][12:13] + \
+                      parametrization['M5'][:3] + parametrization['M5'][5:9] +  parametrization['M5'][12:13] + \
+                      parametrization['M6'][:3] + parametrization['M6'][5:9] +  parametrization['M6'][12:13]
+
+    DEFAULT_PHI = torch.tensor(Piet_solution)
     initial_phi = DEFAULT_PHI.clone()
     full_dim = 98
 
     def __init__(self,
-                 W0:float = 11E6,
-                 L0:float = 29.7,
+                 W0:float = 11565500, 
+                 L0:float = 30,
                  cores:int = 45,
                  n_samples:int = 0,
                  input_dist:float = None,
@@ -233,6 +297,7 @@ class ShipMuonShield():
                 cut_P:float = None,
                 default_phi:torch.tensor = None,
                 multi_fidelity:float = False,
+                use_diluted = False,
                  ) -> None:
         
         self.left_margin = left_margin
@@ -259,12 +324,14 @@ class ShipMuonShield():
         self.lambda_constraints = 50
         self.cut_P = cut_P
         self.use_B_goal = True
+        self.use_diluted = use_diluted
 
         if default_phi is not None:
             self.DEFAULT_PHI = torch.as_tensor(default_phi)
         if dimensions_phi == len(self.hybrid_idx): self.params_idx = self.hybrid_idx
         elif dimensions_phi == len(self.warm_idx_fixed_length): self.params_idx = self.warm_idx_fixed_length
         elif dimensions_phi == len(self.warm_idx): self.params_idx = self.warm_idx
+        elif dimensions_phi == len(self.Piet_line): self.params_idx = self.Piet_line   
         elif dimensions_phi == self.full_dim: self.params_idx = slice(None)
         self.initial_phi = self.DEFAULT_PHI[self.params_idx]
 
@@ -336,7 +403,8 @@ class ShipMuonShield():
                       add_target=True, 
                       keep_tracks_of_hits=False, 
                       extra_magnet=self.extra_magnet,
-                      NI_from_B = self.use_B_goal)
+                      NI_from_B = self.use_B_goal,
+                      use_diluted= self.use_diluted)
         with Pool(self.cores) as pool:
             result = pool.map(run_partial, workloads)
         print('SIMULATION FINISHED')
@@ -386,7 +454,8 @@ class ShipMuonShield():
             Ymgap = 0
             yoke_type = 'Mag1' if m in ['HA','M1','M2','M3'] else 'Mag3'
             if m == 'M2' and self.fSC_mag: yoke_type = 'Mag2'; Ymgap = self.SC_Ymgap
-            cost+= self.estimate_electrical_cost(params,yoke_type,Ymgap,materials_directory = self.materials_directory, NI_from_B = self.use_B_goal)
+            if m == 'M3' and (self.dimensions_phi == len(self.No_Piet_line) or  self.dimensions_phi == len(self.Piet_line)) : continue
+            cost+= self.estimate_electrical_cost(params,yoke_type,Ymgap,materials_directory = self.materials_directory, NI_from_B = self.use_B_goal, use_diluted = self.use_diluted)
         return cost
 
     def get_iron_cost(self, phi,  zGap= 10):
@@ -424,17 +493,17 @@ class ShipMuonShield():
             [X_mgap_2+dX2, dY2, 2*dZ],
             [0, dY2, 2*dZ],
             [0, 0, 2*dZ]
-            ])
+        ])
             volume += compute_solid_volume(corners)
             corners = torch.tensor([
-            [X_mgap_1 + dX + gap, 0, 0],
-            [X_mgap_1 + dX + gap + dX * ratio_yoke_1, 0, 0],
-            [X_mgap_1 + dX + gap + dX * ratio_yoke_1, dY + Ymgap, 0],
-            [X_mgap_1 + dX + gap, dY + Ymgap, 0],
-            [X_mgap_2 + dX2 + gap2, 0, 2 * dZ],
-            [X_mgap_2 + dX2 + gap2 + dX2 * ratio_yoke_2, 0, 2 * dZ],
-            [X_mgap_2 + dX2 + gap2 + dX2 * ratio_yoke_2, dY2 + Ymgap, 2 * dZ],
-            [X_mgap_2 + dX2 + gap2, dY2 + Ymgap, 2 * dZ],
+                [X_mgap_1 + dX + gap, 0, 0],
+                [X_mgap_1 + dX + gap + dX * ratio_yoke_1, 0, 0],
+                [X_mgap_1 + dX + gap + dX * ratio_yoke_1, dY + Ymgap, 0],
+                [X_mgap_1 + dX + gap, dY + Ymgap, 0],
+                [X_mgap_2 + dX2 + gap2, 0, 2 * dZ],
+                [X_mgap_2 + dX2 + gap2 + dX2 * ratio_yoke_2, 0, 2 * dZ],
+                [X_mgap_2 + dX2 + gap2 + dX2 * ratio_yoke_2, dY2 + Ymgap, 2 * dZ],
+                [X_mgap_2 + dX2 + gap2, dY2 + Ymgap, 2 * dZ],
             ])
             volume += compute_solid_volume(corners)
 
@@ -449,9 +518,14 @@ class ShipMuonShield():
             [X_mgap_2, dY2 + dY_yoke_2, 2 * dZ],
             ])
             volume += compute_solid_volume(corners)
+            print('magnet',m)
+            print('MASS:', volume)
         M_iron = 4*volume*density    
+        
         C_iron = M_iron*(iron_material_data["material_cost(CHF/kg)"]
                      +  iron_material_data["manufacturing_cost(CHF/kg)"])
+        print('total Mass:',M_iron)
+        print('total cost:',C_iron)
         return C_iron.detach()
     def get_total_cost(self,phi):
         M = self.get_iron_cost(phi)
@@ -500,7 +574,17 @@ class ShipMuonShield():
         yoke_bounds = [(1,3)]*2#[(0.25, 4)]
         dY_yoke_bounds = [(5, 160)]*2
         inner_gap_bounds = [(0., 150.)]*2
-        NI_bounds = [(1.,50E3)]
+        NI_bounds = [(0.,1.91)]
+        
+        if self.use_diluted:
+            magnet_lengths = [(self.Piet_solution[0], 500), (self.Piet_solution[1], 500), (self.Piet_solution[2], 600), (0, 400), (0, 400), (0, 400), (0, 400)]
+            dY_bounds = [(4, 160)] * 2 
+            yoke_bounds = [(1,8.5)]*2
+            dX_bounds = [(1, 85)] * 2
+            gap_bounds = [(5, 80)] * 2 
+            inner_gap_bounds = [(0., 30.)]*2
+            NI_bounds = [(0,1.91)]
+    
         bounds = magnet_lengths + 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
         dY_yoke_bounds = [(4, 130)]*2 if self.fSC_mag else [(4, 300)]*2
         dY_bounds = [(5, 250)] * 2 
@@ -530,11 +614,23 @@ class ShipMuonShield():
                 new_phi[:, self.parametrization['M2'][4]] = new_phi[:, self.parametrization['M2'][3]]
             if self.dimensions_phi in (len(self.warm_idx_fixed_length),len(self.warm_idx)):
                 for m,idx in self.parametrization.items():
-                    new_phi[:, idx[9]] = new_phi[:, idx[1]]*new_phi[:, idx[7]] #Fix dY_yoke = dX_core*ratio_yoke
-                    new_phi[:, idx[10]] = new_phi[:, idx[2]]*new_phi[:, idx[8]] #Fix dY_yoke = dX_core*ratio_yoke
-                    new_phi[:, idx[11]] = new_phi[:, idx[12]] #fix Xmgap_1 = Xmgap_2, while we don't solve the problem
-            elif self.dimensions_phi == len(self.hybrid_idx):
-                for m,idx in self.parametrization.items(): new_phi[:, idx[11]] = new_phi[:, idx[12]]
+                    new_phi[:, idx[10]] = new_phi[:, idx[9]]
+                    #new_phi[:, idx[9]] = new_phi[:, idx[1]]*new_phi[:, idx[7]] #Fix dY_yoke = dX_core*ratio_yoke
+                    #new_phi[:, idx[10]] = new_phi[:, idx[2]]*new_phi[:, idx[8]] #Fix dY_yoke = dX_core*ratio_yoke
+            if (self.dimensions_phi == len(self.No_Piet_line) or self.dimensions_phi == len(self.Piet_line)):
+                for m,idx in self.parametrization.items():
+                    if m == 'HA' or m == 'M3': continue
+                    # fix parameters wrt optimized ones
+                    new_phi[:, idx[11]] = new_phi[:, idx[12]] #fix Xmgap_1 = Xmgap_2
+                    if new_phi[:, idx[11]] > 1e-6 and new_phi[:, idx[11]] < 10:
+                        new_phi[:, idx[11]] = new_phi[:, idx[12]] = 10
+                    new_phi[:, idx[9]] = new_phi[:, idx[1]]
+                    new_phi[:, idx[10]] = new_phi[:, idx[2]]
+                    if self.dimensions_phi == len(self.Piet_line): 
+                            new_phi[:, idx[7]] = ((self.Piet_solution[idx[1]] * self.Piet_solution[idx[7]] + self.Piet_solution[idx[5]] + self.Piet_solution[idx[1]]) - (new_phi[:,idx[11]] + new_phi[:,idx[5]] + new_phi[:,idx[1]]) )/ new_phi[:,idx[1]]
+                            new_phi[:, idx[8]] =(self.Piet_solution[idx[2]] * self.Piet_solution[idx[8]] + self.Piet_solution[idx[6]] + self.Piet_solution[idx[2]] -new_phi[:,idx[12]] - new_phi[:,idx[6]] - new_phi[:,idx[2]]) / new_phi[:,idx[2]]
+
+
         else:
             new_phi = phi
         assert new_phi.size(-1) == self.full_dim, f"FINAL SHAPE: {new_phi.shape}"
@@ -571,6 +667,7 @@ class ShipMuonShield():
 
         z = torch.zeros(phi.size(0),device=phi.device)
         for m,idx in self.parametrization.items():
+            if m == 'M3' and (self.dimensions_phi == len(self.No_Piet_line) or self.dimensions_phi == len(self.Piet_line)): continue
             p = phi[:,idx]
             z = z + 2*p[:,0]
             Ymgap = self.SC_Ymgap if (self.fSC_mag and m =='M2') else 0
@@ -580,6 +677,9 @@ class ShipMuonShield():
             x_min, y_min = get_cavern_bounds(z)
             constraints = constraints + fn_pen(p[:,2]+p[:,8]*p[:,2]+p[:,6]+p[:,12] -x_min)
             constraints = constraints + fn_pen(p[:,4]+p[:,10]+Ymgap - y_min)
+            if self.use_diluted:
+                constraints = constraints + fn_pen(-1*(p[:,7]-1)*1e2) 
+                constraints = constraints + fn_pen(-1*(p[:,8]-1)*1e2)
         return (constraints.reshape(-1,1)*self.lambda_constraints).clamp(min=0,max=1E8)
 
         
@@ -589,7 +689,7 @@ def save_muons(muons:np.array,tag):
 
 class ShipMuonShieldCluster(ShipMuonShield):
     def __init__(self,
-                 manager_ip='34.65.198.159',
+                 manager_ip='34.65.139.30',
                  port=444,
                  local:bool = False,
                  parallel:bool = False,

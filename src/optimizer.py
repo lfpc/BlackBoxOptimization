@@ -13,6 +13,20 @@ from utils.acquisition_functions import Custom_LogEI
 #torch.set_default_dtype(torch.float64)
 from time import time
 
+list_name = [
+                    "CoreWidth_1_M1", "CoreWidth_2_M1", "GapWidth_1_M1", "GapWidth_2_M1",
+                    "CoreWidth_1_M2", "CoreWidth_2_M2", "GapWidth_1_M2", "GapWidth_2_M2", 
+                    "half_length_M3", "CoreWidth_1_M3", "CoreWidth_2_M3", "GapWidth_1_M3", "GapWidth_2_M3",
+                    "half_length_M5", "CoreWidth_1_M5", "CoreWidth_2_M5", "GapWidth_1_M5", "GapWidth_2_M5", "CentralGap_1_M5",
+                    "half_length_M6", "CoreWidth_1_M6", "CoreWidth_2_M6", "GapWidth_1_M6", "GapWidth_2_M6", "CentralGap_1_M6"]
+
+
+list_name_2 = [
+                    "CoreWidth_1_M1", "CoreWidth_2_M1", "GapWidth_1_M1", "GapWidth_2_M1", "Ratio_Yoke_1_M1", "Ratio_Yoke_2_M1", 
+                    "half_length_M2","CoreWidth_1_M2", "CoreWidth_2_M2", "GapWidth_1_M2", "GapWidth_2_M2", "Ratio_Yoke_1_M2", "Ratio_Yoke_2_M2", 
+                    "half_length_M3", "CoreWidth_1_M3", "CoreWidth_2_M3", "GapWidth_1_M3", "Ratio_Yoke_1_M3", "Ratio_Yoke_2_M3", "GapWidth_2_M3", "CentralGap_1_M3",
+                    "half_length_M5", "CoreWidth_1_M5", "CoreWidth_2_M5", "GapWidth_1_M5", "Ratio_Yoke_1_M4", "Ratio_Yoke_2_M4", "GapWidth_2_M5", "CentralGap_1_M5",
+                    "half_length_M6", "CoreWidth_1_M6", "CoreWidth_2_M6", "GapWidth_1_M6", "Ratio_Yoke_1_M5", "Ratio_Yoke_2_M5", "GapWidth_2_M6", "CentralGap_1_M6"]
 
 class OptimizerClass():
     '''Mother class for optimizers'''
@@ -84,6 +98,11 @@ class OptimizerClass():
                 pbar.update()
                 log = {'loss':loss.item(), 
                         'min_loss':min_loss.item()}
+                log.update({'Iron_cost': self.true_model.get_iron_cost(phi),
+                            'Length': self.true_model.get_total_length(phi),
+                            'Electrical_cost': self.true_model.get_electrical_cost(phi),
+                            #'muon loss': self.true_model(phi)
+                        })
                 if save_history:
                     with open(join(self.outputs_dir,f'history.pkl'), "wb") as f:
                         dump(self.history, f)
@@ -210,7 +229,8 @@ class BayesianOptimizer(OptimizerClass):
                     self.history = load(f)
                     self.history = tuple(tensor.to(torch.get_default_dtype()) for tensor in self.history)
                 self._i = len(self.history[0])
-            else: 
+            else:
+                print('initial phi', initial_phi) 
                 self.history = (initial_phi.cpu().view(-1,initial_phi.size(0)),
                 true_model(initial_phi).cpu().view(-1,1))
                 self._i = 0
