@@ -124,7 +124,7 @@ class ShipMuonShield():
     
     SC_Ymgap = 15
     
-    warm_scaled_baseline = [120.50, 250, 250., 250., 200., 200., 195., 
+    warm_baseline = [120.50, 250, 250., 250., 150., 150., 251, 
                   50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 0.,
                   72.00, 51.00, 29.00, 46.00, 10.00, 7.00, 1.00,1.0,72.00, 51.00,0.0, 0.00, 0.,
                   54.00, 38.00, 46.00, 130.00, 14.00, 9.00, 1.00,1.0,54.00, 38.00,0.0, 0.00, 0.,
@@ -133,7 +133,7 @@ class ShipMuonShield():
                   22.00, 32.00, 130.00, 35.00, 8.00, 13.00, 1.00,1.0,22.00, 32.00,0.0, 0.00, 0.,
                   33.00, 77.00, 85.00, 90.00, 9.00, 26.00, 1.00,1.0,33.00, 77.00,5.0, 5.00, 0.]
     
-    hybrid_baseline = [120.50, 30, 350., 125., 200., 200., 195., 
+    hybrid_baseline = [120.50, 35, 350., 125., 200., 200., 195., 
                     50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 0.,
                     0.,  0.,  0.,  0.,  0.,   0., 1.,1.0,0.,0.,0.0, 0.,0.,
                     45.,  45.,  25.,  25.,  35.,  35., 2.67,2.67,120.15,120.15,0.0, 0.00, 3200000.0,
@@ -141,36 +141,27 @@ class ShipMuonShield():
                     5.263,55.632, 39.860, 5.278, 2.000,2.000, 1.000, 0.900, 5.263,50.069, 0.100, 0.100, 0.000,
                     33.016, 12.833, 123.270, 78.523,22.414, 2.001, 0.959, 0.953,31.663, 12.233, 0.100, 0.100,0.000, 
                     15.755, 77.293, 69.398,152.828, 2.000, 35.402, 1.000,0.900, 15.755, 69.564, 0.0,0.0, 0.000]
-    hybrid_baseline_2 = [
-        120.50, 30.00, 283.39, 259.09, 198.21, 185.42, 240.42,
+
+    tokanut_v5 = [
+        120.50, 230.38, 279.43, 289.85, 119.58, 170.53, 249.28,
         50.00, 50.00, 119.00, 119.00, 2.00, 2.00, 1.00, 1.00, 50.00, 50.00, 0.00, 0.00, 0.00,
-        0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 1.00, 1.00, 0.00, 0.00, 0.00, 0.00, 0.00,
-        45.00, 45.00, 25.00, 25.00, 69.92, 33.35, 2.29, 3.12, 105.09, 89.71, 0.00, 0.00, 3200000.00,
-        0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 1.00, 1.00, 0.00, 0.00, 0.00, 0.00, 0.00,
-        7.25, 45.12, 62.24, 47.26, 28.48, 123.87, 1.00, 0.81, 5.26, 50.07, 111.63, 111.63, 0.00,
-        32.78, 10.05, 103.80, 80.39, 110.66, 29.47, 0.96, 0.92, 31.66, 12.23, 66.40, 66.40, 0.00,
-        9.17, 60.94, 223.09, 41.49, 2.04, 12.65, 1.00, 0.86, 15.76, 69.56, 18.74, 18.74, 0.00
+        52.25, 78.36, 6.54, 9.37, 2.04, 40.36, 1.01, 1.05, 52.88, 82.20, 0.00, 0.00, 0.00,
+        52.47, 11.70, 41.59, 79.05, 2.19, 2.01, 1.03, 1.00, 54.15, 11.70, 0.00, 0.00, 0.00,
+        33.05, 24.10, 55.13, 30.61, 90.36, 2.00, 1.00, 1.00, 33.05, 24.10, 0.11, 0.11, 0.00,
+        5.62, 60.38, 31.37, 5.00, 2.00, 2.86, 1.00, 0.74, 5.59, 44.82, 0.00, 0.00, 0.00,
+        90.85, 7.44, 137.45, 66.69, 10.09, 2.00, 0.88, 1.00, 80.16, 7.41, 0.00, 0.00, 0.00,
+        9.81, 47.60, 19.59, 164.19, 2.00, 2.05, 1.00, 0.89, 9.81, 42.16, 0.10, 0.10, 0.00
     ]
-
-
-    tokanut_v2 = [120.500, 208.882, 265.111, 264.502,173.762, 165.456, 216.073, 
-                  50.000,50.000, 119.000, 119.000, 2.000,2.000, 1.000, 1.000, 50.000,50.000, 0.000, 0.000, 0.000,
-                  68.750, 67.437, 9.014, 58.625,2.000, 36.974, 1.000, 1.025,68.750, 69.147, 0.000, 0.000,0.000, 
-                  62.626, 9.709, 46.703,88.739, 2.108, 2.081, 1.000,1.000, 62.626, 9.709, 0.000,0.000, 0.000, 
-                  19.072, 34.606,45.668, 46.926, 108.437, 2.200,1.000, 1.000, 19.072, 34.606,0.000, 0.000, 0.000, 
-                  5.263,55.632, 39.860, 5.278, 2.000,2.000, 1.000, 0.900, 5.263,50.069, 0.100, 0.100, 0.000,
-                  33.016, 12.833, 123.270, 78.523,22.414, 2.001, 0.959, 0.953,31.663, 12.233, 0.100, 0.100,0.000, 
-                  15.755, 77.293, 69.398,152.828, 2.000, 35.402, 1.000,0.900, 15.755, 69.564, 0.0,0.0, 0.000]
-    
-    tokanut_v3 = [
-        120.500, 225.446, 270.729, 291.157, 188.486, 164.331, 194.230,
-        50.000, 50.000, 119.000, 119.000, 2.000, 2.000, 1.000, 1.000, 50.000, 50.000, 0.000, 0.000, 0.000,
-        70.455, 66.425, 9.187, 59.726, 2.000, 32.778, 1.000, 1.000, 70.455, 66.425, 0.000, 0.000, 0.000,
-        66.124, 8.585, 50.870, 82.890, 2.000, 2.000, 1.000, 1.000, 66.124, 8.585, 0.000, 0.000, 0.000,
-        18.059, 35.291, 43.720, 39.158, 108.629, 2.000, 1.000, 1.000, 18.059, 35.291, 0.000, 0.000, 0.000,
-        5.000, 51.528, 37.191, 5.000, 2.000, 2.000, 1.000, 0.935, 5.000, 48.202, 0., 0., 0.000,
-        33.696, 13.003, 118.718, 75.034, 22.705, 2.000, 0.784, 0.970, 26.403, 12.608, 0.0, 0.0, 0.000,
-        17.694, 68.430, 67.914, 133.745, 2.000, 41.878, 1.000, 0.749, 17.694, 51.273, 0.000, 0.000, 0.000]
+    tokanut_v5_snd = [
+        120.50, 230.38, 279.43, 289.85, 119.58, 170.53, 249.28,
+        50.00, 50.00, 119.00, 119.00, 2.00, 2.00, 1.00, 1.00, 50.00, 50.00, 0.00, 0.00, 0.00,
+        52.25, 78.36, 6.54, 9.37, 2.04, 40.36, 1.01, 1.05, 52.88, 82.20, 0.00, 0.00, 0.00,
+        52.47, 11.70, 41.59, 79.05, 2.19, 2.01, 1.03, 1.00, 54.15, 11.70, 0.00, 0.00, 0.00,
+        33.05, 24.10, 55.13, 30.61, 90.36, 2.00, 1.00, 1.00, 33.05, 24.10, 0.11, 0.11, 0.00,
+        5.62, 60.38, 31.37, 5.00, 2.00, 2.86, 1.00, 0.74, 5.62, 44.82, 0.00, 0.00, 0.00,
+        90.85, 7.44, 137.45, 66.69, 10.09, 2.00, 0.88, 1.00, 80.16, 7.44, 30.01, 30.01, 0.00,
+        30.01, 47.60, 19.59, 164.19, 2.00, 2.05, 1.00, 0.89, 9.81, 42.16, 0.10, 0.10, 0.00
+    ]
 
     sc_v6 = [231.00,  0., 353.08, 125.08, 184.83, 150.19, 186.81, 
          50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 0,
@@ -181,17 +172,20 @@ class ShipMuonShield():
         3.00, 100.00, 192.00, 192.00,   2.00,   4.80, 1.00,1.0,3.00, 100.00,0.0, 0.00, 0,
         3.00, 100.00,   8.00, 172.73,  46.83,   2.00, 1.00,1.0,3.00, 100.00,0.0, 0.00, 0]
     
-    hybrid_idx = (np.array(parametrization['M2'])[[0, 5, 6, 7,8,9,10]]).tolist() + \
-                      [parametrization['M1'][0]]+ [parametrization['M3'][0]]+\
-                      parametrization['M4'][:9] + parametrization['M4'][12:13] + \
-                      parametrization['M5'][:9] + parametrization['M5'][12:13] + \
-                      parametrization['M6'][:9] + parametrization['M6'][12:13]
-    
-    #warm_idx = parametrization['M1'][:-1] + parametrization['M2'][:-1] + parametrization['M3'][:-1] + parametrization['M4'][:-1] + parametrization['M5'][:-1] + parametrization['M6'][:-1]
+    supernut_v2 =  [
+    120.5, 31.6, 263.52, 273.98, 249.02, 177.17, 172.25,
+    50.0, 50.0, 119.0, 119.0, 2.0, 2.0, 1.0, 1.0, 50.0, 50.0, 0.0, 0.0, 0.0, 
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 
+    45.0, 45.0, 25.0, 25.0, 65.8, 50.65, 2.44, 3.29,107.83, 120.28, 0.0, 0.0, 3200000.0, 
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0,0.0, 0.0, 0.0, 0.0, 
+    5.39, 21.56, 29.39, 17.26, 68.87, 65.04,0.94, 0.84, 5.26, 50.07, 77.41, 77.41, 0.0,
+    34.2, 8.87, 100.69, 32.75, 148.15, 38.3,0.99, 0.65, 31.66, 12.23, 51.04, 51.04, 0.0,
+    21.44, 62.75, 197.1, 143.48, 6.63, 22.1,0.94, 0.94, 15.76, 69.56, 0.06, 0.06, 0.0]
 
-    warm_idx_fixed_length = parametrization['M1'][1:9] + parametrization['M1'][12:13] + \
-                      parametrization['M2'][1:9] + parametrization['M2'][12:13] + \
-                      parametrization['M3'][1:9] + parametrization['M3'][12:13] + \
+
+    
+    hybrid_idx = (np.array(parametrization['M2'])[[0,1,3, 5, 6, 7,8,9,10]]).tolist() + \
+                      [parametrization['M1'][0]]+ [parametrization['M3'][0]]+\
                       parametrization['M4'][:9] + parametrization['M4'][12:13] + \
                       parametrization['M5'][:9] + parametrization['M5'][12:13] + \
                       parametrization['M6'][:9] + parametrization['M6'][12:13]
@@ -205,9 +199,10 @@ class ShipMuonShield():
     
     
     
-    DEFAULT_PHI = torch.tensor(tokanut_v3)
+    DEFAULT_PHI = torch.tensor(warm_baseline)
     initial_phi = DEFAULT_PHI.clone()
     full_dim = 98
+    MUON = 13
 
     def __init__(self,
                  W0:float = 11E6,
@@ -236,7 +231,6 @@ class ShipMuonShield():
                  ) -> None:
         
         self.left_margin = left_margin
-        self.MUON = 13
         self.right_margin = right_margin
         self.y_margin = y_margin
         self.W0 = W0
@@ -263,7 +257,6 @@ class ShipMuonShield():
         if default_phi is not None:
             self.DEFAULT_PHI = torch.as_tensor(default_phi)
         if dimensions_phi == len(self.hybrid_idx): self.params_idx = self.hybrid_idx
-        elif dimensions_phi == len(self.warm_idx_fixed_length): self.params_idx = self.warm_idx_fixed_length
         elif dimensions_phi == len(self.warm_idx): self.params_idx = self.warm_idx
         elif dimensions_phi == self.full_dim: self.params_idx = slice(None)
         self.initial_phi = self.DEFAULT_PHI[self.params_idx]
@@ -297,7 +290,6 @@ class ShipMuonShield():
         max_x = 0
         max_y = 0  
         for m,idx in self.parametrization.items():
-            if self.fSC_mag and (m in ['M1', 'M3']): continue
             params = phi[idx]
             dXIn, dXOut, dYIn, dYOut, gapIn, gapOut, ratio_yokesIn, ratio_yokesOut,dY_yokeIn, dY_yokeOut, XmgapIn,XmgapOut,NI = params[1:]
             dX = max(torch.max(dXIn + dXIn * ratio_yokesIn + gapIn+XmgapIn).item(), torch.max(dXOut + dXOut*ratio_yokesOut+gapOut+XmgapOut).item())/100
@@ -497,7 +489,7 @@ class ShipMuonShield():
         dX_bounds = [(5, 250)] * 2
         dY_bounds = [(4, 160)] * 2 
         gap_bounds = [(2, 150)] * 2 
-        yoke_bounds = [(1,3)]*2#[(0.25, 4)]
+        yoke_bounds = [(0.99,3)]*2#[(0.25, 4)]
         dY_yoke_bounds = [(5, 160)]*2
         inner_gap_bounds = [(0., 150.)]*2
         NI_bounds = [(1.,50E3)]
@@ -505,18 +497,29 @@ class ShipMuonShield():
         dY_yoke_bounds = [(4, 130)]*2 if self.fSC_mag else [(4, 300)]*2
         dY_bounds = [(5, 250)] * 2 
         bounds += 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
-        yoke_bounds = [(0.3,1)]*2
+        yoke_bounds = [(0.3,1.01)]*2
         bounds += 3*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
+
+        bounds[self.parametrization['M6'][0]] = (170, 300)
+        bounds[self.parametrization['M6'][1]] = (30, 250)
+        bounds[self.parametrization['M6'][2]] = (40, 250)
+        bounds[self.parametrization['M5'][12]] = (30, 150)
+        bounds[self.parametrization['M5'][11]] = (30, 150)
         if self.fSC_mag: 
             bounds[self.parametrization['M1'][0]] = (30,100)
             bounds[self.parametrization['M3'][0]] = (30,300)
             bounds[self.parametrization['M2'][0]] = (50,400)
-            bounds[self.parametrization['M2'][5]] = (15,70)
-            bounds[self.parametrization['M2'][6]] = (15,70)
+            bounds[self.parametrization['M2'][1]] = (30,50)
+            bounds[self.parametrization['M2'][2]] = (30,50)
+            bounds[self.parametrization['M2'][3]] = (15,30)
+            bounds[self.parametrization['M2'][4]] = (15,30)
+            bounds[self.parametrization['M2'][5]] = (15,150)
+            bounds[self.parametrization['M2'][6]] = (15,150)
             bounds[self.parametrization['M2'][7]] = (1.0,4)
             bounds[self.parametrization['M2'][8]] = (1.0,4)
         bounds = torch.tensor(bounds,device=device,dtype=torch.get_default_dtype()).T
-        return bounds[:,self.params_idx]
+        bounds = bounds[:,self.params_idx]
+        return bounds
 
     def add_fixed_params(self, phi:torch.Tensor):
         if phi.dim() == 1:
@@ -528,7 +531,7 @@ class ShipMuonShield():
             if self.fSC_mag:
                 new_phi[:, self.parametrization['M2'][2]] = new_phi[:, self.parametrization['M2'][1]]
                 new_phi[:, self.parametrization['M2'][4]] = new_phi[:, self.parametrization['M2'][3]]
-            if self.dimensions_phi in (len(self.warm_idx_fixed_length),len(self.warm_idx)):
+            if self.dimensions_phi == len(self.warm_idx):
                 for m,idx in self.parametrization.items():
                     new_phi[:, idx[9]] = new_phi[:, idx[1]]*new_phi[:, idx[7]] #Fix dY_yoke = dX_core*ratio_yoke
                     new_phi[:, idx[10]] = new_phi[:, idx[2]]*new_phi[:, idx[8]] #Fix dY_yoke = dX_core*ratio_yoke
@@ -678,6 +681,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
         
         loss += 1
         if self.apply_det_loss: loss = self.deterministic_loss(phi,loss)
+
         return loss.to(torch.get_default_dtype())   
     
 

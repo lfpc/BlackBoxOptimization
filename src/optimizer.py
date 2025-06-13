@@ -6,6 +6,8 @@ from matplotlib import pyplot as plt
 from pickle import dump,  load
 import wandb
 from os.path import join
+from scipy.optimize import minimize, Bounds as ScipyBounds
+import numpy as np
 #from gzip import open as gzip_open
 import sys
 sys.path.append('..')
@@ -130,10 +132,11 @@ class LGSO(OptimizerClass):
         self.samples_phi = samples_phi
         self.phi_optimizer = torch.optim.SGD([self.current_phi],lr=0.1)
 
-    def sample_phi(self,current_phi):
-        sample = (2*self.lhs_sampler.random(n=self.samples_phi)-1)*self.epsilon
-        sample = torch.as_tensor(sample,device=current_phi.device,dtype=torch.get_default_dtype())
-        return sample+current_phi
+    def sample_phi(self):
+        """Draw samples in a hypercube of side 2*epsilon around current_phi."""
+        H = self.lhs_sampler.random(self.samples_phi)
+        perturb = (2*torch.from_numpy(H).to(self.device) - 1.0) * self.epsilon
+        return (self.current_phi.unsqueeze(0) + perturb).clamp(self.bounds[0], self.bounds[1])
     def loss(self,phi,y,x = None):
         return self.true_model.calc_loss(*y.T)
     def clean_training_data(self):
@@ -141,17 +144,41 @@ class LGSO(OptimizerClass):
         is_local = dist.le(self.epsilon).all(-1)
         return self.history[0][is_local], self.history[1][is_local], self.history[2][is_local]
     def optimization_iteration(self):
-        sampled_phi = self.sample_phi(self.current_phi)
-        x = torch.as_tensor(self.true_model.sample_x(sampled_phi), device=self.device, dtype=torch.get_default_dtype())
-        for phi in sampled_phi:
-            if phi.eq(self.current_phi).all(): continue
-            y = self.true_model.simulate(phi,x, return_nan = True).T
-            mask = y.eq(0).all(-1).logical_not()
-            assert y.shape[0] == x.shape[0]
-            self.update_history(phi,y[mask],x[mask])
+        """
+        1) Sample locally around current_phi
+        2) Evaluate true_model
+        3) Fit local surrogate
+        4) Update current_phi by minimizing surrogate
+        5) Return (phi, loss)
+        """
+        # 1) local sampling
+        phis = self.sample_phi()
+        # 2) true evaluations
+        x_samp = torch.as_tensor(self.true_model.sample_x(phis), device=self.device)
+        y_samp = self.true_model.simulate(phis, x_samp, return_nan=True).T
+        mask = ~y_samp.eq(0).all(dim=1)
+        phis, x_samp, y_samp = phis[mask], x_samp[mask], y_samp[mask]
+
+        # 3) update history & fit surrogate
+        self.update_history(phis, y_samp, x_samp)
         self.fit_surrogate_model()
-        self.get_new_phi()
-        return self.get_optimal()
+
+        # 4) move current_phi by gradient descent on surrogate
+        self.phi_optimizer.zero_grad()
+        # prepare surrogate inputs
+        phi_rep = self.current_phi.unsqueeze(0).repeat(x_samp.size(0), 1)
+        y_pred = self.model(phi_rep, x_samp)
+        loss_sur = self.loss(phi_rep, y_pred).mean()
+        loss_sur.backward()
+        self.phi_optimizer.step()
+        # clip to bounds
+        self.current_phi.data.clamp_(self.bounds[0], self.bounds[1])
+
+        # 5) return new candidate and its true loss
+        x_new = torch.as_tensor(self.true_model.sample_x(self.current_phi), device=self.device)
+        y_new = self.true_model.simulate(self.current_phi.unsqueeze(0), x_new, return_nan=True).T
+        loss_new = self.loss(self.current_phi.unsqueeze(0), y_new)
+        return self.current_phi.clone(), loss_new.flatten().item()
     def run_optimization(self, save_optimal_phi: bool = True, save_history: bool = False, **convergence_params):
         super().run_optimization(save_optimal_phi, save_history, **convergence_params)
         x = self.true_model.sample_x(self.current_phi)
@@ -279,8 +306,7 @@ class BayesianOptimizer(OptimizerClass):
         return y
         return self.true_model.deterministic_loss(x,y)
     
-from scipy.optimize import minimize, Bounds as ScipyBounds
-import numpy as np
+
 class PowellOptimizer(OptimizerClass):
     """
     Optimizer using Powell's conjugate direction method via scipy.optimize.minimize.

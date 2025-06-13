@@ -24,10 +24,10 @@ parser.add_argument('--optimization', type=str, default='bayesian')
 parser.add_argument('--model', type=str, default='gp_rbf')
 parser.add_argument('--name', type=str, default='optimizationtest')
 parser.add_argument('--group', type=str, default='BayesianOptimization')
-parser.add_argument("--nodes",type=int,default = 16)
-parser.add_argument("--n_tasks_per_node", type=int, default=32)
-parser.add_argument("--n_tasks", type=int, default=None)
-parser.add_argument("--not_save_history", action='store_false', dest='save_history')
+#parser.add_argument("--nodes",type=int,default = 16)
+#parser.add_argument("--n_tasks_per_node", type=int, default=32)
+#parser.add_argument("--n_tasks", type=int, default=None)
+parser.add_argument("--dont_save_history", action='store_false', dest='save_history')
 parser.add_argument("--resume", action='store_true')
 parser.add_argument("--reduce_bounds", type=int, default=-1)
 parser.add_argument("--multi_fidelity", action='store_true')
@@ -41,8 +41,13 @@ args = parser.parse_args()
 
 OUTPUTS_DIR = os.path.join(PROJECTS_DIR,'BlackBoxOptimization/outputs',args.name)
 config_file = os.path.join(OUTPUTS_DIR,'config.json')
-if not os.path.exists(OUTPUTS_DIR):
-    os.makedirs(OUTPUTS_DIR)
+
+if args.resume:
+    with open(config_file, 'r') as f:
+        CONFIG = json.load(f)
+else: 
+    if not os.path.exists(OUTPUTS_DIR):
+        os.makedirs(OUTPUTS_DIR)
     with open(os.path.join(PROJECTS_DIR, 'cluster', 'config.json'), 'r') as src, open(config_file, 'w') as dst:
         CONFIG = json.load(src)
         CONFIG['W0'] = float(input("Enter Reference Cost (W0) [default: 11E6]: ") or 11E6)
@@ -51,12 +56,9 @@ if not os.path.exists(OUTPUTS_DIR):
         default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or None)
         CONFIG['default_phi'] = getattr(problems.ShipMuonShield, default_phi_name, None)
         if args.multi_fidelity and CONFIG['n_samples'] == 0:
-            CONFIG['n_samples'] = int(input("Enter number of samples for low_fidelity [default: 5E5]: ") or 5E5) 
+            CONFIG['n_samples'] = int(float(input("Enter number of samples for low_fidelity [default: 5E5]: ") or 5E5) )
         json.dump(CONFIG, dst, indent=4)
-
-else: 
-    with open(config_file, 'r') as f:
-        CONFIG = json.load(f)
+    
 
 
 wandb.login()
@@ -113,14 +115,14 @@ if __name__ == "__main__":
     with open(config_file, 'r') as f:
         CONFIG = json.load(f)
 
-    if args.n_tasks is None: n_tasks = args.nodes*args.n_tasks_per_node
-    else: n_tasks = args.n_tasks
+    #if args.n_tasks is None: n_tasks = args.nodes*args.n_tasks_per_node
+    #else: n_tasks = args.n_tasks
 
     if args.problem == 'stochastic_rosenbrock': problem_fn = problems.stochastic_RosenbrockProblem(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'ship': 
-        problem_fn = problems.ShipMuonShieldCluster(cores = n_tasks,parallel=args.parallel, multi_fidelity=args.multi_fidelity,**CONFIG)
+        problem_fn = problems.ShipMuonShieldCluster(parallel=args.parallel, multi_fidelity=args.multi_fidelity,**CONFIG)
 
     phi_bounds = CONFIG.get('phi_bounds',None) 
     dimensions = CONFIG.get('dimensions_phi')
