@@ -225,16 +225,6 @@ class ShipMuonShield():
     3.0, 18.6, 56.0, 56.0, 6.0, 6.0, 21.5 + (64.4*(1.45807453416149063) + 6.0 )/3 , 3.6666666666666656 + (68.1*(1.14977973568281922) + 6.0 )/18.6, 44.0,44.0, 0.0, 0.0, 1.7, 
     18.6, 31.8, 56.0, 56.0, 6.0, 5.9999999999999964, 8.204301075268816, 4.471698113207546, 44.0,44.0, 0.0, 0.0, 1.7, 
     31.8, 45.0, 56.0, 56.0, 5.9999999999999964, 6.0, 4.471698113207546, 2.8666666666666667, 44.0,44.0, 0.0, 0.0, 1.7 ]
-    # factor = 1
-    # Piet_solution_mod = [120.5, 485.5, 245.0,  0., 255.0, 197.0, 197.0, 
-    # 50.000, 50.000, 119.000, 119.000, 2.000, 2.000, 1.000, 1.000, 50.000, 50.000, 0.000, 0.000, 1.9,
-    # 30.0, 31.0, 27.0, 43.0, 6.0, 6.0, 4.29*factor, 4.290322580645161*factor, 34.0,34.0, 0.0, 0.0, 1.85, 
-    # 31.0, 35.0, 43.0, 56.0, 6.0, 6.0, 4.290322580645161*factor, 3.7857142857142856*factor, 44.0,44.0, 0.0, 0.0, 1.85, 
-    # 64.4, 68.1, 56.0, 56.0, 6.0, 6.0, 0.45807453416149063*factor, 0.14977973568281922*factor, 44.0,44.0, 0*73.6, 0*92.9, 1.7,
-    # 3.0, 18.6, 56.0, 56.0, 6.0, 6.0, (21.5 + (64.4*(1.45807453416149063) + 6.0 )/3)*factor , (3.6666666666666656 + (68.1*(1.14977973568281922) + 6.0 )/18.6)*factor, 44.0,44.0, 0.0, 0.0, 1.7, 
-    # 18.6, 31.8, 56.0, 56.0, 6.0, 5.9999999999999964, 8.204301075268816*factor, 4.471698113207546*factor, 44.0,44.0, 0.0, 0.0, 1.7, 
-    # 31.8, 45.0, 56.0, 56.0, 5.9999999999999964, 6.0, 4.471698113207546*factor, 2.8666666666666667*factor, 44.0,44.0, 0.0, 0.0, 1.7 ]
-                      
     #1: Optimize the CoreWidth (taking fixed piet line => RatioYoke depends on CoreWidth);
     #2: Gap width optimized (taking fixed piet line => RatioYoke depends on CoreWidth and gap width)
     #3: MiddleGap optimized (taking fixed piet line => RatioYoke depends on CoreWidth and gap width and middlegap)
@@ -574,23 +564,23 @@ class ShipMuonShield():
         yoke_bounds = [(1,3)]*2#[(0.25, 4)]
         dY_yoke_bounds = [(5, 160)]*2
         inner_gap_bounds = [(0., 150.)]*2
-        NI_bounds = [(0.,1.91)]
-        
+        NI_bounds = [(0.01,1.91)]
         if self.use_diluted:
             magnet_lengths = [(self.Piet_solution[0], 500), (self.Piet_solution[1], 500), (self.Piet_solution[2], 600), (0, 400), (0, 400), (0, 400), (0, 400)]
             dY_bounds = [(4, 160)] * 2 
-            yoke_bounds = [(1,8.5)]*2
+            yoke_bounds = [(1,60)]*2
             dX_bounds = [(1, 85)] * 2
             gap_bounds = [(5, 80)] * 2 
             inner_gap_bounds = [(0., 30.)]*2
-            NI_bounds = [(0,1.91)]
-    
+            NI_bounds = [(0.01,1.91)]
+        
         bounds = magnet_lengths + 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
         dY_yoke_bounds = [(4, 130)]*2 if self.fSC_mag else [(4, 300)]*2
         dY_bounds = [(5, 250)] * 2 
         bounds += 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
-        yoke_bounds = [(0.3,1)]*2
+        if not self.use_diluted: yoke_bounds = [(0.3,1)]*2
         bounds += 3*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
+        
         if self.fSC_mag: 
             bounds[self.parametrization['M1'][0]] = (30,100)
             bounds[self.parametrization['M3'][0]] = (30,300)
@@ -600,6 +590,11 @@ class ShipMuonShield():
             bounds[self.parametrization['M2'][7]] = (1.0,4)
             bounds[self.parametrization['M2'][8]] = (1.0,4)
         bounds = torch.tensor(bounds,device=device,dtype=torch.get_default_dtype()).T
+        #print(torch.tensor(self.Piet_solution, device=device)[self.params_idx].ge(bounds[0][self.params_idx])  , torch.tensor(self.Piet_solution, device=device)[self.params_idx].le(bounds[1][self.params_idx]) )
+        #violated = torch.tensor(self.Piet_solution, device=device)[self.params_idx].ge(bounds[0][self.params_idx]).logical_not()
+        #print(torch.tensor(self.Piet_solution, device=device)[self.params_idx][violated])
+        #print(bounds[0][self.params_idx][violated])
+        #sassert False
         return bounds[:,self.params_idx]
 
     def add_fixed_params(self, phi:torch.Tensor):

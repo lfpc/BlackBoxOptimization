@@ -53,7 +53,12 @@ class OptimizerClass():
     def loss(self,x = None, y = None):
         return y
     def fit_surrogate_model(self,**kwargs):
+        if len(self.history) < 2 or self.history[0].size(0) == 0:
+            print("Not enough data to fit surrogate model yet.")
+            return
+        print('Fitting surrogate model with data shapes: ',[d.shape if hasattr(d,'shape') else d for d in self.history])
         D = self.clean_training_data()
+        print(f"Fitting surrogate model with data shapes: {[d.shape if hasattr(d,'shape') else d for d in D]}")
         self.model = self.model.fit(*D,**kwargs)
     def update_history(self,phi,y):
         '''Append phi and y to D'''
@@ -87,6 +92,7 @@ class OptimizerClass():
                 #    log['phi_%d'%i] = p
                 wb.log(log)
             while not self.stopping_criterion(**convergence_params):
+                print('Here maybe:',phi)
                 phi,loss = self.optimization_iteration()
                 if (loss<min_loss.to(self.device)):
                     min_loss = loss
