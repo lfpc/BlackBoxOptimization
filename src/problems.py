@@ -135,12 +135,12 @@ class ShipMuonShield():
     
     hybrid_baseline = [120.50, 35, 350., 125., 200., 200., 195., 
                     50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 1.9,
-                    0.,  0.,  0.,  0.,  0.,   0., 1.,1.0,0.,0.,0.0, 0., 1.9,
-                    45.,  45.,  25.,  25.,  35.,  35., 2.67,2.67,120.15,120.15,0.0, 0.00, 3200000.0,
+                    0.,  0.,  0.,  0.,  0.,   0., 1.,1.0,0.,0.,0.0, 0., 0.0,
+                    45.,  45.,  25.,  25.,  35.,  35., 2.67,2.67,120.15,120.15,0.0, 0.00, 5.7,
                     0.,  0.,  0.,  0.,  0.,  0., 1.,1.0,0.,0.,0.0, 0., 0.,
-                    5.263,55.632, 39.860, 5.278, 2.000,2.000, 1.000, 0.900, 5.263,50.069, 0.100, 0.100, 0.000,
-                    33.016, 12.833, 123.270, 78.523,22.414, 2.001, 0.959, 0.953,31.663, 12.233, 0.100, 0.100,0.000, 
-                    15.755, 77.293, 69.398,152.828, 2.000, 35.402, 1.000,0.900, 15.755, 69.564, 0.0,0.0, 0.000]
+                    5.263,55.632, 39.860, 5.278, 2.000,2.000, 1.000, 0.900, 5.263,50.069, 0.100, 0.100, -1.9,
+                    33.016, 12.833, 123.270, 78.523,22.414, 2.001, 0.959, 0.953,31.663, 12.233, 0.100, 0.100,-1.9, 
+                    15.755, 77.293, 69.398,152.828, 2.000, 35.402, 1.000,0.900, 15.755, 69.564, 0.0,0.0, -1.9]
 
     tokanut_v5 = [
         120.50, 230.38, 279.43, 289.85, 119.58, 170.53, 249.28,
@@ -189,7 +189,7 @@ class ShipMuonShield():
     
     
     
-    DEFAULT_PHI = torch.tensor(tokanut_v5_snd)
+    DEFAULT_PHI = torch.tensor(supernut_v2)
     initial_phi = DEFAULT_PHI.clone()
     full_dim = 98
     MUON = 13
@@ -483,12 +483,13 @@ class ShipMuonShield():
         yoke_bounds = [(0.99,3)]*2#[(0.25, 4)]
         dY_yoke_bounds = [(5, 160)]*2
         inner_gap_bounds = [(0., 150.)]*2
-        NI_bounds = [(1.,50E3)]
+        NI_bounds = [(0.1,1.91)]
         bounds = magnet_lengths + 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
         dY_yoke_bounds = [(4, 130)]*2 if self.fSC_mag else [(4, 300)]*2
         dY_bounds = [(5, 250)] * 2 
         bounds += 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
         yoke_bounds = [(0.3,1.01)]*2
+        NI_bounds = [(-1.91, -0.1)]
         bounds += 3*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
 
         if self.SND:
