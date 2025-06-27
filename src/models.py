@@ -38,6 +38,10 @@ class GP_RBF(botorch.models.SingleTaskGP):
         else: return 
     def posterior(self, X, **kwargs):
         return super().posterior(self.normalization(X, self.bounds), **kwargs)
+    def __repr__(self):
+        return (f"{self.__class__.__name__}("
+                f"bounds={self.bounds}, "
+                f"device={self.device})")
 
 
 class GP_Cylindrical_Custom(GP_RBF):

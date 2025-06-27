@@ -247,13 +247,11 @@ class BayesianOptimizer(OptimizerClass):
         self.model_scheduler = model_scheduler
         self._iter_reduce_bounds = reduce_bounds
         if resume: 
-            
             for i in model_scheduler:
                 if self._i > i and i>0:
                     self.model = model_scheduler[i]
             if self._i > reduce_bounds and reduce_bounds>0:
                 self.reduce_bounds() 
-                
         #self.true_model.apply_det_loss = False
     def get_new_phi(self):
         '''Minimize acquisition function, returning the next phi to evaluate'''
@@ -269,6 +267,7 @@ class BayesianOptimizer(OptimizerClass):
             self.model = self.model_scheduler[self._i](self.bounds,self.device)
         if self._i % 100 == 0 and self._i >= self._iter_reduce_bounds:
             self.reduce_bounds()
+        
         t1 = time()
         self.fit_surrogate_model()
         print('model fit time: ', time()-t1)
@@ -290,6 +289,7 @@ class BayesianOptimizer(OptimizerClass):
     def clean_training_data(self):
         '''Remove samples in D that are not contained in the bounds.'''
         idx = self.bounds[0].le(self.history[0]).logical_and(self.bounds[1].ge(self.history[0])).all(-1)
+        assert idx.sum()>0, 'No samples in bounds!'
         return (self.history[0][idx],(-1)*self.history[1][idx])
     
     def reduce_bounds(self,local_bounds:float = 0.1):

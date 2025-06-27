@@ -74,16 +74,29 @@ if args.float64: torch.set_default_dtype(torch.float64)
 
 
 def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_bounds, model_scheduler):
-    if N_initial_points == -1: initial_phi = problem_fn.initial_phi.to(dev)
-    else: initial_phi = (phi_bounds[1]-phi_bounds[0])*torch.rand(N_initial_points,dimensions_phi,device=dev)+phi_bounds[0]
-    #assert initial_phi.ge(phi_bounds[0]).logical_and(initial_phi.le(phi_bounds[1])).all()
+    if N_initial_points == -1: 
+        initial_phi = problem_fn.initial_phi.to(dev)
+    else: 
+        initial_phi = (phi_bounds[1]-phi_bounds[0])*torch.rand(N_initial_points,dimensions_phi,device=dev)+phi_bounds[0]
 
+    # Check if initial_phi is within phi_bounds
+    within_lower = initial_phi.ge(phi_bounds[0])
+    within_upper = initial_phi.le(phi_bounds[1])
+    within_bounds = within_lower.logical_and(within_upper)
+    if within_bounds.any():
+        violating_indices = (~within_bounds).nonzero(as_tuple=True)
+        print("Warning: Some initial_phi values are out of bounds at indices:", violating_indices)
+        print("Violating values:", initial_phi[violating_indices])
+    
+    
     if args.optimization == 'bayesian':
         acquisition_fn = Custom_LogEI#acquisition.qLogExpectedImprovement if args.parallel>1 else acquisition.LogExpectedImprovement
         q = min(args.parallel,problem_fn.cores)
         optimizer = BayesianOptimizer(problem_fn,model,
-                                      phi_bounds,acquisition_fn=acquisition_fn,
-                                      initial_phi = initial_phi,device = dev, 
+                                      phi_bounds,
+                                      acquisition_fn=acquisition_fn,
+                                      initial_phi = initial_phi,
+                                      device = dev, 
                                       model_scheduler=model_scheduler,
                                       outputs_dir=OUTPUTS_DIR,
                                       reduce_bounds=args.reduce_bounds,
@@ -114,6 +127,7 @@ if __name__ == "__main__":
     config_file = os.path.join(OUTPUTS_DIR,'config.json')
     with open(config_file, 'r') as f:
         CONFIG = json.load(f)
+    CONFIG.pop("data_treatment", None)
 
     #if args.n_tasks is None: n_tasks = args.nodes*args.n_tasks_per_node
     #else: n_tasks = args.n_tasks
@@ -135,8 +149,7 @@ if __name__ == "__main__":
     elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_bounds,device = dev)
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_bounds,device = dev)
     elif args.model == 'gan': model = GANModel(42,problem_fn.DEF_N_SAMPLES,64,device = dev)
-    model_scheduler = {args.model_switch:SingleTaskIBNN,
-                       args.reduce_bounds:GP_RBF,
+    model_scheduler = {args.model_switch:SingleTaskIBNN
                        }
 
     optimizer = main(model,problem_fn,dimensions,args.maxiter,args.n_initial,phi_bounds, model_scheduler)
