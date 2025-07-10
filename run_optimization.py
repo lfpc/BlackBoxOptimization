@@ -2,7 +2,7 @@ import torch
 from botorch import acquisition, settings
 from src.optimizer import BayesianOptimizer,LGSO
 from src import problems
-from src.models import GP_RBF, GP_Cylindrical_Custom, SingleTaskIBNN, GANModel
+from src.models import GP_RBF, GP_Cylindrical_Custom, SingleTaskIBNN
 from utils.acquisition_functions import Custom_LogEI
 from matplotlib import pyplot as plt
 import argparse
@@ -30,7 +30,7 @@ parser.add_argument('--group', type=str, default='BayesianOptimization')
 parser.add_argument("--dont_save_history", action='store_false', dest='save_history')
 parser.add_argument("--resume", action='store_true')
 parser.add_argument("--reduce_bounds", type=int, default=-1)
-parser.add_argument("--multi_fidelity", action='store_true')
+parser.add_argument("--multi_fidelity", type=int, nargs='?', const=-1, default=None)
 parser.add_argument("--parallel", type=int, default = 1)
 parser.add_argument("--model_switch", type=int,default = -1)
 parser.add_argument('--n_samples', type=int, default=0)
@@ -54,9 +54,13 @@ else:
         CONFIG['L0'] = float(input("Enter Maximum Length (L0) [default: 29.7]: ") or 29.7)
         CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 60]: ") or 60)
         default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or None)
-        CONFIG['default_phi'] = getattr(problems.ShipMuonShield, default_phi_name, None)
-        if args.multi_fidelity and CONFIG['n_samples'] == 0:
-            CONFIG['n_samples'] = int(float(input("Enter number of samples for low_fidelity [default: 5E5]: ") or 5E5) )
+        if default_phi_name is None: CONFIG['default_phi'] = problems.ShipMuonShield.DEFAULT_PHI
+        else: CONFIG['default_phi'] = getattr(problems.ShipMuonShield, default_phi_name)
+        if args.multi_fidelity is not None:
+            if args.multi_fidelity > 0:
+                CONFIG['n_samples'] = args.multi_fidelity
+            elif args.multi_fidelity == -1 and CONFIG.get('n_samples', 0) == 0:
+                CONFIG['n_samples'] = int(float(input("Enter number of samples for low_fidelity [default: 5E5]: ") or 5E5) )
         json.dump(CONFIG, dst, indent=4)
     
 
@@ -83,10 +87,9 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_bounds, m
     within_lower = initial_phi.ge(phi_bounds[0])
     within_upper = initial_phi.le(phi_bounds[1])
     within_bounds = within_lower.logical_and(within_upper)
-    if within_bounds.any():
+    if not within_bounds.all():
         violating_indices = (~within_bounds).nonzero(as_tuple=True)
-        print("Warning: Some initial_phi values are out of bounds at indices:", violating_indices)
-        print("Violating values:", initial_phi[violating_indices])
+        raise ValueError(f"Some initial_phi values are out of bounds at indices: {violating_indices}\nViolating values: {initial_phi[violating_indices]}")
     
     
     if args.optimization == 'bayesian':
@@ -136,7 +139,8 @@ if __name__ == "__main__":
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'ship': 
-        problem_fn = problems.ShipMuonShieldCluster(parallel=args.parallel, multi_fidelity=args.multi_fidelity,**CONFIG)
+        is_multi_fidelity = args.multi_fidelity is not None
+        problem_fn = problems.ShipMuonShieldCluster(parallel=args.parallel, multi_fidelity=is_multi_fidelity,**CONFIG)
 
     phi_bounds = CONFIG.get('phi_bounds',None) 
     dimensions = CONFIG.get('dimensions_phi')

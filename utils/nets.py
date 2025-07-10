@@ -255,42 +255,31 @@ class GANLosses(object):
 
 
 class Encoder(nn.Module):
-    
-    def __init__(self, input_dim, hidden_dim = 400, latent_dim = 200):
-        super(Encoder, self).__init__()
+    def __init__(self, input_dim, latent_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(input_dim, 128)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc_mean = nn.Linear(64, latent_dim)
+        self.fc_log_var = nn.Linear(64, latent_dim)
+        self.relu = nn.ReLU()
 
-        self.FC_input = nn.Linear(input_dim, hidden_dim)
-        self.FC_input2 = nn.Linear(hidden_dim, hidden_dim)
-        self.FC_mean  = nn.Linear(hidden_dim, latent_dim)
-        self.FC_var   = nn.Linear (hidden_dim, latent_dim)
-        
-        self.LeakyReLU = nn.LeakyReLU(0.2)
-        
-        self.training = True
-        
     def forward(self, x):
-        h_       = self.LeakyReLU(self.FC_input(x))
-        h_       = self.LeakyReLU(self.FC_input2(h_))
-        mean     = self.FC_mean(h_)
-        log_var  = self.FC_var(h_)                    
-        
-        return mean, log_var
-    
+        h = self.relu(self.fc1(x))
+        h = self.relu(self.fc2(h))
+        return self.fc_mean(h), self.fc_log_var(h)
+
 class Decoder(nn.Module):
-    def __init__(self, latent_dim = 200, hidden_dim = 400, output_dim = 1):
-        super(Decoder, self).__init__()
-        self.FC_hidden = nn.Linear(latent_dim, hidden_dim)
-        self.FC_hidden2 = nn.Linear(hidden_dim, hidden_dim)
-        self.FC_output = nn.Linear(hidden_dim, output_dim)
-        
-        self.LeakyReLU = nn.LeakyReLU(0.2)
-        
+    def __init__(self, input_dim, output_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(input_dim, 64)
+        self.fc2 = nn.Linear(64, 128)
+        self.fc3 = nn.Linear(128, output_dim)
+        self.relu = nn.ReLU()
+
     def forward(self, x):
-        h     = self.LeakyReLU(self.FC_hidden(x))
-        h     = self.LeakyReLU(self.FC_hidden2(h))
-        
-        x_hat = torch.sigmoid(self.FC_output(h))
-        return x_hat
+        h = self.relu(self.fc1(x))
+        h = self.relu(self.fc2(h))
+        return self.fc3(h)
     
 class IBNN_ReLU(Kernel):
     is_stationary = False
@@ -328,6 +317,21 @@ class IBNN_ReLU(Kernel):
         result = self.k(self.depth, new_x1, new_x2)
         return result
 
+class Classifier(torch.nn.Module):
+    def __init__(self, phi_dim,x_dim = 3, hidden_dim=256):
+        super().__init__()
+        self.fc1 = torch.nn.Linear(x_dim + phi_dim, hidden_dim)
+        self.fc2 = torch.nn.Linear(hidden_dim, hidden_dim)
+        #self.fc3 = torch.nn.Linear(hidden_dim, hidden_dim)
+        self.fc4 = torch.nn.Linear(hidden_dim, 1)
+        self.activation = torch.nn.ReLU()
+
+    def forward(self, x):
+        x = self.activation(self.fc1(x))
+        x = self.activation(self.fc2(x))
+        #x = self.activation(self.fc3(x))
+        x = self.fc4(x)
+        return x
 
 
 

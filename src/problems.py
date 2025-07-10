@@ -130,7 +130,7 @@ class ShipMuonShield():
                   54.00, 38.00, 46.00, 130.00, 14.00, 9.00, 1.00,1.0,54.00, 38.00,0.0, 0.00, 1.9,
                   10.00, 31.00, 35.00, 31.00, 51.00, 11.00, 1.00,1.0,10.00, 31.00,0.0, 0.00, 1.9,
                   5.00, 32.00, 54.00, 24.00, 8.00, 8.00, 1.00,1.0,5.00, 32.00,0.0, 0.00, -1.9,
-                  22.00, 32.00, 130.00, 35.00, 8.00, 13.00, 1.00,1.0,22.00, 32.00,0.0, 0.00, -1.9,
+                  22.00, 32.00, 130.00, 35.00, 8.00, 13.00, 1.00,1.0,22.00, 32.00,30.0, 30.00, -1.9,
                   33.00, 77.00, 85.00, 90.00, 9.00, 26.00, 1.00,1.0,33.00, 77.00,5.0, 5.00, -1.9]
     
     hybrid_baseline = [120.50, 35, 350., 125., 200., 200., 195., 
@@ -139,8 +139,8 @@ class ShipMuonShield():
                     45.,  45.,  25.,  25.,  35.,  35., 2.67,2.67,120.15,120.15,0.0, 0.00, 5.7,
                     0.,  0.,  0.,  0.,  0.,  0., 1.,1.0,0.,0.,0.0, 0., 0.,
                     5.263,55.632, 39.860, 5.278, 2.000,2.000, 1.000, 0.900, 5.263,50.069, 0.100, 0.100, -1.9,
-                    33.016, 12.833, 123.270, 78.523,22.414, 2.001, 0.959, 0.953,31.663, 12.233, 0.100, 0.100,-1.9, 
-                    15.755, 77.293, 69.398,152.828, 2.000, 35.402, 1.000,0.900, 15.755, 69.564, 0.0,0.0, -1.9]
+                    33.016, 12.833, 123.270, 78.523,22.414, 2.001, 0.959, 0.953,31.663, 12.233, 30., 30.,-1.9, 
+                    30., 40., 69.398,152.828, 2.000, 35.402, 1.000,0.900, 15.755, 69.564, 0.0,0.0, -1.9]
 
     tokanut_v5 = [
         120.50, 230.38, 279.43, 289.85, 119.58, 170.53, 249.28,
@@ -151,6 +151,17 @@ class ShipMuonShield():
         5.62, 60.38, 31.37, 5.00, 2.00, 2.86, 1.00, 0.74, 5.59, 44.82, 0.00, 0.00, -1.9,
         90.85, 7.44, 137.45, 66.69, 10.09, 2.00, 0.88, 1.00, 80.16, 7.41, 0.00, 0.00, -1.9,
         9.81, 47.60, 19.59, 164.19, 2.00, 2.05, 1.00, 0.89, 9.81, 42.16, 0.10, 0.10, -1.9
+    ]
+
+    tokanut_v5_SND = [
+        120.50, 230.38, 279.43, 289.85, 119.58, 170.53, 249.28,
+        50.00, 50.00, 119.00, 119.00, 2.00, 2.00, 1.00, 1.00, 50.00, 50.00, 0.00, 0.00, 1.9,
+        52.25, 78.36, 6.54, 9.37, 2.04, 40.36, 1.01, 1.05, 52.88, 82.20, 0.00, 0.00, 1.9,
+        52.47, 11.70, 41.59, 79.05, 2.19, 2.01, 1.03, 1.00, 54.15, 11.70, 0.00, 0.00, 1.9,
+        33.05, 24.10, 55.13, 30.61, 90.36, 2.00, 1.00, 1.00, 33.05, 24.10, 0.11, 0.11, 1.9,
+        5.62, 60.38, 31.37, 5.00, 2.00, 2.86, 1.00, 0.74, 5.59, 44.82, 0.00, 0.00, -1.9,
+        90.85, 7.44, 137.45, 66.69, 10.09, 2.00, 0.88, 1.00, 80.16, 7.41, 30.00, 30.00, -1.9,
+        30., 47.60, 19.59, 164.19, 2.00, 2.05, 1.00, 0.89, 9.81, 42.16, 0.10, 0.10, -1.9
     ]
 
     sc_v6 = [231.00,  0., 353.08, 125.08, 184.83, 150.19, 186.81, 
@@ -172,6 +183,16 @@ class ShipMuonShield():
     34.2, 8.87, 100.69, 32.75, 148.15, 38.3,0.99, 0.65, 31.66, 12.23, 51.04, 51.04, -1.9,
     21.44, 62.75, 197.1, 143.48, 6.63, 22.1,0.94, 0.94, 15.76, 69.56, 0.06, 0.06, -1.9]
 
+    Piet_solution = [120.5, 485.5, 245.0,  0., 255.0, 197.0, 197.0, 
+    50.000, 50.000, 119.000, 119.000, 2.000, 2.000, 1.000, 1.000, 50.000, 50.000, 0.000, 0.000, 1.9,
+    30.0, 31.0, 27.0, 43.0, 6.0, 6.0, 4.29, 4.290322580645161, 34.0,34.0, 0.0, 0.0, 1.9, 
+    31.0, 35.0, 43.0, 56.0, 6.0, 6.0, 4.290322580645161, 3.7857142857142856, 44.0,44.0, 0.0, 0.0, 1.9, 
+    0., 0., 0., 0.0, 0.0, 0.0, 1., 1., 1.0,1.0, 0., 0., 0.,
+    3.0, 18.6, 56.0, 56.0, 6.0, 6.0,  54.8, 8.2, 44.0,44.0, 0.0, 0.0, -1.7, 
+    18.6, 31.8, 56.0, 56.0, 6.0, 5.9999999999999964, 8.204301075268816, 4.471698113207546, 44.0,44.0, 30.0, 30.0, -1.7, 
+    31.8, 45.0, 56.0, 56.0, 5.9999999999999964, 6.0, 4.471698113207546, 2.8666666666666667, 44.0,44.0, 0.0, 0.0, -1.7 ]
+
+    
 
     
     hybrid_idx = (np.array(parametrization['M2'])[[0,1,3, 5, 6, 7,8,9,10]]).tolist() + \
@@ -187,9 +208,14 @@ class ShipMuonShield():
                       parametrization['M5'][:9] + parametrization['M5'][12:13] + \
                       parametrization['M6'][:9] + parametrization['M6'][12:13]
     
+    piet_idx = parametrization['M1'][:3] + parametrization['M1'][5:8] + \
+                      parametrization['M2'][:3] + parametrization['M2'][5:8] + \
+                      parametrization['M4'][:3]  + parametrization['M4'][5:8] + parametrization['M4'][12:] + \
+                      parametrization['M5'][:3]  + parametrization['M5'][5:8] + parametrization['M5'][12:] + \
+                      parametrization['M6'][:3]  + parametrization['M6'][5:8] + parametrization['M6'][12:]
     
     
-    DEFAULT_PHI = torch.tensor(supernut_v2)
+    DEFAULT_PHI = torch.tensor(warm_baseline)
     initial_phi = DEFAULT_PHI.clone()
     full_dim = 98
     MUON = 13
@@ -207,18 +233,20 @@ class ShipMuonShield():
                  simulate_fields:bool = False,
                  cavern:bool = True,
                  seed:int = None,
-                 left_margin = 2,
-                 right_margin = 2,
+                 left_margin = 2.1,
+                 right_margin = 2.1,
                  y_margin = 3,
                  SmearBeamRadius = 5,
                  dimensions_phi = 98,
-                muons_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample_biased.pkl'),
+                muons_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample_biased_v4.pkl'),
                 fields_file = None,
                 extra_magnet = False,
                 cut_P:float = None,
                 default_phi:torch.tensor = None,
                 multi_fidelity:float = False,
                 SND:bool = False,
+                use_diluted:bool = False,
+                parallel:bool = False,
                  ) -> None:
         
         self.left_margin = left_margin
@@ -245,11 +273,14 @@ class ShipMuonShield():
         self.cut_P = cut_P
         self.use_B_goal = True
         self.SND = SND
+        self.use_diluted = use_diluted
+        self.parallel = parallel
 
         if default_phi is not None:
             self.DEFAULT_PHI = torch.as_tensor(default_phi)
         if dimensions_phi == len(self.hybrid_idx): self.params_idx = self.hybrid_idx
         elif dimensions_phi == len(self.warm_idx): self.params_idx = self.warm_idx
+        elif dimensions_phi == len(self.piet_idx): self.params_idx = self.piet_idx
         elif dimensions_phi == self.full_dim: self.params_idx = slice(None)
         self.initial_phi = self.DEFAULT_PHI[self.params_idx]
 
@@ -293,18 +324,18 @@ class ShipMuonShield():
         max_x = float(np.round(max_x,decimals=1).item())
         max_y = float(np.round(max_y,decimals=1).item())
         d_space = ((0,max_x+0.3, float(self.resol[0])), (0,max_y+0.3, float(self.resol[1])), (-0.5, int(np.ceil(Z+0.5).item()), float(self.resol[2])))
-        self.run_magnet(True,phi.cpu().numpy(),file_name = self.fields_file,d_space = d_space, cores = cores, fSC_mag = self.fSC_mag)
+        self.run_magnet(True,phi.cpu().numpy(),file_name = self.fields_file,d_space = d_space, cores = cores, fSC_mag = self.fSC_mag, use_diluted = self.use_diluted)
 
     def simulate(self,phi:torch.tensor,muons = None, return_nan = False): 
         phi = self.add_fixed_params(phi)
         if muons is None: muons = self.sample_x()
-
         workloads = split_array(muons,self.cores)
+        assert phi.numel()==98, f"{len(workloads), workloads[0].shape}"
         if self.simulate_fields: 
             print('SIMULATING MAGNETIC FIELDS')
             self.simulate_mag_fields(phi)
         run_partial = partial(self.run_muonshield, 
-                      phi=phi.cpu().numpy(), 
+                      params=phi.cpu().numpy(), 
                       input_dist=self.input_dist, 
                       return_cost=True, 
                       fSC_mag=self.fSC_mag, 
@@ -319,7 +350,8 @@ class ShipMuonShield():
                       add_target=True, 
                       keep_tracks_of_hits=False, 
                       extra_magnet=self.extra_magnet,
-                      NI_from_B = self.use_B_goal)
+                      NI_from_B = self.use_B_goal,
+                      use_diluted = self.use_diluted)
         with Pool(self.cores) as pool:
             result = pool.map(run_partial, workloads)
         print('SIMULATION FINISHED')
@@ -334,21 +366,20 @@ class ShipMuonShield():
         return all_results
     def is_hit(self,px,py,pz,x,y,z,particle,factor = None):
         p = torch.sqrt(px**2+py**2+pz**2)
-        charge = -1*torch.sign(particle)
         mask = (torch.abs(x) <= self.left_margin) & (torch.abs(y) <= self.y_margin)
         mask = mask & (torch.abs(particle).to(torch.int)==self.MUON)
         if self.cut_P is not None: mask = mask & p.ge(self.cut_P)
         return mask.to(torch.bool)
     def muon_loss(self,px,py,pz,x,y,z,particle, weight = None):
         charge = -1*torch.sign(particle)
-        mask = self.is_hit(px,py,pz,x,y,z,particle).to(torch.bool)
+        mask = self.is_hit(px,py,pz,x,y,z,particle).to(torch.bool) 
         assert mask.shape == x.shape, f"MASK SHAPE: {mask.shape}, X SHAPE: {x.shape}"
         x = x[mask]
         charge = charge[mask]
         loss = torch.sqrt(1 + (charge*x-self.right_margin)/(self.left_margin+self.right_margin)) 
         if weight is not None:
             weight = weight[mask]
-            loss *= weight
+            loss = loss * weight
         return loss
     def get_total_length(self, phi):
         phi = self.add_fixed_params(phi)
@@ -364,11 +395,14 @@ class ShipMuonShield():
         phi = self.add_fixed_params(phi).detach().cpu()
         cost = 0
         for m,idx in self.parametrization.items():
-            if self.fSC_mag and m in ['M1', 'M3']: continue
             params = phi[idx].numpy()
-            Ymgap = 0
-            yoke_type = 'Mag1' if m in ['HA','M1','M2','M3'] else 'Mag3'
-            if m == 'M2' and self.fSC_mag: yoke_type = 'Mag2'; Ymgap = self.SC_Ymgap
+            if params[0]<1 or params[1]<1: continue
+            if self.fSC_mag and m  == 'M2':
+                Ymgap = self.SC_Ymgap; yoke_type = 'Mag2'
+            elif self.use_diluted: Ymgap = 0.; yoke_type = 'Mag1'
+            else: 
+                Ymgap = 0.; 
+                yoke_type = 'Mag3' if params[13]<0 else 'Mag1'
             cost+= self.estimate_electrical_cost(params,yoke_type,Ymgap,materials_directory = self.materials_directory, NI_from_B = self.use_B_goal)
         return cost
 
@@ -437,8 +471,13 @@ class ShipMuonShield():
                      +  iron_material_data["manufacturing_cost(CHF/kg)"])
         return C_iron.detach()
     def get_total_cost(self,phi):
-        M = self.get_iron_cost(phi)
-        if self.simulate_fields or self.fields_file is not None: M += self.get_electrical_cost(phi)
+        try:
+            M = self.get_iron_cost(phi)
+            if self.simulate_fields or self.fields_file is not None: M += self.get_electrical_cost(phi)
+        except Exception as e:
+            print(f"Error in cost estimation of parameters: {phi}")
+            print(f"Error: {e}")
+            raise
         return M
 
     def cost_loss(self,W,L = None):
@@ -452,7 +491,7 @@ class ShipMuonShield():
             return W/(1-L/self.L0)
         else: return 1
     def calc_loss(self,px,py,pz,x,y,z,particle,factor,W = None, L = None):
-        loss = self.muon_loss(px,py,pz,x,y,z,particle,factor).sum()+1
+        loss = self.muon_loss(px,py,pz,x,y,z,particle,factor).sum()
         if self.apply_det_loss: loss = self.deterministic_loss(phi,y)
         return loss.to(torch.get_default_dtype()).view(-1,1)
     def __call__(self,phi,muons = None):
@@ -476,28 +515,36 @@ class ShipMuonShield():
         return x,y,z
 
     def GetBounds(self,device = torch.device('cpu'), correct_bounds = True):
-        magnet_lengths = [(50, 300)] * 7  #previously 170-300
-        dX_bounds = [(5, 250)] * 2
         dY_bounds = [(4, 160)] * 2 
-        gap_bounds = [(2, 150)] * 2 
-        yoke_bounds = [(0.99,3)]*2#[(0.25, 4)]
+        if self.use_diluted:
+            magnet_lengths = [(self.Piet_solution[0], 500), (self.Piet_solution[1], 500), (self.Piet_solution[2], 600), (30, 400), (30, 400), (30, 400), (30, 400)]
+            dX_bounds = [(1, 85)] * 2
+            gap_bounds = [(5, 80)] * 2 
+            inner_gap_bounds = [(0., 30.)]*2
+            yoke_bounds = [(1,60)]*2
+        else:
+            magnet_lengths = [(50, 350)] * 7  #previously 170-300
+            dX_bounds = [(5, 250)] * 2
+            gap_bounds = [(2, 150)] * 2
+            yoke_bounds = [(0.99,3)]*2#[(0.25, 4)]
+            inner_gap_bounds = [(0., 150.)]*2
         dY_yoke_bounds = [(5, 160)]*2
-        inner_gap_bounds = [(0., 150.)]*2
         NI_bounds = [(0.1,1.91)]
         bounds = magnet_lengths + 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
         dY_yoke_bounds = [(4, 130)]*2 if self.fSC_mag else [(4, 300)]*2
         dY_bounds = [(5, 250)] * 2 
         bounds += 2*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
-        yoke_bounds = [(0.3,1.01)]*2
+        if not self.use_diluted: yoke_bounds = [(0.3,1.01)]*2
         NI_bounds = [(-1.91, -0.1)]
         bounds += 3*(dX_bounds + dY_bounds + gap_bounds + yoke_bounds + dY_yoke_bounds + inner_gap_bounds + NI_bounds)
 
         if self.SND:
-            bounds[self.parametrization['M6'][0]] = (170, 300)
+            bounds[self.parametrization['M6'][0]] = (170, 350)
             bounds[self.parametrization['M6'][1]] = (30, 250)
             bounds[self.parametrization['M6'][2]] = (40, 250)
             bounds[self.parametrization['M5'][12]] = (30, 150)
             bounds[self.parametrization['M5'][11]] = (30, 150)
+            bounds[self.parametrization['M5'][0]] = (90, 350)
         if self.fSC_mag: 
             bounds[self.parametrization['M1'][0]] = (30,100)
             bounds[self.parametrization['M3'][0]] = (30,300)
@@ -531,6 +578,14 @@ class ShipMuonShield():
                     new_phi[:, idx[11]] = new_phi[:, idx[12]] #fix Xmgap_1 = Xmgap_2, while we don't solve the problem
             elif self.dimensions_phi == len(self.hybrid_idx):
                 for m,idx in self.parametrization.items(): new_phi[:, idx[11]] = new_phi[:, idx[12]]
+            if self.dimensions_phi == len(self.piet_idx):
+                for m,idx in self.parametrization.items():
+                    if m == 'HA' or m == 'M3': continue
+                    new_phi[:, idx[11]] = new_phi[:, idx[12]]
+                    new_phi[:, idx[9]] = new_phi[:, idx[1]]
+                    new_phi[:, idx[10]] = new_phi[:, idx[2]]
+                    new_phi[:, idx[7]] = ((self.Piet_solution[idx[1]] * self.Piet_solution[idx[7]] + self.Piet_solution[idx[5]] + self.Piet_solution[idx[1]]) - (new_phi[:,idx[11]] + new_phi[:,idx[5]] + new_phi[:,idx[1]]) )/ new_phi[:,idx[1]]
+                    new_phi[:, idx[8]] =(self.Piet_solution[idx[2]] * self.Piet_solution[idx[8]] + self.Piet_solution[idx[6]] + self.Piet_solution[idx[2]] -new_phi[:,idx[12]] - new_phi[:,idx[6]] - new_phi[:,idx[2]]) / new_phi[:,idx[2]]
         else:
             new_phi = phi
         assert new_phi.size(-1) == self.full_dim, f"FINAL SHAPE: {new_phi.shape}"
@@ -564,7 +619,6 @@ class ShipMuonShield():
             x_min -= wall_gap
             y_min -= wall_gap
             return x_min, y_min
-
         z = torch.zeros(phi.size(0),device=phi.device)
         for m,idx in self.parametrization.items():
             p = phi[:,idx]
@@ -576,6 +630,11 @@ class ShipMuonShield():
             x_min, y_min = get_cavern_bounds(z)
             constraints = constraints + fn_pen(p[:,2]+p[:,8]*p[:,2]+p[:,6]+p[:,12] -x_min)
             constraints = constraints + fn_pen(p[:,4]+p[:,10]+Ymgap - y_min)
+            if self.use_diluted:
+                constraints = constraints + fn_pen((1-p[:,7])) 
+                constraints = constraints + fn_pen((1-p[:,8]))
+            
+            #assert False, constraints
         return (constraints.reshape(-1,1)*self.lambda_constraints).clamp(min=0,max=1E8)
 
         
@@ -588,12 +647,10 @@ class ShipMuonShieldCluster(ShipMuonShield):
                  manager_ip='34.65.198.159',
                  port=444,
                  local:bool = False,
-                 parallel:bool = False,
                  return_files = None,
                  **kwargs) -> None:
         super().__init__(**kwargs)
 
-        self.parallel = parallel
         self.manager_cert_path = os.getenv('STARCOMPUTE_MANAGER_CERT_PATH')
         self.client_cert_path = os.getenv('STARCOMPUTE_CLIENT_CERT_PATH')
         self.client_key_path = os.getenv('STARCOMPUTE_CLIENT_KEY_PATH')
@@ -671,6 +728,7 @@ class ShipMuonShieldCluster(ShipMuonShield):
             self.n_samples = 0
             loss = self.simulate(phi, file=file)
             self.n_samples = n_samples
+        
         
         if self.apply_det_loss: loss = self.deterministic_loss(phi,loss)
 

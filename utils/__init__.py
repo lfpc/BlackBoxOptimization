@@ -37,7 +37,7 @@ def split_array_idx(phi,
             splits.append(input)
     return splits
 
-def split_array_parallel(phi, 
+def split_idx_parallel(phi, 
                     N_samples = -1):
     indices = (0,N_samples)
     splits = []
@@ -53,6 +53,43 @@ def split_array(arr, K):
     sizes = [base_size + 1 if i < remainder else base_size for i in range(K)]
     splits = np.split(arr, np.cumsum(sizes)[:-1])
     return splits
+
+def split_array_parallel(phi, arr, K_total):
+    """
+    Distributes a total of K_total workloads among the elements of phi.
+    For each phi, it splits the array 'arr' into a calculated number of chunks.
+
+    Args:
+        phi (iterable): An iterable of parameters.
+        arr (np.ndarray): The NumPy array to be split for each workload.
+        K_total (int): The total number of workloads (e.g., cores) to be created.
+
+    Returns:
+        list: A list of workloads. The total length of the list will be K_total.
+              Each workload is a list [chunk_of_array, parameter_from_phi].
+    """
+    num_phi = len(phi)
+    if num_phi == 0:
+        return []
+    if K_total < 0:
+        raise ValueError("Total number of workloads (K_total) cannot be negative.")
+
+    # Determine how many workloads (splits) each phi element gets.
+    # This distributes the remainder, just like in split_array.
+    base_splits_per_phi = K_total // num_phi
+    remainder_splits = K_total % num_phi
+    splits_for_each_phi = [base_splits_per_phi + 1 if i < remainder_splits else base_splits_per_phi for i in range(num_phi)]
+
+    workloads = []
+    # Iterate through each parameter in phi and its assigned number of splits.
+    for p, num_splits_for_p in zip(phi, splits_for_each_phi):
+        # For each phi, split the *entire* data array into its assigned number of chunks.
+        array_chunks = split_array(arr, num_splits_for_p)
+        for chunk in array_chunks:
+            # Inverted the order to [data_chunk, phi_parameter]
+            workloads.append([chunk, p])
+            
+    return workloads
 
 from scipy.spatial import ConvexHull
 def compute_solid_volume_numpy(vertices):
