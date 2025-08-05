@@ -1,5 +1,6 @@
 import torch
 import gzip
+import h5py
 import pickle
 import sys
 import numpy as np
@@ -18,7 +19,9 @@ import time
 
 def uniform_sample(shape,bounds,device = 'cpu'):
     return (bounds[0]-bounds[1])*torch.rand(shape,device=device)+bounds[1]
-    
+
+
+
 class RosenbrockProblem():
     def __init__(self,noise:float = 0) -> None:
         self.noise = noise
@@ -204,10 +207,10 @@ class ShipMuonShield():
     warm_idx =        parametrization['M1'][:9] + parametrization['M1'][12:13] + \
                       parametrization['M2'][:9] + parametrization['M2'][12:13] + \
                       parametrization['M3'][:9] + parametrization['M3'][12:13] + \
-                      parametrization['M4'][:9] + parametrization['M4'][12:13] + \
-                      parametrization['M5'][:9] + parametrization['M5'][12:13] + \
-                      parametrization['M6'][:9] + parametrization['M6'][12:13]
-    
+                      parametrization['M4'][:9] + parametrization['M4'][12:] + \
+                      parametrization['M5'][:9] + parametrization['M5'][12:] + \
+                      parametrization['M6'][:9] + parametrization['M6'][12:]
+
     piet_idx = parametrization['M1'][:3] + parametrization['M1'][5:8] + \
                       parametrization['M2'][:3] + parametrization['M2'][5:8] + \
                       parametrization['M4'][:3]  + parametrization['M4'][5:8] + parametrization['M4'][12:] + \
@@ -226,10 +229,10 @@ class ShipMuonShield():
                  cores:int = 45,
                  n_samples:int = 0,
                  input_dist:float = None,
-                 sensitive_plane:float = {'dz': 0.01, 'dx': 4, 'dy': 6,'position': 82},
+                 sensitive_plane:float = [{'dz': 0.01, 'dx': 4, 'dy': 6,'position': 82}],
                  apply_det_loss:bool = True,
                  cost_loss_fn:bool = 'exponential',
-                 fSC_mag:bool = True,
+                 fSC_mag:bool = False,
                  simulate_fields:bool = False,
                  cavern:bool = True,
                  seed:int = None,
@@ -238,15 +241,17 @@ class ShipMuonShield():
                  y_margin = 3,
                  SmearBeamRadius = 5,
                  dimensions_phi = 98,
-                muons_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample_biased_v4.pkl'),
+                muons_file = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/muons/subsample_biased_v4.npy'),
                 fields_file = None,
                 extra_magnet = False,
                 cut_P:float = None,
                 default_phi:torch.tensor = None,
                 multi_fidelity:float = False,
                 SND:bool = False,
+                decay_vessel_sensitive:bool = False,
                 use_diluted:bool = False,
                 parallel:bool = False,
+                use_B_goal:bool = True,
                  ) -> None:
         
         self.left_margin = left_margin
@@ -263,26 +268,29 @@ class ShipMuonShield():
         self.sensitive_plane = sensitive_plane
         self.fSC_mag = fSC_mag
         self.simulate_fields = simulate_fields
-        self.seed = seed
-        self.dimensions_phi = dimensions_phi   
+        self.seed = seed  
         self.cavern = cavern
         self.apply_det_loss = apply_det_loss
         self.extra_magnet = extra_magnet    
         self.SmearBeamRadius = SmearBeamRadius
         self.lambda_constraints = 50
         self.cut_P = cut_P
-        self.use_B_goal = True
+        self.use_B_goal = use_B_goal
         self.SND = SND
+        self.decay_vessel_sensitive = decay_vessel_sensitive
         self.use_diluted = use_diluted
         self.parallel = parallel
 
         if default_phi is not None:
             self.DEFAULT_PHI = torch.as_tensor(default_phi)
-        if dimensions_phi == len(self.hybrid_idx): self.params_idx = self.hybrid_idx
+        if isinstance(dimensions_phi,list):
+            self.params_idx = dimensions_phi
+        elif dimensions_phi == len(self.hybrid_idx): self.params_idx = self.hybrid_idx
         elif dimensions_phi == len(self.warm_idx): self.params_idx = self.warm_idx
         elif dimensions_phi == len(self.piet_idx): self.params_idx = self.piet_idx
         elif dimensions_phi == self.full_dim: self.params_idx = slice(None)
         self.initial_phi = self.DEFAULT_PHI[self.params_idx]
+        self.dimensions_phi = len(self.initial_phi)
 
         self.materials_directory = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/materials')
         sys.path.insert(1, os.path.join(PROJECTS_DIR,'MuonsAndMatter'))
@@ -296,13 +304,25 @@ class ShipMuonShield():
         self.fields_file = fields_file
         self.multi_fidelity = multi_fidelity
 
-    def sample_x(self,phi=None, muons_file = None):
+    def sample_x(self,phi=None, muons_file = None, idx:tuple = None):
         muons_file = muons_file if muons_file is not None else self.muons_file
+        idx = slice(idx[0], idx[1]) if idx is not None else slice(None)
         if muons_file.endswith('.npy'):
-            x = np.load(muons_file)
+            x = np.load(muons_file)[idx]
+        elif muons_file.endswith('.h5'):
+            with h5py.File(muons_file, 'r') as f:
+                px = f['px'][idx]
+                py = f['py'][idx]
+                pz = f['pz'][idx]
+                x_ = f['x'][idx]
+                y_ = f['y'][idx]
+                z_ = f['z'][idx]
+                pdg = f['pdg'][idx]
+                weight = f['weight'][idx]
+                x = np.stack([px, py, pz, x_, y_, z_, pdg, weight], axis=1)
         else:
             with gzip.open(muons_file, 'rb') as f:
-                x = pickle.load(f)
+                x = pickle.load(f)[idx]
         if 0<self.n_samples<x.shape[0]: 
             indices = np.random.choice(x.shape[0], self.n_samples, replace=False)
             x = x[indices]
@@ -324,7 +344,7 @@ class ShipMuonShield():
         max_x = float(np.round(max_x,decimals=1).item())
         max_y = float(np.round(max_y,decimals=1).item())
         d_space = ((0,max_x+0.3, float(self.resol[0])), (0,max_y+0.3, float(self.resol[1])), (-0.5, int(np.ceil(Z+0.5).item()), float(self.resol[2])))
-        self.run_magnet(True,phi.cpu().numpy(),file_name = self.fields_file,d_space = d_space, cores = cores, fSC_mag = self.fSC_mag, use_diluted = self.use_diluted)
+        self.run_magnet(True,phi.cpu().numpy(),file_name = self.fields_file,d_space = d_space, cores = cores, fSC_mag = self.fSC_mag, use_diluted = self.use_diluted,NI_from_B_goal = self.use_B_goal)
 
     def simulate(self,phi:torch.tensor,muons = None, return_nan = False): 
         phi = self.add_fixed_params(phi)
@@ -337,7 +357,7 @@ class ShipMuonShield():
         run_partial = partial(self.run_muonshield, 
                       params=phi.cpu().numpy(), 
                       input_dist=self.input_dist, 
-                      return_cost=True, 
+                      return_cost=False, 
                       fSC_mag=self.fSC_mag, 
                       sensitive_film_params=self.sensitive_plane, 
                       add_cavern=self.cavern, 
@@ -351,18 +371,21 @@ class ShipMuonShield():
                       keep_tracks_of_hits=False, 
                       extra_magnet=self.extra_magnet,
                       NI_from_B = self.use_B_goal,
+                     add_decay_vessel = self.decay_vessel_sensitive,
                       use_diluted = self.use_diluted)
         with Pool(self.cores) as pool:
             result = pool.map(run_partial, workloads)
         print('SIMULATION FINISHED')
         all_results = []
         for rr in result:
-            resulting_data,cost = rr
+            resulting_data = rr
             if resulting_data.size == 0: continue
             all_results += [resulting_data]
         if len(all_results) == 0:
             all_results = [[np.nan]*8]
-        all_results = torch.as_tensor(np.concatenate(all_results, axis=0).T,device = phi.device,dtype=torch.get_default_dtype())
+        all_results = np.concatenate(all_results, axis=0).T
+        if all_results.dtype != object: # Only convert to tensor if all_results is a numeric array (not array of dicts)
+            all_results = torch.as_tensor(all_results, device=phi.device, dtype=torch.get_default_dtype())
         return all_results
     def is_hit(self,px,py,pz,x,y,z,particle,factor = None):
         p = torch.sqrt(px**2+py**2+pz**2)
@@ -561,33 +584,62 @@ class ShipMuonShield():
         bounds = bounds[:,self.params_idx]
         return bounds
 
-    def add_fixed_params(self, phi:torch.Tensor):
+    def add_fixed_params(self, phi: torch.Tensor):
         if phi.dim() == 1:
             phi = phi.unsqueeze(0)
+        
+        def place(target_idx, source_idx_or_value):
+            """Internal helper to scatter values while preserving gradients"""
+            nonlocal new_phi
+            if isinstance(source_idx_or_value, int):
+                values = new_phi[:, source_idx_or_value].unsqueeze(1)
+            else:
+                values = source_idx_or_value.unsqueeze(1) if source_idx_or_value.dim() == 1 else source_idx_or_value
+            idx_tensor = torch.tensor([target_idx], device=phi.device).unsqueeze(0).expand(phi.size(0), -1)
+            new_phi = new_phi.scatter(1, idx_tensor, values)
+        
         if phi.size(-1) != self.full_dim:
             assert phi.squeeze().size(-1) == len(self.params_idx), f"INPUT SHAPE: {phi.shape}"
             new_phi = self.DEFAULT_PHI.clone().to(phi.device).repeat(phi.size(0), 1)
             new_phi[:, torch.as_tensor(self.params_idx, device=phi.device)] = phi
+            
+            # HA parametrization constraints
+            place(self.parametrization['HA'][2], self.parametrization['HA'][1])
+            place(self.parametrization['HA'][4], self.parametrization['HA'][3])
+            
             if self.fSC_mag:
-                new_phi[:, self.parametrization['M2'][2]] = new_phi[:, self.parametrization['M2'][1]]
-                new_phi[:, self.parametrization['M2'][4]] = new_phi[:, self.parametrization['M2'][3]]
+                place(self.parametrization['M2'][2], self.parametrization['M2'][1])
+                place(self.parametrization['M2'][4], self.parametrization['M2'][3])
+            
             if self.dimensions_phi == len(self.warm_idx):
-                for m,idx in self.parametrization.items():
-                    new_phi[:, idx[9]] = new_phi[:, idx[1]]*new_phi[:, idx[7]] #Fix dY_yoke = dX_core*ratio_yoke
-                    new_phi[:, idx[10]] = new_phi[:, idx[2]]*new_phi[:, idx[8]] #Fix dY_yoke = dX_core*ratio_yoke
-                    new_phi[:, idx[11]] = new_phi[:, idx[12]] #fix Xmgap_1 = Xmgap_2, while we don't solve the problem
+                for m, idx in self.parametrization.items():
+                    # Fix dY_yoke = dX_core*ratio_yoke
+                    place(idx[9], new_phi[:, idx[1]] * new_phi[:, idx[7]])
+                    place(idx[10], new_phi[:, idx[2]] * new_phi[:, idx[8]])
+                    # fix Xmgap_1 = Xmgap_2
+                    place(idx[11], idx[12])
+                    
             elif self.dimensions_phi == len(self.hybrid_idx):
-                for m,idx in self.parametrization.items(): new_phi[:, idx[11]] = new_phi[:, idx[12]]
+                for m, idx in self.parametrization.items():
+                    place(idx[11], idx[12])
+                    
             if self.dimensions_phi == len(self.piet_idx):
-                for m,idx in self.parametrization.items():
-                    if m == 'HA' or m == 'M3': continue
-                    new_phi[:, idx[11]] = new_phi[:, idx[12]]
-                    new_phi[:, idx[9]] = new_phi[:, idx[1]]
-                    new_phi[:, idx[10]] = new_phi[:, idx[2]]
-                    new_phi[:, idx[7]] = ((self.Piet_solution[idx[1]] * self.Piet_solution[idx[7]] + self.Piet_solution[idx[5]] + self.Piet_solution[idx[1]]) - (new_phi[:,idx[11]] + new_phi[:,idx[5]] + new_phi[:,idx[1]]) )/ new_phi[:,idx[1]]
-                    new_phi[:, idx[8]] =(self.Piet_solution[idx[2]] * self.Piet_solution[idx[8]] + self.Piet_solution[idx[6]] + self.Piet_solution[idx[2]] -new_phi[:,idx[12]] - new_phi[:,idx[6]] - new_phi[:,idx[2]]) / new_phi[:,idx[2]]
+                for m, idx in self.parametrization.items():
+                    if m == 'HA' or m == 'M3': 
+                        continue
+                    
+                    place(idx[11], idx[12])
+                    place(idx[9], idx[1])
+                    place(idx[10], idx[2])
+                    
+                    values_7 = ((self.Piet_solution[idx[1]] * self.Piet_solution[idx[7]] + self.Piet_solution[idx[5]] + self.Piet_solution[idx[1]]) - (new_phi[:, idx[11]] + new_phi[:, idx[5]] + new_phi[:, idx[1]])) / new_phi[:, idx[1]]
+                    place(idx[7], values_7)
+                    
+                    values_8 = (self.Piet_solution[idx[2]] * self.Piet_solution[idx[8]] + self.Piet_solution[idx[6]] + self.Piet_solution[idx[2]] - new_phi[:, idx[12]] - new_phi[:, idx[6]] - new_phi[:, idx[2]]) / new_phi[:, idx[2]]
+                    place(idx[8], values_8)
         else:
             new_phi = phi
+        
         assert new_phi.size(-1) == self.full_dim, f"FINAL SHAPE: {new_phi.shape}"
         return new_phi.squeeze(0) if phi.size(0) == 1 else new_phi
         
@@ -624,18 +676,74 @@ class ShipMuonShield():
             p = phi[:,idx]
             z = z + 2*p[:,0]
             Ymgap = self.SC_Ymgap if (self.fSC_mag and m =='M2') else 0
-            x_min, y_min = get_cavern_bounds(z-2*p[:,0])
+            with torch.no_grad(): x_min, y_min = get_cavern_bounds(z-2*p[:,0])
             constraints = constraints + fn_pen(p[:,1]+p[:,7]*p[:,1]+p[:,5]+p[:,11]-x_min)
             constraints = constraints + fn_pen(p[:,3]+p[:,9]+Ymgap - y_min)
-            x_min, y_min = get_cavern_bounds(z)
+            with torch.no_grad(): x_min, y_min = get_cavern_bounds(z)
             constraints = constraints + fn_pen(p[:,2]+p[:,8]*p[:,2]+p[:,6]+p[:,12] -x_min)
             constraints = constraints + fn_pen(p[:,4]+p[:,10]+Ymgap - y_min)
             if self.use_diluted:
                 constraints = constraints + fn_pen((1-p[:,7])) 
                 constraints = constraints + fn_pen((1-p[:,8]))
-            
             #assert False, constraints
         return (constraints.reshape(-1,1)*self.lambda_constraints).clamp(min=0,max=1E8)
+
+    def get_constraints_func(self, phi):
+        """
+        This is a class method that calculates all problem constraints.
+        It takes a NumPy array (from SciPy) and returns a NumPy array where
+        each element represents a constraint in the form `g(x) >= 0`.
+        """
+        
+        def get_cavern_bounds(z):
+            x_min = torch.zeros_like(z)
+            y_min = torch.zeros_like(z)
+            wall_gap = 1
+            
+            mask = z <= 2051.8 - 214.0
+            x_min[mask] = 356
+            y_min[mask] = 170
+            x_min[~mask] = 456
+            y_min[~mask] = 336
+            x_min -= wall_gap
+            y_min -= wall_gap
+            return x_min, y_min
+
+        #phi = torch.from_numpy(phi).float()
+        
+        phi = self.add_fixed_params(phi)
+        phi = phi.view(1, -1) 
+        
+        constraint_values = []
+        length_constraint = self.L0 - self.get_total_length(phi)
+        constraint_values.append(length_constraint)
+
+        z = torch.zeros(phi.size(0))
+        for m, idx in self.parametrization.items():
+            p = phi[:, idx]
+            z = z + 2 * p[:, 0]
+            Ymgap = self.SC_Ymgap if (self.fSC_mag and m == 'M2') else 0
+
+            with torch.no_grad():
+                x_min_g1, y_min_g1 = get_cavern_bounds(z - 2 * p[:, 0])
+            c1 = x_min_g1 - (p[:, 1] + p[:, 7] * p[:, 1] + p[:, 5] + p[:, 11])
+            constraint_values.append(c1)
+            c2 = y_min_g1 - (p[:, 3] + p[:, 9] + Ymgap)
+            constraint_values.append(c2)
+            with torch.no_grad():
+                x_min_g2, y_min_g2 = get_cavern_bounds(z)
+            c3 = x_min_g2 - (p[:, 2] + p[:, 8] * p[:, 2] + p[:, 6] + p[:, 12])
+            constraint_values.append(c3)
+            c4 = y_min_g2 - (p[:, 4] + p[:, 10] + Ymgap)
+            constraint_values.append(c4)
+            if self.use_diluted:
+                c5 = p[:, 7] - 1
+                constraint_values.append(c5)
+                c6 = p[:, 8] - 1
+                constraint_values.append(c6)
+
+        all_constraints_tensor = torch.cat([c.flatten() for c in constraint_values])
+        return all_constraints_tensor
 
         
 
@@ -681,7 +789,6 @@ class ShipMuonShieldCluster(ShipMuonShield):
             t1 = time.time()
             with Pool(cpu_count()) as pool:
                 pool.starmap(save_muons, [(muons[idx[0]:idx[1]], idx[0]) for idx in muons_idx])
-            #print('SAVING MUONS',time.time()-t1)
         if self.simulate_fields: 
             print('SIMULATING MAGNETIC FIELDS')
             self.simulate_mag_fields(phi, cores = 9)

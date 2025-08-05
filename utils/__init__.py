@@ -153,3 +153,25 @@ def compute_solid_volume(vertices):
         total_volume = total_volume + volume
     
     return total_volume
+
+def normalize_vector(x:torch.tensor, bounds:tuple):
+    """
+    Normalize a tensor x to the range defined by bounds.
+    :param x: Input tensor to normalize.
+    :param bounds: A tuple (min_bound, max_bound) defining the normalization range.
+    :return: Normalized tensor.
+    """
+    min_bound, max_bound = bounds
+    return (x - min_bound) / (max_bound - min_bound)
+
+def denormalize_vector(x:torch.tensor, bounds:tuple):
+    """
+    Denormalize a tensor x from the range defined by bounds.
+    :param x: Input tensor to denormalize.
+    :param bounds: A tuple (min_bound, max_bound) defining the normalization range.
+    :return: Denormalized tensor.
+    """
+    min_bound, max_bound = bounds
+    return x * (max_bound - min_bound) + min_bound
+
+def fn_pen(x): return torch.nn.functional.relu(x,inplace=False).pow(2)

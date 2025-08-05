@@ -4,3 +4,6 @@ wandb/
 *.log
 outputs/
 plots/
+tests_notebooks/*.png
+tests_notebooks/*.pkl
+tests_notebooks/*.h5

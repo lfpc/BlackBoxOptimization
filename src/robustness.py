@@ -1,63 +1,74 @@
 import torch
-import torch.nn as nn
-import time
+import os
+import tqdm
+import matplotlib.pyplot as plt
+PROJECTS_DIR = os.getenv('PROJECTS_DIR')
+import sys
+sys.path.insert(1, os.path.join(PROJECTS_DIR,'BlackBoxOptimization/src'))
+sys.path.insert(1, os.path.join(PROJECTS_DIR,'MuonsAndMatter/python/bin'))
+from problems import ShipMuonShieldCluster
+from run_full_sample import get_total_hits
+from get_NI import get_NI
 
-# Define the MLP
-class MLP(nn.Module):
-    def __init__(self, input_size=106, hidden_size1=128, hidden_size2=128, output_size=1):
-        super(MLP, self).__init__()
-        self.fc1 = nn.Linear(input_size, hidden_size1)
-        self.relu1 = nn.ReLU()
-        self.fc2 = nn.Linear(hidden_size1, hidden_size2)
-        self.relu2 = nn.ReLU()
-        self.fc3 = nn.Linear(hidden_size2, output_size)
 
-    def forward(self, x):
-        out = self.fc1(x)
-        out = self.relu1(out)
-        out = self.fc2(out)
-        out = self.relu2(out)
-        out = self.fc3(out)
-        return out
+class RobustnessAnalysis:
+    def __init__(self,n_files:int = 67, inputs_dir = 'data/full_sample', outputs_dir= 'outputs' , config:dict = {}):
+        self.inputs_dir = inputs_dir
+        self.outputs_dir = outputs_dir
+        self.n_files = n_files
+        self.config = config
+    def run_zero_order(self, initial_param:torch.tensor, idx, error:torch.tensor):
+        range_p = torch.linspace(error[0], error[1], steps=11)
+        losses = []
+        params = []
+        for p in tqdm.tqdm(range_p):
+            print(f"Testing parameter {idx} with perturbation {p}")
+            full_param = initial_param.clone()
+            full_param[idx] = full_param[idx] + p
+            loss = get_total_hits(full_param, n_files=self.n_files, inputs_dir=self.inputs_dir, outputs_dir=self.outputs_dir, config=self.config)[1]
+            losses.append(loss)
+            params.append(full_param[idx])
+        return params, losses
+    
 
-model = MLP()
+if __name__ == '__main__':
+    INPUTS_DIR = '/home/hep/lprate/projects/MuonsAndMatter/data/full_sample'
+    OUTPUTS_DIR = '/home/hep/lprate/projects/MuonsAndMatter/data/outputs'
+    import argparse
+    import json
+    CONFIG_PATH = os.path.join(PROJECTS_DIR, 'cluster', 'config.json')
+    with open(CONFIG_PATH, 'r') as f:
+        CONFIG = json.load(f)
+    CONFIG.pop("data_treatment", None)
 
-def total_G(phi, z_batch):
-    """
-    This function computes sum_i G(phi, z_i) where G is an MLP that takes (phi, z_i) as input.
-    """
-    N = z_batch.shape[0]
-    phi_expanded = phi.unsqueeze(0).expand(N, -1) # Shape (N, 100)
-    mlp_input = torch.cat((phi_expanded, z_batch), dim=1) # Shape (N, 106)
-    mlp_output = model(mlp_input) # Shape (N, 1)
-    return torch.sum(mlp_output)
+    parser = argparse.ArgumentParser(description="Run robustness analysis.")
+    parser.add_argument('--n_files', type=int, default=67, help='Number of files to process')
+    parser.add_argument('--inputs_dir', type=str, default=INPUTS_DIR, help='Directory with input files')
+    parser.add_argument('--outputs_dir', type=str, default=OUTPUTS_DIR, help='Directory to save outputs')
+    parser.add_argument('--magnet', type=str, default='HA', help='Magnet configuration')
+    parser.add_argument('--idx', type=int, default=0, help='Index of the parameter to vary')
+    parser.add_argument('--error', type=float, nargs=2, default=[-0.4, 0.4], help='Range of errors to apply to the parameter')
+    args = parser.parse_args()
 
-N = 1_000_000
-phi = torch.randn(100, requires_grad=True)
-z = torch.randn(N, 6) # z is the batch of vectors
-v = torch.randn(100) # The vector 'v' for the H*v product
+    initial_param = ShipMuonShieldCluster.tokanut_v5
+    initial_param = get_NI(initial_param, fSC_mag=False, use_diluted=False)
+    initial_param = torch.from_numpy(initial_param).float()
 
-# 1. Compute the gradient w.r.t. phi
-start_time = time.time()
-grad_phi, = torch.autograd.grad(total_G(phi, z), phi, create_graph=True)
-end_time = time.time()
-print(f"Time for grad: {end_time - start_time:.6f} seconds")
+    idx = ShipMuonShieldCluster.parametrization[str(args.magnet)][args.idx]
+    error = torch.tensor(args.error)
+    robustness_analysis = RobustnessAnalysis(n_files=args.n_files, inputs_dir=INPUTS_DIR, outputs_dir=OUTPUTS_DIR, config=CONFIG)
+    params, losses = robustness_analysis.run_zero_order(initial_param, idx, error)
 
-# 2. Compute the HVP
-# This is the gradient of (grad_phi • v) w.r.t. phi
-start_time = time.time()
-hvp, = torch.autograd.grad(torch.dot(grad_phi, v), phi, retain_graph=True)
-end_time = time.time()
-print(f"Time for HVP: {end_time - start_time:.6f} seconds")
-
-print("Hessian-vector product shape:", hvp.shape)
-
-# 3. Compute the full Hessian w.r.t. phi
-def total_G_phi_only(p):
-    return total_G(p, z)
-
-start_time = time.time()
-H = torch.autograd.functional.hessian(total_G_phi_only, phi)
-end_time = time.time()
-print(f"Time for Hessian: {end_time - start_time:.6f} seconds")
-print("Hessian shape:", H.shape)
+    print("Robustness Analysis Results:")
+    for p, l in zip(params, losses):
+        print(f"Parameter: {p}, Loss: {l}")
+    plt.plot(params, losses)
+    plt.axvline(initial_param[idx].item(), color='r', linestyle='--')
+    plt.axhline(0, color='g', linestyle='--')
+    plt.xlabel('Parameter Value')
+    plt.ylabel('Loss')
+    plt.grid()
+    plt.title('Robustness Analysis')
+    plt.savefig(os.path.join(robustness_analysis.outputs_dir, 'robustness_analysis.png'))
+    plt.close()
+    
