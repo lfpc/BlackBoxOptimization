@@ -4,7 +4,7 @@ import sys
 import os
 import pickle
 sys.path.append(os.path.abspath(os.path.join('..', 'src')))
-from optimizer import LGSO, LCSO
+from optimizer import LGSO, LCSO, normalize_vector
 from problems import ShipMuonShield
 from models import VAEModel, NormalizingFlowModel, BinaryClassifierModel
 import torch
@@ -26,7 +26,7 @@ def get_freest_gpu():
     return torch.device(f'cuda:{max_idx}')
 
 dev = get_freest_gpu()
-dim = ShipMuonShield.parametrization['HA'][1:3] + [ShipMuonShield.parametrization['HA'][-3]]+[ShipMuonShield.parametrization['HA'][-1]]
+dim = 98
 
 
 # Minimal ShipMuonShield setup for fast LGSO test
@@ -37,7 +37,7 @@ problem = ShipMuonShield(
     cost_loss_fn=None,     # No cost penalty
     dimensions_phi=dim,
     default_phi=torch.tensor(ShipMuonShield.tokanut_v5), 
-    cores = 60,
+    cores = 70,
     parallel = False,
     fSC_mag = False,
     sensitive_plane = [{'dz': 0.01, 'dx': 4, 'dy': 6,'position': 82}]
@@ -45,7 +45,6 @@ problem = ShipMuonShield(
 
 bounds = problem.GetBounds(device=torch.device('cpu'))
 initial_phi = problem.initial_phi
-dim = len(dim)
 
 # Set up a simple generative model (GANModel)
 generative_model = BinaryClassifierModel(phi_dim=dim,
@@ -60,8 +59,8 @@ optimizer = LCSO(
     true_model=problem,
     surrogate_model=generative_model,
     bounds=bounds,
-    samples_phi=30,        
-    epsilon=0.5,       # Local search radius
+    samples_phi=80,        
+    epsilon=0.1,       # Local search radius
     initial_phi=initial_phi,
     device='cpu',
     outputs_dir='/home/hep/lprate/projects/BlackBoxOptimization/outputs/test_robustness',
@@ -73,6 +72,7 @@ def get_local_info(phi):
         This function contains every step that connects 'phi' to the final loss.
         It is a "pure" function for compatibility with torch.func.
         """
+        phi = normalize_vector(phi, bounds)
         x_samp = torch.as_tensor(problem.sample_x(), dtype=torch.get_default_dtype())
         condition = torch.cat([phi.repeat(x_samp.size(0), 1), x_samp[:,:7]], dim=-1)
         y_pred = optimizer.model.predict_proba(condition)
@@ -100,6 +100,10 @@ def calc_delta_loss_torch(delta_phi: torch.Tensor,
         The estimated change in loss (a scalar float).
     """
     # Linear term: (∇L)ᵀ * δφ
+    def normalize_delta(d, lower_bound, upper_bound):
+        return d / (upper_bound - lower_bound)
+
+    delta_phi = normalize_delta(delta_phi, bounds[0], bounds[1])
     linear_term = torch.dot(grad, delta_phi)
 
     # Quadratic term: 0.5 * δφᵀ * H * δφ

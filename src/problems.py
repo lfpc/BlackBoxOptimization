@@ -806,7 +806,6 @@ class ShipMuonShieldCluster(ShipMuonShield):
                 results.append(torch.as_tensor(np.load(m_file),dtype=torch.get_default_dtype()))
                 #os.remove(m_file)
             result = torch.cat(results, dim=1)
-            del results
         result = torch.as_tensor(result,device = phi.device)
         if not (phi.dim()==1 or phi.size(0)==1):
             result = result.view(phi.size(0),-1)

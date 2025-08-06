@@ -289,6 +289,13 @@ class LCSO(OptimizerClass):
         w = x[:,7].to(y.device).flatten()
         y = y.flatten()
         return  (w*y).sum()/w.sum()
+    def get_model_pred(self, phi):
+        phi = normalize_vector(phi, self.bounds[0], self.bounds[1])
+        x_samp = torch.as_tensor(self.true_model.sample_x(),device=self.device, dtype=torch.get_default_dtype())
+        condition = torch.cat([phi.repeat(x_samp.size(0), 1), x_samp[:,:7]], dim=-1)
+        y_pred = self.model.predict_proba(condition)
+        return self.n_hits(phi, y_pred, x_samp)
+
     def clean_training_data(self):
         return torch.cat(self.local_results[0], dim=0), torch.cat(self.local_results[1], dim=0)
 
@@ -464,7 +471,7 @@ class LCSO(OptimizerClass):
             self.trust_radius = min(1.25 * self.trust_radius, 0.1) # Cap max radius
             print(f"Excellent step (rho={rho}). Expanding trust radius to {self.trust_radius:.3f}")
 
-        if rho > 0.0:#0.1:
+        if rho > 0.1:
             with torch.no_grad():
                 self._current_phi.data  = proposed_phi
                 self.local_results = [[self.local_results[0][-1]], [self.local_results[1][-1]]]

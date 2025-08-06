@@ -101,7 +101,8 @@ with wandb.init(reinit = True,**WANDB) as wb:
     wb.log({'objective_loss': objective_losses[0], 
             'constraints': problem.get_constraints(initial_phi).item(), 
             'violated_bounds': initial_phi.lt(bounds[0]).logical_or(initial_phi.gt(bounds[1])).sum().float().item(),
-            'distance_from_origin': 0.0})
+            'distance_from_origin': 0.0,
+            'trust_radius': optimizer.trust_radius})
     old_phi = initial_phi.clone().detach()
     for i in range(n_iters):
         if i > 0: generative_model.n_epochs = 6
@@ -112,6 +113,7 @@ with wandb.init(reinit = True,**WANDB) as wb:
         phi, obj_loss = optimizer.optimization_iteration_second_order()
         obj_loss *= n_muons
         print("Optimized phi:", phi)
+        predicted_loss = optimizer.get_model_pred(phi).item()*n_muons
 
         with torch.no_grad(): contraints = problem.get_constraints(phi)
         assert torch.all(phi >= bounds[0].to(phi.device)) and torch.all(phi <= bounds[1].to(phi.device)), "current_phi is out of bounds after optimization step"
@@ -121,7 +123,13 @@ with wandb.init(reinit = True,**WANDB) as wb:
         distance_from_origin = torch.norm(phi - initial_phi, p=2)
 
         lr = optimizer.trust_radius
-        wb.log({'objective_loss': obj_loss.item(), 'constraints': contraints, 'violated_bounds': violated_bounds, 'step_norm' : step_norm.item(), 'distance_from_origin' : distance_from_origin.item(), 'rho': optimizer.rhos[-1], 'trust_radius': lr})
+        wb.log({'objective_loss': obj_loss.item(), 
+                'constraints': contraints, 
+                'violated_bounds': violated_bounds, 
+                'step_norm' : step_norm.item(), 
+                'distance_from_origin' : distance_from_origin.item(), 
+                'rho': optimizer.rhos[-1], 'trust_radius': lr,
+                'predicted_loss': predicted_loss,})
 
         optimizer._i += 1
         print("Difference between current_phi and initial_phi:", (optimizer.current_phi - initial_phi).detach().cpu().numpy())
