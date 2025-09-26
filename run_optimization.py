@@ -53,8 +53,9 @@ else:
         CONFIG['W0'] = float(input("Enter Reference Cost (W0) [default: 11E6]: ") or 11E6)
         CONFIG['L0'] = float(input("Enter Maximum Length (L0) [default: 29.7]: ") or 29.7)
         CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 63]: ") or 63)
-        default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or None)
-        if default_phi_name is None: CONFIG['initial_phi'] = problems.ShipMuonShield.DEFAULT_PHI
+        default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or '')
+        print('default_phi_name', default_phi_name)
+        if default_phi_name == '': CONFIG['initial_phi'] = problems.ShipMuonShield.DEFAULT_PHI.tolist()
         else: CONFIG['initial_phi'] = problems.ShipMuonShield.params[default_phi_name]
         if args.multi_fidelity is not None:
             if args.multi_fidelity > 0:
