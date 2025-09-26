@@ -31,7 +31,7 @@ dim = 63
 epsilon = 0.1  # Local search radius
 samples_phi = 50  # Number of samples for phi
 n_muons = 100_000
-initial_lambda_constraints = 1e-3
+initial_lambda_constraints = 1e-1 #1e-3
 initial_lr = 0.1
 
 

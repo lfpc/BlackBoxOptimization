@@ -449,7 +449,7 @@ class BinaryClassifierModel:
         indices = torch.arange(num_samples)
         
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self._lr)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
 
         print(f"--- Starting Binary Classifier Training on {self.device} ---")
         pbar = trange(self.n_epochs, position=0, leave=True, desc='Classifier Training')
@@ -465,7 +465,6 @@ class BinaryClassifierModel:
                 
                 y_batch = y[batch_idx].to(self.device)
                 condition_batch = condition[batch_idx].to(self.device)
-                
                 optimizer.zero_grad()
                 
                 # Get model prediction (logits)
@@ -498,7 +497,6 @@ class BinaryClassifierModel:
         """
         self.model.eval()
         condition = condition.to(self.device)
-
         y_pred_logits = self.model(condition)
         y_pred_prob = torch.sigmoid(y_pred_logits)
         

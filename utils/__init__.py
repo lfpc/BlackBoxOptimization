@@ -1,6 +1,16 @@
 import torch
 import numpy as np
 
+def make_index(row: int, cols):
+    """Make a list of (row, col) index pairs for given row and columns."""
+    return [(row, c) for c in cols]
+def apply_index(params, index):
+    """Extract values from params using a list of (row, col) indices or slice(None)."""
+    if index == slice(None):
+        return params
+    are_tensors = torch.is_tensor(params) and torch.is_tensor(index)
+    return params[index[:,0], index[:,1]] if are_tensors else [params[r][c] for (r, c) in index]
+
 def standardize(y:torch.tensor):
     std = y.std() if y.std()>0 else 1
     return (y-y.mean())/std
@@ -148,7 +158,7 @@ def compute_solid_volume(vertices):
         
         # Calculate the volume of the tetrahedron formed by the face and the centroid
         # Volume = 1/6 * |((v2-v1) × (v3-v1)) · (centroid-v1)|
-        cross_product = torch.cross(v2 - v1, v3 - v1)
+        cross_product = torch.linalg.cross(v2 - v1, v3 - v1)
         volume = torch.abs(torch.dot(cross_product, centroid - v1)) / 6.0
         total_volume = total_volume + volume
     

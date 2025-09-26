@@ -19,7 +19,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--cpu",dest = 'cuda', action = 'store_false')
 parser.add_argument("--seed", type=int, default=13)
 parser.add_argument("--maxiter", type=int, default=1000)
-parser.add_argument('--problem', type=str, default='ship')
+parser.add_argument('--problem', type=str, default='ship_cuda')
 parser.add_argument('--optimization', type=str, default='bayesian')
 parser.add_argument('--model', type=str, default='gp_rbf')
 parser.add_argument('--name', type=str, default='optimizationtest')
@@ -52,10 +52,10 @@ else:
         CONFIG = json.load(src)
         CONFIG['W0'] = float(input("Enter Reference Cost (W0) [default: 11E6]: ") or 11E6)
         CONFIG['L0'] = float(input("Enter Maximum Length (L0) [default: 29.7]: ") or 29.7)
-        CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 60]: ") or 60)
+        CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 63]: ") or 63)
         default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or None)
-        if default_phi_name is None: CONFIG['default_phi'] = problems.ShipMuonShield.DEFAULT_PHI
-        else: CONFIG['default_phi'] = getattr(problems.ShipMuonShield, default_phi_name)
+        if default_phi_name is None: CONFIG['initial_phi'] = problems.ShipMuonShield.DEFAULT_PHI
+        else: CONFIG['initial_phi'] = problems.ShipMuonShield.params[default_phi_name]
         if args.multi_fidelity is not None:
             if args.multi_fidelity > 0:
                 CONFIG['n_samples'] = args.multi_fidelity
@@ -141,7 +141,10 @@ if __name__ == "__main__":
     elif args.problem == 'ship': 
         is_multi_fidelity = args.multi_fidelity is not None
         problem_fn = problems.ShipMuonShieldCluster(parallel=args.parallel, multi_fidelity=is_multi_fidelity,**CONFIG)
-
+    elif args.problem == 'ship_cuda':
+        is_multi_fidelity = args.multi_fidelity is not None
+        CONFIG.pop('results_dir', None)
+        problem_fn = problems.ShipMuonShieldCuda(parallel=args.parallel, multi_fidelity=is_multi_fidelity, **CONFIG)
     phi_bounds = CONFIG.get('phi_bounds',None) 
     dimensions = CONFIG.get('dimensions_phi')
     if phi_bounds is None: phi_bounds = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_bounds
@@ -152,7 +155,6 @@ if __name__ == "__main__":
     if args.model == 'gp_rbf': model = GP_RBF(phi_bounds,device = dev)
     elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_bounds,device = dev)
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_bounds,device = dev)
-    elif args.model == 'gan': model = GANModel(42,problem_fn.DEF_N_SAMPLES,64,device = dev)
     model_scheduler = {args.model_switch:SingleTaskIBNN
                        }
 

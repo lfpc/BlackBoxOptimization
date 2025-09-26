@@ -290,7 +290,7 @@ class LCSO(OptimizerClass):
         y = y.flatten()
         return  (w*y).sum()/w.sum()
     def get_model_pred(self, phi):
-        phi = normalize_vector(phi, self.bounds[0], self.bounds[1])
+        phi = normalize_vector(phi, self.bounds)
         x_samp = torch.as_tensor(self.true_model.sample_x(),device=self.device, dtype=torch.get_default_dtype())
         condition = torch.cat([phi.repeat(x_samp.size(0), 1), x_samp[:,:7]], dim=-1)
         y_pred = self.model.predict_proba(condition)
@@ -304,8 +304,8 @@ class LCSO(OptimizerClass):
             x = torch.as_tensor(self.true_model.sample_x(phi),device=self.device, dtype=torch.get_default_dtype())
             condition = torch.cat([phi.repeat(x.size(0), 1), x[:,:7]], dim=-1).to(self.device)
             phi = denormalize_vector(phi, self.bounds).clone().detach()
-            y = self.true_model.simulate(phi.cpu(),x, return_nan = True)
-            y = self.true_model.is_hit(*y).float().view(-1,1)
+            y = self.true_model(phi.cpu(),x).view(-1,1)
+            print("Simulation performed. Output shape:", y.shape)
             self.local_results[0].append(condition)
             self.local_results[1].append(y)
             loss = self.n_hits(phi, y, x).reshape(1)
@@ -478,6 +478,7 @@ class LCSO(OptimizerClass):
                 self.update_history(self.current_phi.detach(), proposed_loss.detach())
             print("Step accepted.")
         else:
+            [[self.local_results[0][0]], [self.local_results[1][0]]]
             print("Step rejected. Proposed loss:", proposed_loss.item(), "Current loss:", self.history[1][-1].item())
         return self.history[0][-1].detach().clone(), self.history[1][-1].detach().clone()
 

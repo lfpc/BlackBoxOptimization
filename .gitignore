@@ -7,3 +7,4 @@ plots/
 tests_notebooks/*.png
 tests_notebooks/*.pkl
 tests_notebooks/*.h5
+tests_notebooks/*.npy
