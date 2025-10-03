@@ -8,7 +8,6 @@ import wandb
 from os.path import join
 from scipy.optimize import minimize, Bounds as ScipyBounds, NonlinearConstraint
 import numpy as np
-#from gzip import open as gzip_open
 import sys
 sys.path.append('..')
 from utils.acquisition_functions import Custom_LogEI
@@ -637,6 +636,7 @@ class BayesianOptimizer(OptimizerClass):
                  WandB:dict = {'name': 'BayesianOptimization'},
                  reduce_bounds:int = 4000,
                  outputs_dir = 'outputs',
+                 multi_fidelity:bool = False,
                  resume:bool = False):
         
         super().__init__(true_model,
@@ -662,6 +662,7 @@ class BayesianOptimizer(OptimizerClass):
         self.acquisition_params = acquisition_params
         self.model_scheduler = model_scheduler
         self._iter_reduce_bounds = reduce_bounds
+        self.multi_fidelity = multi_fidelity
         if resume: 
             for i in model_scheduler:
                 if self._i > i and i>0:
@@ -691,10 +692,17 @@ class BayesianOptimizer(OptimizerClass):
         phi = self.get_new_phi().cpu()
         print('acquisition function optimization time: ', time()-t1)
         y = self.true_model(phi)
+        if self.multi_fidelity and y < 1000:
+            n_samples = self.true_model.n_samples
+            self.true_model.n_samples = 0
+            y = self.true_model(phi)
+            self.true_model.n_samples = n_samples
         self.update_history(phi,y)
         y,idx = self.loss(phi,y).flatten().min(0)
         return phi[idx],y
     
+    
+            
     def clean_training_data(self):
         '''Remove samples in D that are not contained in the bounds.'''
         idx = self.bounds[0].le(self.history[0]).logical_and(self.bounds[1].ge(self.history[0])).all(-1)
