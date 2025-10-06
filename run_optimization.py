@@ -24,9 +24,6 @@ parser.add_argument('--optimization', type=str, default='bayesian')
 parser.add_argument('--model', type=str, default='gp_rbf')
 parser.add_argument('--name', type=str, default='optimizationtest')
 parser.add_argument('--group', type=str, default='BayesianOptimization')
-#parser.add_argument("--nodes",type=int,default = 16)
-#parser.add_argument("--n_tasks_per_node", type=int, default=32)
-#parser.add_argument("--n_tasks", type=int, default=None)
 parser.add_argument("--dont_save_history", action='store_false', dest='save_history')
 parser.add_argument("--resume", action='store_true')
 parser.add_argument("--reduce_bounds", type=int, default=-1)
@@ -36,6 +33,7 @@ parser.add_argument("--model_switch", type=int,default = -1)
 parser.add_argument('--n_samples', type=int, default=0)
 parser.add_argument("--n_initial", type=int, default=-1)
 parser.add_argument('--float64', action = 'store_true')
+parser.add_argument('--config_file', type=str, default='outputs/config.json')
 
 args = parser.parse_args()
 
@@ -48,7 +46,7 @@ if args.resume:
 else: 
     if not os.path.exists(OUTPUTS_DIR):
         os.makedirs(OUTPUTS_DIR)
-    with open(os.path.join(PROJECTS_DIR, 'cluster', 'config.json'), 'r') as src, open(config_file, 'w') as dst:
+    with open(args.config_file, 'r') as src, open(config_file, 'w') as dst:
         CONFIG = json.load(src)
         CONFIG['W0'] = float(input("Enter Reference Cost (W0) [default: 11E6]: ") or 11E6)
         CONFIG['L0'] = float(input("Enter Maximum Length (L0) [default: 29.7]: ") or 29.7)
@@ -73,7 +71,7 @@ if args.cuda: assert torch.cuda.is_available()
 if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda')
 else: dev = torch.device('cpu')
 print('Device:', dev)
-torch.manual_seed(args.seed);
+torch.manual_seed(args.seed)
 if args.float64: torch.set_default_dtype(torch.float64)
 
 
@@ -106,6 +104,7 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_bounds, m
                                       reduce_bounds=args.reduce_bounds,
                                       WandB = WANDB,
                                       acquisition_params = {'q':q,'num_restarts': 30, 'raw_samples':5000},
+                                      multi_fidelity= args.multi_fidelity,
                                       resume = args.resume)
 
     elif args.optimization == 'lgso':
@@ -140,12 +139,10 @@ if __name__ == "__main__":
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
     elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
     elif args.problem == 'ship': 
-        is_multi_fidelity = args.multi_fidelity is not None
-        problem_fn = problems.ShipMuonShieldCluster(parallel=args.parallel, multi_fidelity=is_multi_fidelity,**CONFIG)
+        problem_fn = problems.ShipMuonShieldCluster(parallel=args.parallel,**CONFIG)
     elif args.problem == 'ship_cuda':
-        is_multi_fidelity = args.multi_fidelity is not None
         CONFIG.pop('results_dir', None)
-        problem_fn = problems.ShipMuonShieldCuda(parallel=args.parallel, multi_fidelity=is_multi_fidelity, **CONFIG)
+        problem_fn = problems.ShipMuonShieldCuda(parallel=args.parallel, **CONFIG)
     phi_bounds = CONFIG.get('phi_bounds',None) 
     dimensions = CONFIG.get('dimensions_phi')
     if phi_bounds is None: phi_bounds = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_bounds
