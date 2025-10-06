@@ -692,7 +692,7 @@ class BayesianOptimizer(OptimizerClass):
         phi = self.get_new_phi().cpu()
         print('acquisition function optimization time: ', time()-t1)
         y = self.true_model(phi)
-        if self.multi_fidelity and y < 1000:
+        if self.multi_fidelity and y < self.history[1][0] * 10:
             n_samples = self.true_model.n_samples
             self.true_model.n_samples = 0
             y = self.true_model(phi)

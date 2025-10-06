@@ -274,7 +274,7 @@ class ShipMuonShield():
         self.parallel = parallel
 
         if initial_phi is not None:
-            self.DEFAULT_PHI = torch.as_tensor(initial_phi)
+            self.DEFAULT_PHI = torch.as_tensor(initial_phi).view(-1,self.n_params)
         if isinstance(dimensions_phi,list):
             self.params_idx = torch.tensor(dimensions_phi)
         else:
@@ -535,7 +535,7 @@ class ShipMuonShield():
         return loss
 
 
-    def GetBounds(self,device = torch.device('cpu'), correct_bounds = True):
+    def GetBounds(self,device = torch.device('cpu')):
         z_gap = (10,50)
         magnet_lengths = (100, 350)
         dY_bounds = (5, 250)
@@ -569,14 +569,16 @@ class ShipMuonShield():
                         inner_gap_bounds[1], inner_gap_bounds[1],
                         NI_bounds[1]] for _ in range(self.n_magnets)],device=device,dtype=torch.get_default_dtype())
         bounds_low[0,0] = 0
-        # Flip the sign of the NI bounds where polarity is inverted
+
         inverted_polarity = self.DEFAULT_PHI[:, 14] < 0
-        bounds_low[inverted_polarity, 14] = -bounds_high[inverted_polarity, 14]
-        bounds_high[inverted_polarity, 14] = -bounds_low[inverted_polarity, 14]
-        bounds_low[inverted_polarity, 8] = 1.0 / bounds_high[inverted_polarity, 8]
-        bounds_high[inverted_polarity, 8] = 1.0 / bounds_low[inverted_polarity, 8]
-        bounds_low[inverted_polarity, 9] = 1.0 / bounds_high[inverted_polarity, 9]
-        bounds_high[inverted_polarity, 9] = 1.0 / bounds_low[inverted_polarity, 9]
+        if inverted_polarity.any() and not self.use_diluted:
+            bounds_low[inverted_polarity, 14] = -NI_bounds[1]
+            bounds_high[inverted_polarity, 14] = -NI_bounds[0]
+            bounds_low[inverted_polarity, 8] = 1.0 / yoke_bounds[1]
+            bounds_high[inverted_polarity, 8] = 1.0 / yoke_bounds[0]
+            bounds_low[inverted_polarity, 9] = 1.0 / yoke_bounds[1]
+            bounds_high[inverted_polarity, 9] = 1.0 / yoke_bounds[0]
+
         if self.use_diluted:
             bounds_low[:3,1] = self.params['Piet_solution'][:3,1]
             bounds_low[3:,1] = 30
