@@ -622,6 +622,128 @@ class LCSO(OptimizerClass):
         return self._current_phi
 
 
+
+class Individual():
+    def __init__(self,problem_fn,genes,computed_fitness_values):
+        self.problem_fn=problem_fn
+        self.genes=genes.copy()
+        self.computed_fitness_values=computed_fitness_values
+        self.evaluate()
+    
+    def evaluate(self):
+        unique_representation=self.get_unique_representation_of_genes()
+        if unique_representation in self.computed_fitness_values.keys():
+            self.fitness=self.computed_fitness_values[unique_representation]
+        else:
+            #y = self.true_model.simulate(phi.detach().cpu(),x, return_nan = True).T
+            self.fitness=#TO_DO: Extract from the expensive simulation
+            self.computed_fitness_values[unique_representation]=self.fitness
+
+    def get_unique_representation_of_genes(self):
+        return tuple(round(g, 6) for g in self.genes)
+
+    def clone(self):
+        cloned_individual=Individual(self.problem_fn,self.genes,self.computed_fitness_values)
+        return cloned_individual
+
+class Population():
+    def __init__(self,problem_fn,population_size,generations,phi_bounds,mutation_probability,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size):
+        self.problem_fn=problem_fn
+        self.population_size=population_size
+        self.generations=generations
+        self.computed_fitness_values=dict()
+        self.phi_bounds=phi_bounds
+        self.population=[]
+        for _ in range(self.population_size):
+            genes=self.get_initial_genes()
+            individual=Individual(self.problem_fn,genes,self.computed_fitness_values)
+            self.population.append(individual)
+        self.mutation_probability=mutation_probability
+        self.random_immigration_probability=random_immigration_probability#0.01 would be a suitable value
+        self.mutation_std_deviations_factor=mutation_std_deviations_factor#0.05 would be a suitable value
+        self.mutation_std_deviations=[self.mutation_std_deviations_factor*(high-low) for low,high in self.phi_bounds.T]
+        self.tournament_size=tournament_size
+        self.elite=[]
+        self.elite_size=elite_size
+        self.hall_of_fame=[]
+        self.hall_of_fame_size=hall_of_fame_size
+
+    def get_initial_genes(self):
+        initial_genes=[random.uniform(low, high) for low,high in self.phi_bounds.T]
+        return initial_genes
+        
+    def update_elite(self):
+        self.elite=sorted(self.population, key=lambda ind: ind.fitness, reverse=True)[:self.hall_of_fame_size]#TO_DO: Check if I would need a more suitable elite, like saving all individuals with a fitness value above a threshold, or avoiding storing individuals with the same genes
+
+    def update_hall_of_fame(self):
+        aux=self.hall_of_fame+self.elite
+        self.hall_of_fame=sorted(aux, key=lambda ind: ind.fitness, reverse=True)[:self.hall_of_fame_size]#TO_DO: Check if I would need a more suitable elite, like saving all individuals with a fitness value above a threshold, or avoiding storing individuals with the same genes
+
+    def crossover(self,individual1,individual2):
+        for gene_index in range(len(individual1.genes)):
+            if random.random()<0.5:
+                aux=individual1.genes[gene_index]
+                individual1.genes[gene_index]=individual2.genes[gene_index]
+                individual2.genes[gene_index]=aux
+        return individual1,individual2
+
+    def mutation(self,individual):
+        for gene_index in range(len(individual.genes)):
+            if random.random() < self.mutation_probability:
+                individual.genes[gene_index]+=np.random.normal(0, self.mutation_std_deviations[gene_index])
+        return individual
+
+    def random_immigration(self,individual):
+        initial_genes=self.get_initial_genes()
+        individual.genes=initial_genes.copy()
+        return individual
+
+    def update_generation(self):
+        #Clone the population:
+        cloned_population = [ind.clone() for ind in self.population]
+        random.shuffle(cloned_population)
+        # Apply crossover and mutation to the cloned population:
+        for i in range(0,self.population_size,2):
+            if random.random()<self.random_immigration_probability:
+                cloned_population[i]=self.random_immigration(cloned_population[i])
+                cloned_population[i+1]=self.random_immigration(cloned_population[i+1])
+            else:
+                cloned_population[i], cloned_population[i+1]=self.crossover(cloned_population[i], cloned_population[i+1])
+                cloned_population[i] = self.mutation(cloned_population[i])
+                cloned_population[i+1] = self.mutation(cloned_population[i+1])
+        #Update the fitness values:
+        for ind in cloned_population:
+            ind.evaluate()
+        #Merge original population and offspring
+        self.population+=cloned_population
+        #Elite individuals survive to the next generation:
+        self.update_elite()
+        self.update_hall_of_fame()
+        new_generation=[]
+        for ind in self.elite:
+            new_generation.append(ind)
+        #Selection process based on tournaments:
+        for _ in range(self.population_size-len(self.elite)):
+            participants = random.sample(self.population, self.tournament_size)
+            new_generation.append(max(participants, key=lambda ind: ind.fitness)) 
+        self.population=new_generation.copy()
+
+    def play_evolution(self):
+        for _ in range(self.generations):
+            self.update_generation()
+        return self.hall_of_fame
+
+#class GAs():#Decided to not inherit from OptimizerClass because I will not use a surrogate_model 
+    #def __init__(self,true_model,                        ):
+    #    super().__init__(true_model,
+    #             surrogate_model,
+    #             bounds,
+    #             device = device,
+    #             history = history,
+    #             WandB = WandB,
+    #             outputs_dir = outputs_dir,
+    #             resume = resume)
+    
     
 class BayesianOptimizer(OptimizerClass):
     
