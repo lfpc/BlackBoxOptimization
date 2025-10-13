@@ -309,19 +309,17 @@ class ShipMuonShield():
                 indices = np.random.choice(x.shape[0], self.n_samples, replace=False)
                 x = x[indices]
         elif self.muons_file.endswith('.h5'):
-            if self.n_samples == 0:
-                with h5py.File(self.muons_file, "r") as f:
-                    n = f["px"].shape[0]
-            else: n = self.n_samples
-            start, stop, step = idx.indices(n)
-            n = (stop - start + (step - 1)) // step
-            x = np.empty((n, 8), dtype=np.float32)
             with h5py.File(self.muons_file, "r") as f:
+                n_total = f["px"].shape[0] if self.n_samples == 0 else self.n_samples
+                start, stop, step = idx.indices(n_total)
+                n_rows = (stop - start + (step - 1)) // step
+                x = np.empty((n_rows, 8), dtype=np.float32)
+                row_indices = np.arange(start, stop, step)
                 for j, feat in enumerate(["px", "py", "pz", "x", "y", "z", "pdg", "weight"]):
-                    col = np.empty(n, dtype=np.float32)  
-                    f[feat].read_direct(col, idx)      
+                    col = np.empty(n_rows, dtype=np.float32)
+                    f[feat].read_direct(col, np.s_[row_indices])
                     x[:, j] = col     
-        print(f'Sampling muons took {time.time()-t1:.2f} seconds')                          
+        print(f'Sampling muons took {time.time()-t1:.2f} seconds')  
         return x
     def simulate_mag_fields(self,phi:torch.tensor, cores:int = 7):
         phi = self.add_fixed_params(phi)
