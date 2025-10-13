@@ -14,7 +14,7 @@ from utils.acquisition_functions import Custom_LogEI
 from utils import normalize_vector, denormalize_vector
 #torch.set_default_dtype(torch.float64)
 from time import time
-
+import random
 
 class OptimizerClass():
     '''Mother class for optimizers'''
@@ -623,10 +623,11 @@ class LCSO(OptimizerClass):
 
 
 class Individual():
-    def __init__(self,problem_fn,genes,computed_fitness_values):
+    def __init__(self,problem_fn,genes,computed_fitness_values,device):
         self.problem_fn=problem_fn
         self.genes=genes.copy()
         self.computed_fitness_values=computed_fitness_values
+        self.device=device
         self.evaluate()
     
     def evaluate(self):
@@ -634,33 +635,40 @@ class Individual():
         if unique_representation in self.computed_fitness_values.keys():
             self.fitness=self.computed_fitness_values[unique_representation]
         else:
+            phi=torch.tensor(self.genes, dtype=torch.float32).unsqueeze(0)
+            y = self.problem_fn(phi)
+            loss=y
+            #x = torch.as_tensor(self.true_model.sample_x(phi),device='cpu', dtype=torch.get_default_dtype())
             #y = self.true_model.simulate(phi.detach().cpu(),x, return_nan = True).T
-            self.fitness=#TO_DO: Extract from the expensive simulation
+            #loss=self.true_model.calc_loss(*y.T)
+            self.fitness=-loss
             self.computed_fitness_values[unique_representation]=self.fitness
 
     def get_unique_representation_of_genes(self):
         return tuple(round(g, 6) for g in self.genes)
 
     def clone(self):
-        cloned_individual=Individual(self.problem_fn,self.genes,self.computed_fitness_values)
+        cloned_individual=Individual(self.problem_fn,self.genes,self.computed_fitness_values,self.device)
         return cloned_individual
 
 class Population():
-    def __init__(self,problem_fn,population_size,generations,phi_bounds,mutation_probability,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size):
+    def __init__(self,problem_fn,population_size,generations,phi_bounds,mutation_probability,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size,device,WandB):
+        self.device=device
+        self.WandB=WandB
         self.problem_fn=problem_fn
         self.population_size=population_size
         self.generations=generations
         self.computed_fitness_values=dict()
-        self.phi_bounds=phi_bounds
+        self.phi_bounds=phi_bounds*0.6###TO_DO: Ask LF about why some phis require much longer simulation times, and delete the *0.6
         self.population=[]
         for _ in range(self.population_size):
             genes=self.get_initial_genes()
-            individual=Individual(self.problem_fn,genes,self.computed_fitness_values)
+            individual=Individual(self.problem_fn,genes,self.computed_fitness_values,self.device)
             self.population.append(individual)
         self.mutation_probability=mutation_probability
         self.random_immigration_probability=random_immigration_probability#0.01 would be a suitable value
         self.mutation_std_deviations_factor=mutation_std_deviations_factor#0.05 would be a suitable value
-        self.mutation_std_deviations=[self.mutation_std_deviations_factor*(high-low) for low,high in self.phi_bounds.T]
+        self.mutation_std_deviations=[self.mutation_std_deviations_factor*(high.item()-low.item()) for low,high in self.phi_bounds.T]
         self.tournament_size=tournament_size
         self.elite=[]
         self.elite_size=elite_size
@@ -668,7 +676,8 @@ class Population():
         self.hall_of_fame_size=hall_of_fame_size
 
     def get_initial_genes(self):
-        initial_genes=[random.uniform(low, high) for low,high in self.phi_bounds.T]
+        initial_genes=[random.uniform(low.item(), high.item()) for low,high in self.phi_bounds.T]
+        #print(self.problem_fn.initial_phi)
         return initial_genes
         
     def update_elite(self):
@@ -690,6 +699,10 @@ class Population():
         for gene_index in range(len(individual.genes)):
             if random.random() < self.mutation_probability:
                 individual.genes[gene_index]+=np.random.normal(0, self.mutation_std_deviations[gene_index])
+                if individual.genes[gene_index]<self.phi_bounds.T[gene_index][0].item():#Make sure genes don't escape the bounds
+                    individual.genes[gene_index]=self.phi_bounds.T[gene_index][0].item()
+                elif individual.genes[gene_index]>self.phi_bounds.T[gene_index][1].item():
+                    individual.genes[gene_index]=self.phi_bounds.T[gene_index][1].item()
         return individual
 
     def random_immigration(self,individual):
@@ -728,21 +741,43 @@ class Population():
         self.population=new_generation.copy()
 
     def play_evolution(self):
-        for _ in range(self.generations):
-            self.update_generation()
+        with wandb.init(reinit = True,**self.WandB) as wb, tqdm(total=self.generations) as pbar:
+            for generation in range(self.generations):
+                self.update_generation()
+                print(f"Generation {generation+1} computed!")
+                print(f"Current best loss: {-self.hall_of_fame[0].fitness}")
+                log_dict = {
+                    'generation': generation + 1,
+                    'best_loss': -self.hall_of_fame[0].fitness
+                }
+                wb.log(log_dict)
+                pbar.set_description(f"Opt. loss: {log_dict['best_loss']} (gen. {log_dict['generation']})")
+                pbar.update()
+        wb.finish()
         return self.hall_of_fame
 
-#class GAs():#Decided to not inherit from OptimizerClass because I will not use a surrogate_model 
-    #def __init__(self,true_model,                        ):
-    #    super().__init__(true_model,
-    #             surrogate_model,
-    #             bounds,
-    #             device = device,
-    #             history = history,
-    #             WandB = WandB,
-    #             outputs_dir = outputs_dir,
-    #             resume = resume)
-    
+class GA():   
+    def __init__(self,problem_fn,population_size,generations,phi_bounds,mutation_probability,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size,device,WandB):
+        self.problem_fn=problem_fn
+        self.population_size=population_size
+        self.generations=generations
+        self.phi_bounds=phi_bounds
+        self.mutation_probability=mutation_probability
+        self.random_immigration_probability=random_immigration_probability
+        self.mutation_std_deviations_factor=mutation_std_deviations_factor
+        self.tournament_size=tournament_size
+        self.elite_size=elite_size
+        self.hall_of_fame_size=hall_of_fame_size
+        self.device=device
+        self.WandB=WandB
+        self.the_population=Population(self.problem_fn,self.population_size,self.generations,self.phi_bounds,self.mutation_probability,self.random_immigration_probability,self.mutation_std_deviations_factor,self.tournament_size,self.elite_size,self.hall_of_fame_size,self.device,self.WandB)
+
+    def run_optimization(self):        
+        hall_of_fame=self.the_population.play_evolution()
+        print("Obtained hall of fame:")
+        for individual_index in range(len(hall_of_fame)):
+            individual=hall_of_fame[individual_index]
+            print(f"Individual: {individual}, fitness value: {individual.fitness}, genes: {individual.genes}")
     
 class BayesianOptimizer(OptimizerClass):
     
@@ -813,7 +848,9 @@ class BayesianOptimizer(OptimizerClass):
         t1 = time()
         phi = self.get_new_phi().cpu()
         print('acquisition function optimization time: ', time()-t1)
+        start_of_simulation=time()
         y = self.true_model(phi)
+        print(time()-start_of_simulation)
         if self.multi_fidelity and y < self.history[1][0] * 10:
             n_samples = self.true_model.n_samples
             self.true_model.n_samples = 0

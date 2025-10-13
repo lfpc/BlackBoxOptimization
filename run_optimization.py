@@ -1,6 +1,6 @@
 import torch
 from botorch import acquisition, settings
-from src.optimizer import BayesianOptimizer,LGSO
+from src.optimizer import BayesianOptimizer,LGSO,GA
 from src import problems
 from src.models import GP_RBF, GP_Cylindrical_Custom, SingleTaskIBNN
 from utils.acquisition_functions import Custom_LogEI
@@ -9,6 +9,7 @@ import argparse
 import wandb
 import os
 import json
+import sys
 
 PROJECTS_DIR = os.getenv('PROJECTS_DIR', default = '~')
 
@@ -65,7 +66,19 @@ else:
 
 
 wandb.login()
-WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': {**vars(args), **CONFIG}, 'name': args.name}
+if args.optimization == 'GA':
+    GA_dict={}
+    GA_dict["population_size"]=4#20
+    GA_dict["generations"]=5#40
+    GA_dict["mutation_probability"]=0.1
+    GA_dict["random_immigration_probability"]=0.01
+    GA_dict["mutation_std_deviations_factor"]=0.05
+    GA_dict["tournament_size"]=3
+    GA_dict["elite_size"]=3
+    GA_dict["hall_of_fame_size"]=3
+    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **GA_dict}, 'name': args.name}
+else:
+    WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': {**vars(args), **CONFIG}, 'name': args.name}
 
 if args.cuda: assert torch.cuda.is_available()
 if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda')
@@ -155,6 +168,21 @@ if __name__ == "__main__":
     elif args.model == 'ibnn': model = SingleTaskIBNN(phi_bounds,device = dev)
     model_scheduler = {args.model_switch:SingleTaskIBNN
                        }
+
+    if args.optimization == 'GA':#Genetic Algorithms
+        GA(problem_fn=problem_fn,
+            population_size=GA_dict["population_size"],
+            generations=GA_dict["generations"],
+            phi_bounds=phi_bounds,
+            mutation_probability=GA_dict["mutation_probability"],
+            random_immigration_probability=GA_dict["random_immigration_probability"],
+            mutation_std_deviations_factor=GA_dict["mutation_std_deviations_factor"],
+            tournament_size=GA_dict["tournament_size"],
+            elite_size=GA_dict["elite_size"],
+            hall_of_fame_size=GA_dict["hall_of_fame_size"],
+            device=dev,
+            WandB=WANDB).run_optimization()
+        sys.exit()
 
     optimizer = main(model,problem_fn,dimensions,args.maxiter,args.n_initial,phi_bounds, model_scheduler)
 
