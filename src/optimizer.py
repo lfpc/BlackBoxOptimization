@@ -778,6 +778,8 @@ class GA():
         for individual_index in range(len(hall_of_fame)):
             individual=hall_of_fame[individual_index]
             print(f"Individual: {individual}, fitness value: {individual.fitness}, genes: {individual.genes}")
+        with open("hall_of_fame.pkl", "wb") as f:
+            dump(hall_of_fame, f)
     
 class BayesianOptimizer(OptimizerClass):
     
