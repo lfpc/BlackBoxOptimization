@@ -631,18 +631,18 @@ class Individual():
         self.evaluate()
     
     def evaluate(self):
+        phi=torch.tensor(self.genes, dtype=torch.float32).unsqueeze(0)
+        y = self.problem_fn(phi)
+        loss=y
         unique_representation=self.get_unique_representation_of_genes()
         if unique_representation in self.computed_fitness_values.keys():
-            self.fitness=self.computed_fitness_values[unique_representation]
+            iterations,fitness=self.computed_fitness_values[unique_representation]
+            self.fitness=(-loss+iterations*fitness)/(iterations+1)
+            self.computed_fitness_values[unique_representation]=(iterations+1,self.fitness)
         else:
-            phi=torch.tensor(self.genes, dtype=torch.float32).unsqueeze(0)
-            y = self.problem_fn(phi)
-            loss=y
-            #x = torch.as_tensor(self.true_model.sample_x(phi),device='cpu', dtype=torch.get_default_dtype())
-            #y = self.true_model.simulate(phi.detach().cpu(),x, return_nan = True).T
-            #loss=self.true_model.calc_loss(*y.T)
             self.fitness=-loss
-            self.computed_fitness_values[unique_representation]=self.fitness
+            self.computed_fitness_values[unique_representation]=(1,self.fitness)
+        self.simulated_fitness=-loss
 
     def get_unique_representation_of_genes(self):
         return tuple(round(g, 6) for g in self.genes)
@@ -660,28 +660,29 @@ class Population():
         self.generations=generations
         self.computed_fitness_values=dict()
         self.phi_bounds=phi_bounds*0.6###TO_DO: Ask LF about why some phis require much longer simulation times, and delete the *0.6
-        self.population=[]
-        for _ in range(self.population_size):
-            genes=self.get_initial_genes()
-            individual=Individual(self.problem_fn,genes,self.computed_fitness_values,self.device)
-            self.population.append(individual)
         self.mutation_probability=mutation_probability
         self.random_immigration_probability=random_immigration_probability#0.01 would be a suitable value
         self.mutation_std_deviations_factor=mutation_std_deviations_factor#0.05 would be a suitable value
         self.mutation_std_deviations=[self.mutation_std_deviations_factor*(high.item()-low.item()) for low,high in self.phi_bounds.T]
         self.tournament_size=tournament_size
+        self.population=[]
+        for _ in range(self.population_size):
+            genes=self.get_initial_genes()
+            individual=Individual(self.problem_fn,genes,self.computed_fitness_values,self.device)
+            self.population.append(individual)
         self.elite=[]
         self.elite_size=elite_size
         self.hall_of_fame=[]
         self.hall_of_fame_size=hall_of_fame_size
 
     def get_initial_genes(self):
-        initial_genes=[random.uniform(low.item(), high.item()) for low,high in self.phi_bounds.T]
+        #initial_genes=[random.uniform(low.item(), high.item()) for low,high in self.phi_bounds.T]
         #print(self.problem_fn.initial_phi)
+        initial_genes=[self.problem_fn.initial_phi.tolist()[gene_index]+0.0001*np.random.normal(0, self.mutation_std_deviations[gene_index]) for gene_index in range(len(self.phi_bounds.T))]#TO_DO: Check if a more suitable initialization exists (a more spread initialization over the search space maybe)
         return initial_genes
         
     def update_elite(self):
-        self.elite=sorted(self.population, key=lambda ind: ind.fitness, reverse=True)[:self.hall_of_fame_size]#TO_DO: Check if I would need a more suitable elite, like saving all individuals with a fitness value above a threshold, or avoiding storing individuals with the same genes
+        self.elite=sorted(self.population, key=lambda ind: ind.fitness, reverse=True)[:self.elite_size]#TO_DO: Check if I would need a more suitable elite, like saving all individuals with a fitness value above a threshold, or avoiding storing individuals with the same genes
 
     def update_hall_of_fame(self):
         aux=self.hall_of_fame+self.elite
@@ -741,17 +742,29 @@ class Population():
         self.population=new_generation.copy()
 
     def play_evolution(self):
+        hist_best_loss=1e16#Huge number
+        hist_best_simulated_loss=1e16
         with wandb.init(reinit = True,**self.WandB) as wb, tqdm(total=self.generations) as pbar:
             for generation in range(self.generations):
                 self.update_generation()
+                current_best_loss=-self.hall_of_fame[0].fitness
+                if current_best_loss<hist_best_loss:
+                    hist_best_loss=current_best_loss
+                current_best_simulated_loss=min([-ind.simulated_fitness for ind in self.population])
+                if current_best_simulated_loss<hist_best_simulated_loss:
+                    hist_best_simulated_loss=current_best_simulated_loss
                 print(f"Generation {generation+1} computed!")
-                print(f"Current best loss: {-self.hall_of_fame[0].fitness}")
+                print(f"Current best loss: {current_best_loss}")
+                print(f"Historic best loss: {hist_best_loss}")
+                print(f"Historic best simulated loss: {hist_best_simulated_loss}")
                 log_dict = {
                     'generation': generation + 1,
-                    'best_loss': -self.hall_of_fame[0].fitness
+                    'current_best_loss': current_best_loss,
+                    'hist_best_loss': hist_best_loss,
+                    'hist_best_simulated_loss': hist_best_simulated_loss
                 }
                 wb.log(log_dict)
-                pbar.set_description(f"Opt. loss: {log_dict['best_loss']} (gen. {log_dict['generation']})")
+                pbar.set_description(f"hist_best_loss: {log_dict['hist_best_loss']} (gen. {log_dict['generation']})")
                 pbar.update()
         wb.finish()
         return self.hall_of_fame
@@ -778,7 +791,7 @@ class GA():
         for individual_index in range(len(hall_of_fame)):
             individual=hall_of_fame[individual_index]
             print(f"Individual: {individual}, fitness value: {individual.fitness}, genes: {individual.genes}")
-        with open("hall_of_fame.pkl", "wb") as f:
+        with open("hall_of_fame_3.pkl", "wb") as f:
             dump(hall_of_fame, f)
     
 class BayesianOptimizer(OptimizerClass):

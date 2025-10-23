@@ -77,7 +77,7 @@ wandb.login()
 if args.optimization == 'GA':
     GA_dict={}
     GA_dict["population_size"]=20
-    GA_dict["generations"]=40
+    GA_dict["generations"]=50
     GA_dict["mutation_probability"]=0.1
     GA_dict["random_immigration_probability"]=0.01
     GA_dict["mutation_std_deviations_factor"]=0.05
