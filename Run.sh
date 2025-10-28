@@ -19,7 +19,19 @@ if [[ "$OPT_METHOD" != "GA" && "$OPT_METHOD" != "bayesian" ]]; then
     exit 1
 fi
 
-LOG_FILE="$PYTHON_SCRIPT_DIR/output_${OPT_METHOD}.log"
+read -p "Enter the name for the Results folder: " RESULTS_NAME
+if [[ -z "$RESULTS_NAME" ]]; then
+    echo "Error: You must specify a Results folder name."
+    exit 1
+fi
+RESULTS_DIR="$PYTHON_SCRIPT_DIR/outputs/$RESULTS_NAME"
+if [[ -d "$RESULTS_DIR" ]]; then
+    echo "Error: The folder '$RESULTS_DIR' already exists. Please choose a different name."
+    exit 1
+fi
+mkdir -p "$RESULTS_DIR"
+
+LOG_FILE="$RESULTS_DIR/output_${OPT_METHOD}.log"
 
 nohup apptainer exec --nv \
   -B /cvmfs \
@@ -31,5 +43,5 @@ nohup apptainer exec --nv \
     source ./set_env.sh
     cd $PYTHON_SCRIPT_DIR
     python3 -V
-    CUDA_VISIBLE_DEVICES=$CUDA_DEVICE python3 run_optimization.py --optimization $OPT_METHOD
+    CUDA_VISIBLE_DEVICES=$CUDA_DEVICE python3 run_optimization.py --optimization $OPT_METHOD --name $RESULTS_NAME
   " > "$LOG_FILE" 2>&1 &
