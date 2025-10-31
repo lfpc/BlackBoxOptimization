@@ -1,6 +1,6 @@
 import torch
 from botorch import acquisition, settings
-from src.optimizer import BayesianOptimizer,LGSO
+from src.optimizer import BayesianOptimizer,LGSO, TurboOptimizer, LCSO
 from src import problems
 from src.models import GP_RBF, GP_BOCK, GP_IBNN
 from utils.acquisition_functions import Custom_LogEI
@@ -118,6 +118,18 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_bounds, m
                                       WandB = WANDB,
                                       acquisition_params = {'q':q,'num_restarts': 30, 'raw_samples':5000},
                                       multi_fidelity= args.multi_fidelity,
+                                      resume = args.resume)
+    elif args.optimization == 'turbo':
+        acquisition_fn = Custom_LogEI#acquisition.qLogExpectedImprovement if args.parallel>1 else acquisition.LogExpectedImprovement
+        q = min(args.parallel,problem_fn.cores)
+        optimizer = TurboOptimizer(problem_fn,model,
+                                      phi_bounds,
+                                      acquisition_fn=acquisition_fn,
+                                      initial_phi = initial_phi,
+                                      device = dev, 
+                                      outputs_dir=OUTPUTS_DIR,
+                                      WandB = WANDB,
+                                      acquisition_params = {'q':q,'num_restarts': 30, 'raw_samples':5000},
                                       resume = args.resume)
 
     elif args.optimization == 'lgso':

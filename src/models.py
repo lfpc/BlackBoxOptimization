@@ -118,8 +118,6 @@ class GP_BOCK(botorch.models.SingleTaskGP):
                 f"num_angular_weights={self.num_angular_weights}, "
                 f"device={self.device})")
 
-    
-    
 class GP_IBNN(GP_RBF):
     """
     A SingleTaskGP model that uses the InfiniteWidthBNNKernel.
@@ -138,6 +136,8 @@ class GP_IBNN(GP_RBF):
         # Call the parent __init__ to set bounds and device
         super().__init__(bounds, device)
         self.depth = depth
+        self.var_w = 5.0  # Weight variance default 10
+        self.var_b = 1.6   # Bias variance
 
     def fit(self, X: torch.tensor, Y: torch.tensor, use_scipy=True, options: dict = None, **kwargs):
         """
@@ -152,12 +152,11 @@ class GP_IBNN(GP_RBF):
         X_norm = self.normalization(X, self.bounds)
         num_dims = X_norm.shape[-1]
         
-        base_kernel = botorch.models.kernels.InfiniteWidthBNNKernel(
-            depth=self.depth
-        )
-        base_kernel.weight_var = 10.0
-        base_kernel.bias_var = 1.6
-        covar_module = gpytorch.kernels.ScaleKernel(base_kernel)
+        #base_kernel = botorch.models.kernels.InfiniteWidthBNNKernel(depth=self.depth)
+        #base_kernel.weight_var = 10.0
+        #base_kernel.bias_var = 1.6
+        base_kernel = IBNN_ReLU(num_dims, self.var_w, self.var_b, self.depth)
+        covar_module = base_kernel#gpytorch.kernels.ScaleKernel(base_kernel)
         super(GP_RBF, self).__init__(
             X_norm, 
             Y, 
@@ -187,6 +186,11 @@ class GP_IBNN(GP_RBF):
                 f"bounds={self.bounds}, "
                 f"depth={self.depth}, "
                 f"device={self.device})")
+    
+
+
+
+
     
     
 class VAEModel(torch.nn.Module):

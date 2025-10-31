@@ -910,6 +910,137 @@ class BayesianOptimizer(OptimizerClass):
         return self.true_model.deterministic_loss(x,y)
     
 
+class TurboOptimizer(BayesianOptimizer):
+    """
+    Implements the Trust Region Bayesian Optimization (TuRBO) strategy by extending 
+    the BayesianOptimizer class.
+
+    TuRBO maintains a trust region (a hyper-rectangle) around the best observed solution, 
+    adjusting its size based on the success of the optimization. This approach helps to 
+    balance exploration and exploitation effectively.
+    """
+    def __init__(self, 
+                 true_model, 
+                 surrogate_model, 
+                 bounds: tuple,
+                 initial_phi: torch.tensor = None,
+                 device=torch.device('cuda'), 
+                 acquisition_fn=botorch.acquisition.UpperConfidenceBound,
+                 acquisition_params={'q':1,'num_restarts': 30, 'raw_samples':4096},
+                 history: tuple = (), 
+                 WandB: dict = {'name': 'TurboOptimization'},
+                 outputs_dir='outputs', 
+                 resume: bool = False,
+                 # TuRBO specific parameters
+                 failure_tolerance: int = 20,
+                 success_tolerance: int = 3,
+                 length_init: float = 0.2,
+                 length_min: float = 0.01,
+                 length_max: float = 1.):
+        """
+        Initializes the TuRBO optimizer.
+
+        Args:
+            true_model: The true model to be optimized.
+            surrogate_model: The surrogate model used for optimization.
+            bounds (tuple): The global bounds of the optimization problem.
+            initial_phi (torch.tensor, optional): The starting point for the optimization.
+            device (torch.device, optional): The device to run the optimization on.
+            acquisition_fn (optional): The acquisition function to use.
+            acquisition_params (dict, optional): Parameters for the acquisition function.
+            history (tuple, optional): The history of previous evaluations.
+            WandB (dict, optional): Configuration for Weights & Biases logging.
+            outputs_dir (str, optional): Directory to save outputs.
+            resume (bool, optional): Whether to resume from a previous state.
+            failure_tolerance (int): Number of consecutive failures to shrink the trust region.
+            success_tolerance (int): Number of consecutive successes to expand the trust region.
+            length_init (float): Initial side length of the trust region hypercube.
+            length_min (float): Minimum side length of the trust region.
+            length_max (float): Maximum side length of the trust region.
+        """
+        super().__init__(true_model=true_model,
+                         surrogate_model=surrogate_model,
+                         bounds=bounds,
+                         initial_phi=initial_phi,
+                         device=device,
+                         acquisition_fn=acquisition_fn,
+                         acquisition_params=acquisition_params,
+                         history=history,
+                         WandB=WandB,
+                         outputs_dir=outputs_dir,
+                         resume=resume)
+
+        # Store the original global bounds
+        self.global_bounds = bounds.clone().cpu()
+
+        # Initialize TuRBO state
+        self.length = length_init
+        self.length_min = length_min
+        self.length_max = length_max
+        self.failure_tolerance = failure_tolerance
+        self.success_tolerance = success_tolerance
+        self.success_counter = 0
+        self.failure_counter = 0
+
+        # Set the initial trust region around the best starting point
+        self._update_trust_region()
+
+    def _update_trust_region(self):
+        """
+        Updates the trust region bounds based on the current best solution and length.
+        The new bounds are centered around the best point and clipped by the global bounds.
+        """
+        phi_best, _ = self.get_optimal()
+        
+        # Center the trust region around the best point
+        half_length = self.length / 2.0
+        new_bounds_lower = phi_best - half_length
+        new_bounds_upper = phi_best + half_length
+
+        # Clip the trust region to be within the global problem bounds
+        self.bounds[0] = torch.max(new_bounds_lower, self.global_bounds[0])
+        self.bounds[1] = torch.min(new_bounds_upper, self.global_bounds[1])
+
+    def optimization_iteration(self):
+        """
+        Performs a single iteration of TuRBO.
+
+        This involves:
+        1. Fitting the surrogate model.
+        2. Optimizing the acquisition function within the current trust region to get a new candidate.
+        3. Evaluating the true model at the new candidate point.
+        4. Updating the TuRBO state (success/failure counters and trust region size).
+        """
+        # Get the best loss before this iteration
+        _, loss_best_before = self.get_optimal()
+
+        # Perform a standard Bayesian optimization step within the current trust region
+        # The parent method uses self.bounds, which now represent the trust region
+        phi_new, loss_new = super().optimization_iteration()
+
+        # Check if the new point is better than the best before this iteration
+        if loss_new < loss_best_before:
+            self.success_counter += 1
+            self.failure_counter = 0
+        else:
+            self.success_counter = 0
+            self.failure_counter += 1
+
+        # Update trust region length based on success/failure
+        if self.success_counter >= self.success_tolerance:
+            self.length = min(self.length * 2.0, self.length_max)
+            self.success_counter = 0
+        elif self.failure_counter >= self.failure_tolerance:
+            self.length = max(self.length / 2.0, self.length_min)
+            self.failure_counter = 0
+
+        self.reduce_bounds(self.length)
+        
+        if self.length < self.length_min:
+            print("Trust region length has reached its minimum. Consider restarting.")
+
+        return phi_new, loss_new
+
 class PowellOptimizer(OptimizerClass):
     """
     Optimizer using Powell's conjugate direction method via scipy.optimize.minimize.
