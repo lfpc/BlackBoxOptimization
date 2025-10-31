@@ -1,3 +1,4 @@
+import os
 import botorch
 import torch
 from tqdm import tqdm
@@ -5,7 +6,7 @@ from scipy.stats.qmc import LatinHypercube
 from matplotlib import pyplot as plt
 from pickle import dump,  load
 import wandb
-from os.path import join
+from os.path import join, exists
 from scipy.optimize import minimize, Bounds as ScipyBounds, NonlinearConstraint
 import numpy as np
 import sys
@@ -14,6 +15,7 @@ from utils.acquisition_functions import Custom_LogEI
 from utils import normalize_vector, denormalize_vector
 #torch.set_default_dtype(torch.float64)
 from time import time
+import h5py
 
 
 class OptimizerClass():
@@ -151,9 +153,6 @@ class LGSO(OptimizerClass):
     def simulate_and_update(self, phi):
         x = torch.as_tensor(self.true_model.sample_x(phi),device='cpu', dtype=torch.get_default_dtype())
         y = self.true_model.simulate(phi.detach().cpu(),x, return_nan = True).T
-        #mask = y.eq(0).all(dim=1)
-        #y = y[:, 0:2]
-        #y[mask] = 20*torch.ones((y.size(-1)), device=y.device, dtype=y.dtype)
         self.update_history(phi,y,x)
         with torch.no_grad():
             print('real Y:', y)
@@ -189,7 +188,6 @@ class LGSO(OptimizerClass):
         with torch.no_grad():
             y_pred2 = self.model.generate(self._current_phi, x_samp)
             print("Loss on surrogate after step:", self.loss(self._current_phi, y_pred2).item())
-            #assert False, y_pred
             
         # clip to bounds
         with torch.no_grad():
@@ -238,8 +236,10 @@ class LCSO(OptimizerClass):
                  outputs_dir = 'outputs',
                  resume:bool = False,
                  second_order:bool = False,
+                 weight_hits:bool = False,
                  initial_lambda_constraints:float = 1e2,
-                 initial_lr:float = 1e-3
+                 initial_lr:float = 1e-3,
+                 local_file_storage:str = 'local_results.h5'
                  ):
         super().__init__(true_model,
                  surrogate_model,
@@ -250,66 +250,107 @@ class LCSO(OptimizerClass):
                  outputs_dir = outputs_dir,
                  resume = resume)
         
+        self.weight_hits = weight_hits
         self.local_results = [[],[]]
-        assert torch.all(initial_phi >= self.bounds[0].to(self.device)) and torch.all(initial_phi <= self.bounds[1].to(self.device)), "current_phi is out of bounds"
-        initial_phi = normalize_vector(initial_phi, bounds)
-        if resume: 
-            with open(join(outputs_dir,'history.pkl'), "rb") as f:
-                self.history = load(f)
-        else: self.simulate_and_update(initial_phi)
+        within_lower = initial_phi.ge(self.bounds[0])
+        within_upper = initial_phi.le(self.bounds[1])
+        within_bounds = within_lower.logical_and(within_upper)
+        if not within_bounds.all():
+            violating_indices = (~within_bounds).nonzero(as_tuple=True)
+            raise ValueError(f"Some initial_phi values are out of bounds at indices: {violating_indices}\nViolating values: {initial_phi[violating_indices]}")
+        initial_phi = normalize_vector(initial_phi, self.bounds)
             
             
         initial_phi = initial_phi if not resume else history[0][-1]
         self._current_phi = torch.nn.Parameter(initial_phi.detach().clone().to(device))
         
-        
         self.epsilon = epsilon
         self.lhs_sampler = LatinHypercube(d=initial_phi.size(-1))
         self.samples_phi = samples_phi
-        self._samples_phi = samples_phi # in case we need to change it
         self.phi_optimizer = torch.optim.SGD([self._current_phi],lr=initial_lr)
         self.second_order = second_order
         self.lambda_constraints = initial_lambda_constraints
         self.trust_radius = initial_lr
+        if local_file_storage is not None: 
+            self.local_file_storage = join(self.outputs_dir, local_file_storage)
+            if os.path.exists(self.local_file_storage):
+                os.remove(self.local_file_storage)
+        else: self.local_file_storage = None
+        
         self.rhos = []
+        if resume: 
+            with open(join(outputs_dir,'history.pkl'), "rb") as f:
+                self.history = load(f)
+        else: self.simulate_and_update(initial_phi)
+
     @property
     def current_phi(self):
         """Returns the current phi in the original bounds."""
         return denormalize_vector(self._current_phi, self.bounds)
+    def stopping_criterion(self,**convergence_params):
+        return self._i >= convergence_params['max_iter']
     
     def sample_phi(self):
         """Draw samples in a hypercube of side 2*epsilon around current_phi."""
-        perturb = self.lhs_sampler.random(self.samples_phi)
+        perturb = self.lhs_sampler.random(self.samples_phi//2)
         with torch.no_grad():
             perturb = (2*torch.from_numpy(perturb).to(dtype=torch.get_default_dtype()) - 1.0) * self.epsilon
+            if self.second_order:
+                perturb_small = self.lhs_sampler.random(self.samples_phi//2)
+                perturb_small = (2*torch.from_numpy(perturb_small).to(dtype=torch.get_default_dtype()) - 1.0) * self.epsilon/2
+                perturb = torch.cat([perturb, perturb_small], dim=0)
             phis = (self._current_phi.unsqueeze(0).cpu() + perturb).clamp(0.0,1.0)#(self.bounds[0], self.bounds[1])
         return phis
-    def n_hits(self,phi,y,x = None):
-        w = x[:,7].to(y.device).flatten()
+    def sample_phi_uniform(self):
+        """Draw samples uniformly within the bounds around current_phi."""
+        with torch.no_grad():
+            perturb = (torch.rand(self.samples_phi, self._current_phi.size(-1), device=self.device) * 2 - 1) * self.epsilon
+            phis = (self._current_phi.unsqueeze(0).cpu() + perturb).clamp(0.0,1.0)
+        return phis
+    def n_hits(self,y,x = None):
         y = y.flatten()
+        w = torch.ones_like(y) if (x is None or not self.weight_hits) else x.flatten().to(y.device)
         return  (w*y).sum()/w.sum()
     def get_model_pred(self, phi):
         phi = normalize_vector(phi, self.bounds)
         x_samp = torch.as_tensor(self.true_model.sample_x(),device=self.device, dtype=torch.get_default_dtype())
-        condition = torch.cat([phi.repeat(x_samp.size(0), 1), x_samp[:,:7]], dim=-1)
+        condition = torch.cat([phi.repeat(x_samp.size(0), 1), x_samp], dim=-1)
         y_pred = self.model.predict_proba(condition)
-        return self.n_hits(phi, y_pred, x_samp)
+        return self.n_hits(y_pred, x_samp)
 
     def clean_training_data(self):
+        if self.local_file_storage is not None and os.path.exists(self.local_file_storage):
+            return [self.local_file_storage]
         return torch.cat(self.local_results[0], dim=0), torch.cat(self.local_results[1], dim=0)
 
+    @torch.no_grad()
     def simulate_and_update(self, phi, update_history:bool = True):
-        with torch.no_grad():
-            x = torch.as_tensor(self.true_model.sample_x(phi),device=self.device, dtype=torch.get_default_dtype())
-            condition = torch.cat([phi.repeat(x.size(0), 1), x[:,:7]], dim=-1).to(self.device)
-            phi = denormalize_vector(phi, self.bounds).clone().detach()
-            y = self.true_model(phi.cpu(),x).view(-1,1)
-            print("Simulation performed. Output shape:", y.shape)
+        x = torch.as_tensor(self.true_model.sample_x(phi),device=self.device, dtype=torch.get_default_dtype())
+        condition = torch.cat([phi.repeat(x.size(0), 1), x], dim=-1).to(self.device)
+        phi = denormalize_vector(phi, self.bounds).clone().detach()
+        y = self.true_model(phi.cpu(),x).view(-1,1)
+
+        if self.local_file_storage is not None:
+            with h5py.File(self.local_file_storage, 'a') as f:
+                if 'condition' not in f:
+                    f.create_dataset('condition', data=condition.cpu().numpy(), 
+                                maxshape=(None, condition.shape[1]), chunks=True)
+                    f.create_dataset('y', data=y.cpu().numpy(), 
+                                maxshape=(None, y.shape[1]), chunks=True)
+                else:
+                    old_size = f['condition'].shape[0]
+                    f['condition'].resize((old_size + condition.shape[0], condition.shape[1]))
+                    f['condition'][old_size:] = condition.cpu().numpy()
+                    
+                    f['y'].resize((old_size + y.shape[0], y.shape[1]))
+                    f['y'][old_size:] = y.cpu().numpy()
+        else: 
             self.local_results[0].append(condition)
             self.local_results[1].append(y)
-            loss = self.n_hits(phi, y, x).reshape(1)
-            if update_history:
-                self.update_history(phi,loss.detach())
+        
+        loss = self.n_hits(y, x).reshape(1)
+        if update_history:
+            self.update_history(phi, loss.detach())
         return loss
 
 
@@ -321,48 +362,23 @@ class LCSO(OptimizerClass):
         4) Update current_phi by minimizing surrogate
         5) Return (phi, loss)
         """
-        
-        if self._i ==0:
-            with open('local_results_test.pkl', 'rb') as f:
-                self.local_results = load(f)
-            normalized_tensors = []
-            for tensor in self.local_results[0]:
-                tensor = torch.as_tensor(tensor)
-                # Split tensor into first 63 and last 7 elements
-                first_63 = tensor[:63] if tensor.dim() == 1 else tensor[:, :63]
-                last_7 = tensor[63:] if tensor.dim() == 1 else tensor[:, 63:]
-                
-                # Normalize only the first 63 elements
-                normalized_first_63 = normalize_vector(first_63, self.bounds)
-                
-                # Concatenate normalized first part with unchanged last part
-                if tensor.dim() == 1:
-                    normalized_tensor = torch.cat([normalized_first_63, last_7])
-                else:
-                    normalized_tensor = torch.cat([normalized_first_63, last_7], dim=-1)
-                
-                normalized_tensors.append(normalized_tensor)
-            
-            self.local_results[0] = normalized_tensors
-        else:
-            # 1) local sampling
-            phis = self.sample_phi()
-            # 2) true evaluations
-            for phi in phis:
-                self.simulate_and_update(phi, update_history=False)
+
+        # 1) local sampling
+        phis = self.sample_phi()
+        for phi in phis:
+            self.simulate_and_update(phi, update_history=False)
         
         print('Iteration {} : Finished simulations for local samples.'.format(self._i))
         self.fit_surrogate_model()
-        # Save local_results to a file for inspection
         
         x_samp = torch.as_tensor(self.true_model.sample_x(),device=self.device, dtype=torch.get_default_dtype())
 
-        condition = torch.cat([self._current_phi.repeat(x_samp.size(0), 1), x_samp[:,:7]], dim=-1)
+        condition = torch.cat([self._current_phi.repeat(x_samp.size(0), 1), x_samp], dim=-1)
         y_pred = self.model.predict_proba(condition)
         
         self.phi_optimizer.zero_grad()
-        loss_sur = self.n_hits(self._current_phi, y_pred, x_samp)
-        constraints = self.true_model.get_constraints_func(self.current_phi).to(loss_sur.device)
+        loss_sur = self.n_hits(y_pred, x_samp)
+        constraints = self.true_model.get_constraints(self.current_phi).to(loss_sur.device)
         constraints = -self.lambda_constraints * torch.log(constraints + 1e-4).sum()
         loss_sur = loss_sur + constraints
         loss_sur.backward()
@@ -371,103 +387,114 @@ class LCSO(OptimizerClass):
             self._current_phi.data = self._current_phi.data.clamp(0.0,1.0)#(self.bounds[0], self.bounds[1])
         with torch.no_grad():
             self.local_results = [[],[]]
+            if self.local_file_storage is not None and os.path.exists(self.local_file_storage):
+                os.remove(self.local_file_storage)
             self.simulate_and_update(self._current_phi)
 
         return self.history[0][-1], self.history[1][-1]
 
-    def optimization_iteration_second_order(self):
+    def _compute_merit_function(self, phi, objective_loss):
+        """
+        Computes the L1 penalty merit function value.
+        phi_merit = f(x) + mu * ||max(0, -g(x))||_1
+        """
+        # Constraints g(x) >= 0 are converted to -g(x) <= 0 for the penalty
+        constraints = self.true_model.get_constraints(denormalize_vector(phi, self.bounds))
+        # L1 norm of constraint violations
+        violation = torch.sum(torch.relu(-constraints))
+        return objective_loss + self.lambda_constraints * violation
+    def surrogate_objective(self,phi, x):
+            condition = torch.cat([phi.repeat(x.size(0), 1), x], dim=-1)
+            y_pred = self.model.predict_proba(condition).to(phi.device)
+            return self.n_hits(y_pred, x)
+    def _get_avg_grad_fn(self, x_samp, batch_size):
+        num_samples = x_samp.size(0)
+
+        
+        def avg_grad_fn(phi):
+            if num_samples == 0:
+                return torch.zeros_like(phi)
+
+            total_grad = torch.zeros_like(phi)
+            num_batches = (num_samples + batch_size - 1) // batch_size
+            assert num_batches > 0, "Number of batches must be greater than zero."
+            for i in range(num_batches):
+                start_idx = i * batch_size
+                end_idx = min(start_idx + batch_size, num_samples)
+                x_batch = x_samp[start_idx:end_idx].detach()
+                def obj_fn(p):
+                    return self.surrogate_objective(p, x_batch).float()
+                total_grad += torch.func.grad(obj_fn)(phi)
+            return total_grad
+        
+        return avg_grad_fn
+    
+    def optimization_iteration_second_order(self, debug = False):
         """
         Performs ONE optimization step using a trust-region method,
         implemented entirely in PyTorch.
         """
-        # 1) & 2) & 3) Same setup
 
-        if self._i ==0:
-            with open('local_results_test.pkl', 'rb') as f:
-                self.local_results = load(f)
-            normalized_tensors = []
-            for tensor in self.local_results[0]:
-                tensor = torch.as_tensor(tensor)
-                # Split tensor into first 63 and last 7 elements
-                first_63 = tensor[:63] if tensor.dim() == 1 else tensor[:, :63]
-                last_7 = tensor[63:] if tensor.dim() == 1 else tensor[:, 63:]
-                
-                # Normalize only the first 63 elements
-                normalized_first_63 = normalize_vector(first_63, self.bounds)
-                
-                # Concatenate normalized first part with unchanged last part
-                if tensor.dim() == 1:
-                    normalized_tensor = torch.cat([normalized_first_63, last_7])
-                else:
-                    normalized_tensor = torch.cat([normalized_first_63, last_7], dim=-1)
-                
-                normalized_tensors.append(normalized_tensor)
-            
-            self.local_results[0] = normalized_tensors
-        else:
-            phis = self.sample_phi()
-            for phi in phis:
-                self.simulate_and_update(phi, update_history=False)
+        phis = self.sample_phi()
+        for phi in phis:
+            self.simulate_and_update(phi, update_history=False)
         print('Iteration {} : Finished simulations for local samples.'.format(self._i))
         self.fit_surrogate_model()
 
-        plt.plot(self.model.last_train_loss)
-        plt.savefig(f'loss_plot_{self._i}.png')
-        plt.grid()
-        plt.close()
-
         x_samp = torch.as_tensor(self.true_model.sample_x(), device=self.device, dtype=torch.get_default_dtype())
-        def compute_surrogate_loss(phi):
-            condition = torch.cat([phi.repeat(x_samp.size(0), 1), x_samp[:,:7]], dim=-1)
-            y_pred = self.model.predict_proba(condition)
-            loss = self.n_hits(phi, y_pred, x_samp)
-            constraints = self.true_model.get_constraints_func(denormalize_vector(phi, self.bounds)).to(loss.device)
-            #assert constraints.ge(0).all(), "Constraints must be positive"
-            constraints = -self.lambda_constraints * torch.log(constraints + 1e-7).sum()
-            return loss + constraints
+        current_phi = self._current_phi.detach().clone()
 
-        # --- Trust-Region Logic ---
-        current_phi_detached = self._current_phi.detach().clone()
-        initial_loss = compute_surrogate_loss(current_phi_detached)
-        g = torch.func.grad(compute_surrogate_loss)(current_phi_detached)
+        constraints_current = self.true_model.get_constraints(denormalize_vector(current_phi, self.bounds))
+        constraint_jac = torch.func.jacrev(
+            lambda phi: self.true_model.get_constraints(denormalize_vector(phi, self.bounds))
+        )(current_phi)
 
+
+        def grad_fn(phi):
+            return torch.func.grad(lambda p: self.surrogate_objective(p, x_samp))(phi)
+        surrogate_grad = grad_fn(current_phi)
         def hvp_func(v):
-            # Hessian-vector product function needed by the subproblem solver
-            _, hvp_val = torch.func.jvp(torch.func.grad(compute_surrogate_loss), (current_phi_detached,), (v,))
+            _, hvp_val = torch.func.jvp(grad_fn, (current_phi,), (v,))
             return hvp_val
 
-        p = self._solve_trust_region_subproblem(g, hvp_func, self.trust_radius)
-        assert p.ne(0).any(), "Trust-region step is zero, no optimization performed"
-        proposed_phi = current_phi_detached + p
-        proposed_phi = proposed_phi.clamp(0.0,1.0)#(self.bounds[0], self.bounds[1])
-        @torch.no_grad()
-        def get_rho(p):
-            """
-            Computes the rho ratio for the trust-region step.
-            """
-            with torch.no_grad(): constraints = self.true_model.get_constraints_func(denormalize_vector(proposed_phi, self.bounds))
-            if constraints.lt(0).any():
-                print(f"Constraints violated for phi={proposed_phi}, constraints={constraints}")
-                return 0.0, self.history[1][-1].detach().clone()
-            proposed_loss = self.simulate_and_update(proposed_phi, update_history=False)
-            actual_reduction = self.history[1][-1].item() - proposed_loss.item()
-            #actual_reduction *= 1e6  # Scale to match surrogate loss
-            #actual_reduction = initial_loss - compute_surrogate_loss(proposed_phi).item()
-            predicted_reduction = - (torch.dot(g, p) + 0.5 * torch.dot(p, hvp_func(p)))
-            rho = actual_reduction / (predicted_reduction + 1e-9)
-            return rho, proposed_loss
-        
-        # 1. Solve the subproblem to find the proposed step p
-        rho, proposed_loss = get_rho(p)
-        self.rhos.append(rho.item())
+        p = self._solve_trust_region_subproblem(surrogate_grad, hvp_func, self.trust_radius)
+        if not p.any(): print("Trust-region step is zero, no improvement possible with current model.")
+        with torch.no_grad(): 
+            cos_step = (torch.dot(surrogate_grad, p) / (torch.linalg.norm(surrogate_grad) * torch.linalg.norm(p) + 1e-10)).item()
 
-        # 3. Update trust radius and accept/reject step based on rho
+
+        proposed_phi = (current_phi + p).clamp(0.0, 1.0)
+        #p = proposed_phi - current_phi
+        @torch.no_grad()
+        def get_rho():
+            current_loss_true = self.history[1][-1]
+            merit_current = self._compute_merit_function(current_phi, current_loss_true)
+
+            proposed_loss_true = self.simulate_and_update(proposed_phi, update_history=False)
+            merit_proposed = self._compute_merit_function(proposed_phi, proposed_loss_true)
+            actual_reduction = merit_current - merit_proposed
+
+            predicted_objective_reduction = -(torch.dot(surrogate_grad, p) + 0.5 * torch.dot(p, hvp_func(p)))
+            predicted_penalty_value = self.lambda_constraints * torch.sum(torch.relu(-(constraints_current + constraint_jac @ p)))
+            current_penalty_value = self.lambda_constraints * torch.sum(torch.relu(-constraints_current))
+            predicted_penalty_reduction = current_penalty_value - predicted_penalty_value
+            pred_merit_reduction = predicted_objective_reduction + predicted_penalty_reduction
+
+            if pred_merit_reduction.item() <= 1e-10: 
+                 return -1.0 if actual_reduction < 0 else 1.0, proposed_loss_true
+
+            rho = actual_reduction / pred_merit_reduction
+            return rho.item(), proposed_loss_true
+        
+        rho, proposed_loss = get_rho()
+        self.rhos.append(rho)
+
         if rho < 0.25:
             # Poor model fit. Shrink radius. Step is not taken unless rho is positive.
-            self.trust_radius *= 0.25
+            self.trust_radius = max(self.trust_radius * 0.25, 0.001)
             print(f"Step has poor agreement (rho={rho}). Shrinking trust radius to {self.trust_radius:.3f}")
         elif rho > 0.75 and torch.linalg.norm(p).item() >= 0.8*self.trust_radius:
-            self.trust_radius = min(1.25 * self.trust_radius, 0.1) # Cap max radius
+            self.trust_radius = min(1.25 * self.trust_radius, np.sqrt(self.true_model.dim))
             print(f"Excellent step (rho={rho}). Expanding trust radius to {self.trust_radius:.3f}")
 
         if rho > 0.1:
@@ -477,8 +504,10 @@ class LCSO(OptimizerClass):
                 self.update_history(self.current_phi.detach(), proposed_loss.detach())
             print("Step accepted.")
         else:
-            [[self.local_results[0][0]], [self.local_results[1][0]]]
+            self.local_results = [[self.local_results[0][0]], [self.local_results[1][0]]]
             print("Step rejected. Proposed loss:", proposed_loss.item(), "Current loss:", self.history[1][-1].item())
+        if debug:
+            return self.history[0][-1].detach().clone(), self.history[1][-1].detach().clone(), cos_step
         return self.history[0][-1].detach().clone(), self.history[1][-1].detach().clone()
 
 
@@ -489,6 +518,7 @@ class LCSO(OptimizerClass):
         p = torch.zeros_like(g)
         r = g.clone()
         d = -r.clone()
+        current_phi = self._current_phi.detach().clone()    
 
         if torch.linalg.norm(r) < 1e-10:
             return p
@@ -508,6 +538,16 @@ class LCSO(OptimizerClass):
                 return p + tau * d
 
             alpha = torch.dot(r, r) / d_dot_Bd
+
+            d_masked = d.clone()
+            d_masked[d.abs() < 1e-8] = 1e-8 
+            t_lower = (0.0 - (current_phi + p)) / d_masked
+            t_upper = (1.0 - (current_phi + p)) / d_masked
+            t = torch.where(d > 0, t_upper, t_lower)
+            t[t <= 0] = float('inf') 
+            alpha_bound, _ = torch.min(t, dim=0)
+            alpha = min(alpha, alpha_bound.item())
+
             p_new = p + alpha * d
 
             # Safety Check 2: Step Exceeds Trust Radius
@@ -531,85 +571,6 @@ class LCSO(OptimizerClass):
             d = -r + beta * d
             
         return p
-    def optimization_iteration_scipy(self):
-        """
-        A new optimization method that takes a single, second-order step using SciPy.
-        
-        1) Same setup as your original function (sampling, fitting surrogate).
-        2) Defines the surrogate loss as a pure function.
-        3) Uses `torch.func` to get gradient and Hessian functions.
-        4) Calls SciPy's `trust-constr` optimizer for ONE iteration.
-        5) Updates `current_phi` and evaluates against the true model.
-        """
-        # --- 1. Same initial setup ---
-        with torch.no_grad():
-            self._current_phi.data = self._current_phi.data.clamp(self.bounds[0], self.bounds[1])
-
-        constraints = self.true_model.get_constraints_func(self._current_phi.detach().cpu().numpy())
-        assert (constraints>=0).all(), "Initial phi violates constraints: {}".format(constraints)
-        num_constraints = len(constraints)
-
-        
-        phis = self.sample_phi()
-        for phi in phis:
-            self.simulate_and_update(phi, update_history=False)
-        print('Iteration {} : Finished simulations for local samples.'.format(self._i))
-        self.fit_surrogate_model()
-
-        # Sample a fixed x_samp for this optimization step
-        x_samp = torch.as_tensor(self.true_model.sample_x(), device=self.device, dtype=torch.get_default_dtype())
-
-        def compute_surrogate_loss(phi):
-            """
-            This function contains every step that connects 'phi' to the final loss.
-            It is a "pure" function for compatibility with torch.func.
-            """
-            condition = torch.cat([phi.repeat(x_samp.size(0), 1), x_samp[:,:7]], dim=-1)
-            y_pred = self.model.predict_proba(condition)
-            loss = self.n_hits(phi, y_pred, x_samp)
-            return loss*1e6
-        grad_func = torch.func.grad(compute_surrogate_loss)
-        hess_func = torch.func.hessian(compute_surrogate_loss)
-        def loss_wrapper(p_np):
-            p_torch = torch.from_numpy(p_np).to(self.device).float()
-            return compute_surrogate_loss(p_torch).item()
-        def jacobian_wrapper(p_np):
-            p_torch = torch.from_numpy(p_np).to(self.device).float()
-            return grad_func(p_torch).detach().cpu().numpy().astype(np.float64)
-        def hessian_wrapper(p_np):
-            p_torch = torch.from_numpy(p_np).to(self.device).float()
-            return hess_func(p_torch).detach().cpu().numpy().astype(np.float64)
-            
-        # Convert your bounds to the format SciPy expects
-        bounds_obj = ScipyBounds(self.bounds[0].cpu().numpy(), self.bounds[1].cpu().numpy())
-        constraints= [NonlinearConstraint(
-            fun= self.true_model.get_constraints_func, 
-            lb=np.zeros(num_constraints),  # Lower bound for each constraint is 0
-            ub=np.inf * np.ones(num_constraints), # Upper bound is infinity
-            keep_feasible=True)]
-        
-        # --- 5. Call the optimizer for a single step ---   
-        initial_guess = self._current_phi.detach().cpu().numpy()
-        result = minimize(
-            fun=loss_wrapper,
-            x0=initial_guess,
-            method='trust-constr',
-            jac=jacobian_wrapper,
-            hess=hessian_wrapper,
-            bounds=bounds_obj,
-            constraints=constraints,
-            options={'maxiter': 2, 'disp': False} # Key: Perform only ONE iteration
-        )
-        
-        # --- 6. Update state and evaluate against the true model ---
-        with torch.no_grad():
-            self._current_phi = torch.from_numpy(result.x).to(self.device).float()
-            
-            self.local_results = [[],[]]
-            self.simulate_and_update(self._current_phi)
-
-        self._i += 1
-        return self.history[0][-1], self.history[1][-1]
     
     def get_new_phi(self):
         self.phi_optimizer.zero_grad()
@@ -619,6 +580,230 @@ class LCSO(OptimizerClass):
         l.backward()
         self.phi_optimizer.step()
         return self._current_phi
+    
+
+class AnalyticalOptimizer(OptimizerClass):
+    """
+    Optimizer that uses analytical gradients and Hessians from the true model.
+    """
+    def __init__(self,true_model,
+                 bounds:tuple,
+                 initial_phi:torch.tensor = None,
+                 history:tuple = (),
+                 WandB:dict = {'name': 'AnalyticalOptimization'},
+                 device = torch.device('cuda'),
+                 outputs_dir = 'outputs',
+                 resume:bool = False,
+                 initial_lambda_constraints:float = 1e2,
+                 initial_lr:float = 0.1
+                 ):
+        super().__init__(true_model,
+                 surrogate_model = None,
+                 bounds = bounds,
+                 device = device,
+                 history = history,
+                 WandB = WandB,
+                 outputs_dir = outputs_dir,
+                 resume = resume)
+        initial_phi = initial_phi if not resume else history[0][-1]
+        initial_phi = normalize_vector(initial_phi, bounds)
+        self._current_phi = torch.nn.Parameter(initial_phi.detach().clone().to(device))
+        assert torch.all(self._current_phi >= self.bounds[0].to(self.device)) and torch.all(self._current_phi <= self.bounds[1].to(self.device)), "current_phi is out of bounds"
+        self.lambda_constraints = initial_lambda_constraints
+        self.trust_radius = initial_lr
+        self.phi_optimizer = torch.optim.SGD([self._current_phi],lr=initial_lr)
+        self.rhos = []
+        if resume: 
+            with open(join(outputs_dir,'history.pkl'), "rb") as f:
+                self.history = load(f)
+        else: self.simulate_and_update(initial_phi)
+    @property
+    def current_phi(self):
+        """Returns the current phi in the original bounds."""
+        return denormalize_vector(self._current_phi, self.bounds)
+    def _compute_merit_function(self, phi, objective_loss):
+        """
+        Computes the L1 penalty merit function value.
+        phi_merit = f(x) + mu * ||max(0, -g(x))||_1
+        """
+        # Constraints g(x) >= 0 are converted to -g(x) <= 0 for the penalty
+        constraints = self.true_model.get_constraints(denormalize_vector(phi, self.bounds))
+        # L1 norm of constraint violations
+        violation = torch.sum(torch.relu(-constraints))
+        return objective_loss + self.lambda_constraints * violation
+    def simulate_and_update(self, phi):
+        with torch.no_grad():
+            phi = denormalize_vector(phi, self.bounds).clone().detach().cpu()
+            y = self.true_model(phi).view(-1,1)
+            self.update_history(phi,y.detach())
+    def optimization_iteration(self):
+        """
+        1) Sample locally around current_phi
+        2) Evaluate true_model
+        3) Fit local surrogate
+        4) Update current_phi by minimizing surrogate
+        5) Return (phi, loss)
+        """
+        y_pred = self.true_model(self.current_phi)
+        self.phi_optimizer.zero_grad()
+        constraints = self.true_model.get_constraints(self.current_phi).to(y_pred.device)
+        #constraints = -self.lambda_constraints * torch.log(constraints + 1e-4).sum()
+        y_pred = y_pred + constraints
+        y_pred.backward()
+        grad = self._current_phi.grad
+        print("Gradients w.r.t. current_phi:", grad)
+        self.phi_optimizer.step()
+        with torch.no_grad():
+            self._current_phi.data = self._current_phi.data.clamp(0.0,1.0)#(self.bounds[0], self.bounds[1])
+        self.simulate_and_update(self._current_phi)
+        return self.history[0][-1], self.history[1][-1]
+    
+    def optimization_iteration_second_order(self, debug = False):
+        """
+        Performs ONE optimization step using a trust-region method
+        with ANALYTICAL gradients and Hessian from self.true_model.
+        """
+        current_phi = self._current_phi.detach().clone()
+        denorm_phi = denormalize_vector(current_phi, self.bounds)
+        denorm_bounds_diff = self.bounds[1] - self.bounds[0] 
+        
+        # Get analytical objective derivatives
+        grad_denorm = self.true_model.gradient(denorm_phi).flatten()
+        grad_norm = grad_denorm * denorm_bounds_diff # Apply chain rule
+        
+        # Define the Hessian-vector-product (HVP) function using the analytical Hessian
+        # HVP_norm(v) = (J^T * H_denorm * J) * v
+        # where J is the diagonal matrix diag(denorm_bounds_diff)
+        surrogate_objective = lambda phi: self.true_model(phi).sum()
+        def hvp_func(p_norm):
+            v_denorm = p_norm * denorm_bounds_diff
+            _, hvp_denorm_val = torch.func.jvp(
+                torch.func.grad(surrogate_objective), 
+                (denorm_phi,), 
+                (v_denorm,)
+            )
+            hvp_norm_val = hvp_denorm_val * denorm_bounds_diff
+            
+            return hvp_norm_val
+
+        # --- Get Analytical Constraint Derivatives (same as original) ---
+        constraints_current = self.true_model.get_constraints(denorm_phi)
+        constraint_jac = torch.func.jacrev(
+            lambda phi: self.true_model.get_constraints(denormalize_vector(phi, self.bounds))
+        )(current_phi)
+
+        # 2. Solve the subproblem
+        p = self._solve_trust_region_subproblem(grad_norm, hvp_func, self.trust_radius)
+        if not p.any(): print("Trust-region step is zero.")
+        print("Cosine between grad and step:", (torch.dot(grad_norm, p) / (torch.linalg.norm(grad_norm) * torch.linalg.norm(p) + 1e-10)).item())
+        cos_step = (torch.dot(grad_norm, p) / (torch.linalg.norm(grad_norm) * torch.linalg.norm(p) + 1e-10)).item()
+
+        proposed_phi = (current_phi + p).clamp(0.0, 1.0)
+        @torch.no_grad()
+        def get_rho_analytical():
+            current_loss_true = self.history[1][-1]
+            merit_current = self._compute_merit_function(current_phi, current_loss_true)
+
+            proposed_loss_true = self.true_model(denormalize_vector(proposed_phi, self.bounds))
+            merit_proposed = self._compute_merit_function(proposed_phi, proposed_loss_true)
+            actual_reduction = merit_current - merit_proposed
+
+            predicted_objective_reduction = -(torch.dot(grad_norm, p) + 0.5 * torch.dot(p, hvp_func(p)))
+            
+            predicted_penalty_value = self.lambda_constraints * torch.sum(torch.relu(-(constraints_current + constraint_jac @ p)))
+            current_penalty_value = self.lambda_constraints * torch.sum(torch.relu(-constraints_current))
+            predicted_penalty_reduction = current_penalty_value - predicted_penalty_value
+            
+            pred_merit_reduction = predicted_objective_reduction + predicted_penalty_reduction
+
+            if pred_merit_reduction.item() <= 1e-10: 
+                return -1.0 if actual_reduction < 0 else 1.0, proposed_loss_true
+
+            rho = actual_reduction / pred_merit_reduction
+            return rho.item(), proposed_loss_true
+        
+        rho, proposed_loss = get_rho_analytical()
+        self.rhos.append(rho)
+
+        # 4. Update trust radius and accept/reject step (same as original)
+        if rho < 0.25:
+            self.trust_radius = max(self.trust_radius * 0.25, 0.001)
+            print(f"Step has poor agreement (rho={rho}). Shrinking trust radius to {self.trust_radius:.3f}")
+        elif rho > 0.75 and torch.linalg.norm(p).item() >= 0.8*self.trust_radius:
+            self.trust_radius = min(1.25 * self.trust_radius, np.sqrt(self.true_model.dim)) # Cap max radius
+            print(f"Excellent step (rho={rho}). Expanding trust radius to {self.trust_radius:.3f}")
+
+        if rho > 0.1:
+            with torch.no_grad():
+                self._current_phi.data  = proposed_phi
+                self.update_history(self.current_phi.detach(), proposed_loss.detach())
+            print("Step accepted.")
+        else:
+            print("Step rejected. Proposed loss:", proposed_loss.item(), "Current loss:", self.history[1][-1].item())
+            
+        if debug:
+            return self.history[0][-1].detach().clone(), self.history[1][-1].detach().clone(), cos_step
+        return self.history[0][-1].detach().clone(), self.history[1][-1].detach().clone()
+    def _solve_trust_region_subproblem(self, g, hvp_func, trust_radius):
+        """
+        Solves the trust-region subproblem using the Steihaug CG method.
+        """
+        p = torch.zeros_like(g)
+        r = g.clone()
+        d = -r.clone()
+        current_phi = self._current_phi.detach().clone()    
+
+        if torch.linalg.norm(r) < 1e-10:
+            return p
+
+        for _ in range(len(g)): # Max CG iterations
+            Bd = hvp_func(d)
+            d_dot_Bd = torch.dot(d, Bd)
+
+            # Safety Check 1: Negative Curvature Detected
+            if d_dot_Bd <= 0:
+                # Find intersection with trust-region boundary and exit
+                p_dot_d = torch.dot(p, d)
+                d_dot_d = torch.dot(d, d)
+                p_dot_p = torch.dot(p, p)
+                rad = torch.sqrt(p_dot_d**2 + d_dot_d * (trust_radius**2 - p_dot_p))
+                tau = (rad - p_dot_d) / d_dot_d
+                return p + tau * d
+
+            alpha = torch.dot(r, r) / d_dot_Bd
+
+            d_masked = d.clone()
+            d_masked[d.abs() < 1e-8] = 1e-8 
+            t_lower = (0.0 - (current_phi + p)) / d_masked
+            t_upper = (1.0 - (current_phi + p)) / d_masked
+            t = torch.where(d > 0, t_upper, t_lower)
+            t[t <= 0] = float('inf') 
+            alpha_bound, _ = torch.min(t, dim=0)
+            alpha = min(alpha, alpha_bound.item())
+
+            p_new = p + alpha * d
+
+            # Safety Check 2: Step Exceeds Trust Radius
+            if torch.linalg.norm(p_new) >= trust_radius:
+                # Find intersection with trust-region boundary and exit
+                p_dot_d = torch.dot(p, d)
+                d_dot_d = torch.dot(d, d)
+                p_dot_p = torch.dot(p, p)
+                rad = torch.sqrt(p_dot_d**2 + d_dot_d * (trust_radius**2 - p_dot_p))
+                tau = (rad - p_dot_d) / d_dot_d
+                return p + tau * d
+
+            p = p_new
+            r_new = r + alpha * Bd
+            
+            if torch.linalg.norm(r_new) < 1e-10:
+                break
+
+            beta = torch.dot(r_new, r_new) / torch.dot(r, r)
+            r = r_new
+            d = -r + beta * d
+            
+        return p
 
 
     
@@ -682,7 +867,7 @@ class BayesianOptimizer(OptimizerClass):
     def optimization_iteration(self):
         if self._i in self.model_scheduler:
             self.model = self.model_scheduler[self._i](self.bounds,self.device)
-        if self._i % 100 == 0 and self._i >= self._iter_reduce_bounds:
+        if self._i % 20 == 0 and self._i >= self._iter_reduce_bounds:
             self.reduce_bounds()
         
         t1 = time()
@@ -987,8 +1172,3 @@ if __name__ == '__main__':
     plt.savefig('testgan.png')
     plt.close()
     
-
-
-
-
-[249.6988,  71.5368,  49.0927,  28.9864,  45.4430,  11.1451,   6.3051,1.0029,   0.9900,   0.0000, 249.1017,  50.6768,  30.0974,  45.8390,124.7403,  13.5402,  10.0050,   0.9922,   0.9900,   0.0000, 248.3697,7.9946,  31.5727,  36.3253,  28.4407,  51.6227,  12.1411,   0.9911,0.9900,   7.3188, 147.2961,   5.0000,  29.2230,  55.9471,  25.3608,7.4055,   7.0033,   1.0029,   1.0091,   0.0000,  -1.9084, 148.1647,18.5110,  31.2957, 131.5283,  35.1510,   8.7111,  14.8781,   0.9824,0.9994,  29.7593,  -1.8206, 247.2571,  30.5880,  73.6448,  85.5782,91.4696,   8.6192,  26.0465,   0.9899,   1.0009,   2.2481,  -1.8436]

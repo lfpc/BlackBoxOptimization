@@ -1,13 +1,11 @@
 import torch
 import botorch
 import gpytorch
-from math import sqrt
-from utils.models_priors import KumaAlphaPrior, KumaBetaPrior, AngularWeightsPrior
 from utils.nets import Generator, Discriminator,GANLosses, Encoder, Decoder, IBNN_ReLU
 from tqdm import trange
 from matplotlib import pyplot as plt
-from utils import standardize
-from gpytorch.kernels import ScaleKernel
+from utils import HDF5Dataset
+import os
 
 class GP_RBF(botorch.models.SingleTaskGP):
     def __init__(self,bounds,device = 'cpu'):
@@ -43,54 +41,152 @@ class GP_RBF(botorch.models.SingleTaskGP):
                 f"bounds={self.bounds}, "
                 f"device={self.device})")
 
+class GP_BOCK(botorch.models.SingleTaskGP):
+    """
+    Gaussian Process model using a Cylindrical (BOCK-style) kernel
+    for Bayesian Optimization in bounded, moderately/high-dimensional spaces.
+    """
 
-class GP_Cylindrical_Custom(GP_RBF):
-    def __init__(self, bounds:torch.tensor,device = 'cpu', deterministic_loss = None):
-        super().__init__(bounds,device)
-        self.bounds = self.bounds.t().to(device)
-        if self.bounds.dim() == 1: self.bounds = self.bounds.unsqueeze(-1)
-    def fit(self,x,y,**kwargs):
-        #self.train()
-        super().fit(x,y,**kwargs)
-        self.mean_module = gpytorch.means.ConstantMean()
-        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.CylindricalKernel(
-            num_angular_weights=4,
-            alpha_prior=KumaAlphaPrior(),
-            alpha_constraint=gpytorch.constraints.constraints.Interval(lower_bound=0.5, upper_bound=1.),
-            beta_prior=KumaBetaPrior(),
-            beta_constraint=gpytorch.constraints.constraints.Interval(lower_bound=1., upper_bound=2.),
-            radial_base_kernel=gpytorch.kernels.MaternKernel(),
-            # angular_weights_constraint=gpytorch.constraints.constraints.Interval(lower_bound=exp(-12.),
-            #                                                                      upper_bound=exp(20.)),
-            angular_weights_prior=AngularWeightsPrior()
-        ))
-        return self.to(self.device)
-    @staticmethod
-    def normalization(x, bounds):
-        dim = len(bounds)
-        # from bounds to [-1, 1]^d
-        x = (x - bounds.mean(dim=-1)) / ((bounds[:,1] - bounds[:,0]) / 2)
-        # from [-1, 1]^d to Ball(0, 1)
-        x = x / sqrt(dim)
-        return x
-    
+    def __init__(self, bounds, device='cpu', num_angular_weights=10):
+        self.device = device
+        self.bounds = bounds.to(device)
+        self.num_angular_weights = num_angular_weights
+        self.is_fitted = False
 
-class SingleTaskIBNN(GP_RBF):
-    def __init__(self, bounds, device = torch.device('cpu'),
-                 var_w = 10.,var_b = 5.,depth = 3, deterministic_loss = None
-                ):
-        super().__init__(bounds,device)
-        self.model_args = {'var_w':var_w,'var_b':var_b, 'depth':depth}
-        self._kernel = None
-    def fit(self,X,Y,use_scipy = True,options:dict = None,**kwargs):
-        if self._kernel is None: ibnn_kernel = botorch.models.kernels.InfiniteWidthBNNKernel(depth=self.model_args['depth'])
-        else: ibnn_kernel = self._kernel
-        ibnn_kernel.weight_var = self.model_args['var_w']
-        ibnn_kernel.bias_var = self.model_args['var_b']
-        kernel = ScaleKernel(ibnn_kernel, device=self.device)
-        super().fit(X,Y,use_scipy = use_scipy,options= options,covar_module=kernel,**kwargs)
-        self._kernel = kernel
+    def fit(self, X: torch.Tensor, Y: torch.Tensor, use_scipy=True, options: dict = None, **kwargs):
+        X = X.to(self.device)
+        Y = Y.to(self.device)
+        X_norm = self.normalization(X, self.bounds)
+
+        # Build cylindrical kernel
+        radial_kernel = gpytorch.kernels.RBFKernel(ard_num_dims=None)
+        cyl_kernel = gpytorch.kernels.CylindricalKernel(
+            num_angular_weights=self.num_angular_weights,
+            radial_base_kernel=radial_kernel,
+            ard_num_dims=X_norm.size(-1)
+        )
+        covar_module = gpytorch.kernels.ScaleKernel(cyl_kernel)
+
+        # Initialize the GP using SingleTaskGP directly
+        super().__init__(
+            X_norm,
+            Y,
+            covar_module=covar_module,
+            outcome_transform=botorch.models.transforms.Standardize(m=1),
+            **kwargs
+        )
+
+        # Optimize marginal log-likelihood
+        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self)
+        if use_scipy:
+            botorch.fit.fit_gpytorch_mll(mll)
+        else:
+            default_options = {'maxiter': 100}
+            if options is not None:
+                default_options.update(options)
+            botorch.fit.fit_gpytorch_mll(
+                mll,
+                optimizer=botorch.optim.fit.fit_gpytorch_mll_torch,
+                options=default_options
+            )
+        self.is_fitted = True
         return self
+
+    def normalization(self, X: torch.Tensor, bounds):
+        if X.le(1).all():
+            print('Warning: X is already normalized')
+        X_norm = (X - bounds[0, :]) / (bounds[1, :] - bounds[0, :])
+        if not self.is_fitted:
+            # Set scale to sqrt(d) to ensure max norm <= 1 for any data in [0,1]^d
+            d = X_norm.size(-1)
+            self.scale = torch.sqrt(torch.tensor(d, dtype=X_norm.dtype, device=X_norm.device))
+        X_norm = X_norm / self.scale
+        return X_norm
+
+    def _predict(self, x, return_std=False, **kwargs):
+        observed_pred = self.posterior(x, **kwargs)
+        y_pred = observed_pred.mean.cpu()
+        std_pred = observed_pred.variance.diag().sqrt().cpu()
+        return (y_pred, std_pred) if return_std else y_pred
+
+    def posterior(self, X, **kwargs):
+        return super().posterior(self.normalization(X, self.bounds), **kwargs)
+
+    def __repr__(self):
+        return (f"{self.__class__.__name__}("
+                f"bounds={self.bounds}, "
+                f"num_angular_weights={self.num_angular_weights}, "
+                f"device={self.device})")
+
+    
+    
+class GP_IBNN(GP_RBF):
+    """
+    A SingleTaskGP model that uses the InfiniteWidthBNNKernel.
+    
+    Inherits from GP_RBF to reuse normalization, posterior, and other
+    helper methods.
+    """
+    
+    def __init__(self, bounds, depth=3, device='cpu'):
+        """
+        Args:
+            bounds (torch.tensor): A 2 x d tensor of lower and upper bounds.
+            depth (int): The depth of the virtual BNN.
+            device (str): The torch device to use ('cpu' or 'cuda').
+        """
+        # Call the parent __init__ to set bounds and device
+        super().__init__(bounds, device)
+        self.depth = depth
+
+    def fit(self, X: torch.tensor, Y: torch.tensor, use_scipy=True, options: dict = None, **kwargs):
+        """
+        Fits the GP model with the InfiniteWidthBNNKernel.
+        
+        This method overrides the GP_RBF.fit method to inject the
+        IBNN kernel during the SingleTaskGP initialization.
+        """
+        X = X.to(self.device)
+        Y = Y.to(self.device)
+        
+        X_norm = self.normalization(X, self.bounds)
+        num_dims = X_norm.shape[-1]
+        
+        base_kernel = botorch.models.kernels.InfiniteWidthBNNKernel(
+            depth=self.depth
+        )
+        base_kernel.weight_var = 10.0
+        base_kernel.bias_var = 1.6
+        covar_module = gpytorch.kernels.ScaleKernel(base_kernel)
+        super(GP_RBF, self).__init__(
+            X_norm, 
+            Y, 
+            outcome_transform=botorch.models.transforms.Standardize(m=1), 
+            covar_module=covar_module, 
+            **kwargs
+        )
+        
+        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self)
+        if use_scipy:
+            botorch.fit.fit_gpytorch_mll(mll)
+        else:
+            default_options = {'maxiter': 100}
+            if options is not None:
+                default_options.update(options)
+            botorch.fit.fit_gpytorch_mll(
+                mll, 
+                optimizer=botorch.optim.fit.fit_gpytorch_mll_torch, 
+                options=default_options
+            )
+            
+        return self
+
+    def __repr__(self):
+        # Override repr to include depth
+        return (f"{self.__class__.__name__}("
+                f"bounds={self.bounds}, "
+                f"depth={self.depth}, "
+                f"device={self.device})")
     
     
 class VAEModel(torch.nn.Module):
@@ -415,27 +511,157 @@ class BinaryClassifierModel:
                  x_dim: int,
                  n_epochs: int = 50,
                  batch_size: int = 32,
+                step_lr: int = 20,
                  lr: float = 1e-3,
-                 device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
+                 data_from_file: bool = True,
+                 activation: str = 'relu',
+                 device: str = 'cuda' if torch.cuda.is_available() else 'cpu',):
         
         self.device = device
 
+        if activation == 'relu':
+            act_layer = torch.nn.ReLU()
+        elif activation in ('silu', 'swish'):
+            act_layer = torch.nn.SiLU()
+        elif activation == 'gelu':
+            act_layer = torch.nn.GELU()
+
         self.model = torch.nn.Sequential(
             torch.nn.Linear(phi_dim + x_dim, 128),
-            torch.nn.ReLU(),
+            act_layer,
             torch.nn.Linear(128, 64),
-            torch.nn.ReLU(),
+            act_layer,
             torch.nn.Linear(64, 1)  # Output layer for binary classification
         ).to(self.device)
 
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self._lr = lr
+        self.step_lr = step_lr
         # Use BCEWithLogitsLoss for better numerical stability. It combines Sigmoid and BCELoss.
         self.loss_fn = torch.nn.BCEWithLogitsLoss() 
         self.last_train_loss = []
+        self.data_from_file = data_from_file
+    def load_weights(self, path: str, strict: bool = True):
+        """
+        Load model weights from a .pt/.pth file into the classifier.
+        Accepts either a raw state_dict or a checkpoint dict containing
+        keys like 'model_state_dict' or 'state_dict'.
+        The tensors are mapped to the current device automatically.
+        Returns self for chaining.
+        """
+        map_location = torch.device(self.device)
+        checkpoint = torch.load(path, map_location=map_location)
 
-    def fit(self, condition, y):
+        # Support plain state_dict or a checkpoint with common keys
+        if isinstance(checkpoint, dict):
+            if 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            elif 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            else:
+                # assume the dict is itself a state_dict
+                state_dict = checkpoint
+        else:
+            # If torch.load returned something unexpected, try to use it directly
+            state_dict = checkpoint
+
+        # Load into the internal model
+        self.model.load_state_dict(state_dict, strict=strict)
+        return self.model
+    def save_weights(self, path: str, as_checkpoint: bool = False, extra: dict = None):
+        """
+        Save model weights to `path`. By default saves the raw state_dict.
+        If as_checkpoint=True, saves a checkpoint dict with key 'model_state_dict'
+        and any additional keys provided via `extra`.
+        Returns self for chaining.
+        """
+        dirpath = os.path.dirname(path)
+        if dirpath:
+            os.makedirs(dirpath, exist_ok=True)
+
+        if as_checkpoint:
+            chk = {'model_state_dict': self.model.state_dict()}
+            if extra:
+                chk.update(extra)
+            torch.save(chk, path)
+        else:
+            torch.save(self.model.state_dict(), path)
+
+        return self
+    def fit(self,*args):
+        """
+        Trains the classifier model.
+        """
+        if self.data_from_file:
+            return self._fit_from_file(*args)
+        else:
+            return self._fit_from_data(*args)
+    def _fit_from_file(self, h5_path):
+        """
+        Trains the classifier model by reading data from an HDF5 file using PyTorch DataLoader.
+        """
+        
+        # Create dataset and dataloader
+        dataset = HDF5Dataset(h5_path)
+        
+        # Use DataLoader with shuffling and batching
+        dataloader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=0,  # HDF5 doesn't work well with multiple workers
+            pin_memory=True
+        )
+        
+        self.model.train()
+        self.last_train_loss = []
+        
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self._lr)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self.step_lr, gamma=0.1)
+        
+        print(f"--- Starting Binary Classifier Training from HDF5 on {self.device} ---")
+        print(f"Total samples: {len(dataset)}")
+        pbar = trange(self.n_epochs, position=0, leave=True, desc='Classifier Training')
+        
+        for epoch in pbar:
+            average_loss = 0.0
+            n_batches = 0
+            
+            for condition_batch, y_batch in dataloader:
+                # Move to device
+                condition_batch = condition_batch.to(self.device)
+                y_batch = y_batch.to(self.device).view(-1, 1)
+                
+                optimizer.zero_grad()
+                
+                # Forward pass
+                y_pred_logits = self.model(condition_batch)
+                
+                # Calculate loss
+                loss = self.loss_fn(y_pred_logits, y_batch)
+                
+                assert not torch.isnan(loss), "Loss is NaN, check your model and data."
+                
+                # Backward pass
+                loss.backward()
+                optimizer.step()
+                
+                average_loss += loss.item()
+                n_batches += 1
+            
+            average_loss /= n_batches
+            self.last_train_loss.append(average_loss)
+            scheduler.step()
+            
+            pbar.set_description(f"Epoch {epoch+1}, Loss: {average_loss:.4f}")
+            pbar.set_postfix(loss=f"{average_loss:.4f}", lr=f"{optimizer.param_groups[0]['lr']:.6f}")
+        dataset.close()
+        print(f"Final training loss: {self.last_train_loss[-1]:.4f}")
+        print("--- Binary Classifier Training Finished ---")
+        return self
+
+    def _fit_from_data(self, condition, y):
         """
         Trains the classifier model.
         """
@@ -449,7 +675,7 @@ class BinaryClassifierModel:
         indices = torch.arange(num_samples)
         
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self._lr)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self.step_lr, gamma=0.1)
 
         print(f"--- Starting Binary Classifier Training on {self.device} ---")
         pbar = trange(self.n_epochs, position=0, leave=True, desc='Classifier Training')

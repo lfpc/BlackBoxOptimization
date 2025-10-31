@@ -1,5 +1,13 @@
 import torch
 import numpy as np
+import h5py
+
+def uniform_sample(shape, bounds, device):
+    """
+    Samples from a uniform distribution within the given bounds.
+    """
+    min_val, max_val = bounds
+    return (max_val - min_val) * torch.rand(shape, device=device) + min_val
 
 def make_index(row: int, cols):
     """Make a list of (row, col) index pairs for given row and columns."""
@@ -185,3 +193,34 @@ def denormalize_vector(x:torch.tensor, bounds:tuple):
     return x * (max_bound - min_bound) + min_bound
 
 def fn_pen(x): return torch.nn.functional.relu(x,inplace=False).pow(2)
+
+class HDF5Dataset(torch.utils.data.Dataset):
+    """PyTorch Dataset for lazy-loading from HDF5 files."""
+    def __init__(self, h5_path):
+        self.h5_path = h5_path
+        
+        # Open file to get metadata
+        with h5py.File(self.h5_path, 'r') as f:
+            self.n_samples = f['condition'].shape[0]
+        
+        # Keep file handle open for efficient reading
+        self.h5_file = None
+    
+    def __len__(self):
+        return self.n_samples
+    
+    def __getitem__(self, idx):
+        # Open file handle if not already open (for worker compatibility)
+        if self.h5_file is None:
+            self.h5_file = h5py.File(self.h5_path, 'r')
+        
+        # Read single sample        
+        condition = torch.from_numpy(self.h5_file['condition'][idx]).float()
+        y = torch.from_numpy(self.h5_file['y'][idx]).float().view(-1)
+
+        return condition, y
+    
+    def __del__(self):
+        # Close file handle when dataset is destroyed
+        if self.h5_file is not None:
+            self.h5_file.close()
