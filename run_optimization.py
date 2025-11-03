@@ -19,7 +19,7 @@ filterwarnings("ignore")
 parser = argparse.ArgumentParser()
 parser.add_argument("--cpu",dest = 'cuda', action = 'store_false')
 parser.add_argument("--seed", type=int, default=13)
-parser.add_argument("--maxiter", type=int, default=1000)
+parser.add_argument("--maxiter", type=int, default=2000)#1000
 parser.add_argument('--problem', type=str, default='ship_cuda')
 parser.add_argument('--optimization', type=str, default='bayesian')
 parser.add_argument('--model', type=str, default='gp_rbf')
@@ -27,7 +27,7 @@ parser.add_argument('--name', type=str, default='optimizationtest')
 parser.add_argument('--group', type=str, default='BayesianOptimization')
 parser.add_argument("--dont_save_history", action='store_false', dest='save_history')
 parser.add_argument("--resume", action='store_true')
-parser.add_argument("--reduce_bounds", type=int, default=-1)
+parser.add_argument("--reduce_bounds", type=int, default=1000)
 parser.add_argument("--multi_fidelity", type=int, nargs='?', const=-1, default=None)
 parser.add_argument("--parallel", type=int, default = 1)
 parser.add_argument("--model_switch", type=int,default = -1)
@@ -52,15 +52,15 @@ else:
     with open(args.config_file, 'r') as src, open(config_file, 'w') as dst:
         CONFIG = json.load(src)
         if run_in_background:
-            CONFIG['W0'] = float(11E6)
+            CONFIG['W0'] = float(12E6)
             CONFIG['L0'] = float(29.7)
             CONFIG['dimensions_phi'] = int(63)
-            default_phi_name = str('')
+            default_phi_name = str('warm_baseline')
         else:
-            CONFIG['W0'] = float(input("Enter Reference Cost (W0) [default: 11E6]: ") or 11E6)
+            CONFIG['W0'] = float(input("Enter Reference Cost (W0) [default: 12E6]: ") or 12E6)
             CONFIG['L0'] = float(input("Enter Maximum Length (L0) [default: 29.7]: ") or 29.7)
             CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 63]: ") or 63)
-            default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or '')
+            default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or 'warm_baseline')
         print('default_phi_name', default_phi_name)
         if default_phi_name == '': CONFIG['initial_phi'] = problems.ShipMuonShield.DEFAULT_PHI.tolist()
         else: CONFIG['initial_phi'] = problems.ShipMuonShield.params[default_phi_name]
@@ -77,7 +77,7 @@ wandb.login()
 if args.optimization == 'GA':
     GA_dict={}
     GA_dict["population_size"]=20
-    GA_dict["generations"]=50
+    GA_dict["generations"]=100#50
     GA_dict["mutation_probability"]=0.1
     GA_dict["random_immigration_probability"]=0.01
     GA_dict["mutation_std_deviations_factor"]=0.05
