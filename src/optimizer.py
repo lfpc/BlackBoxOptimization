@@ -793,7 +793,93 @@ class GA():
             print(f"Individual: {individual}, fitness value: {individual.fitness}, genes: {individual.genes}")
         with open("hall_of_fame_3.pkl", "wb") as f:
             dump(hall_of_fame, f)
-    
+"""
+class RL_muons_env(gym.Env):
+    def __init__(self, dim, problem_fn, phi_bounds, max_steps, tolerance):
+        super().__init__()
+        self.dim=dim
+        self.problem_fn=problem_fn
+        self.phi_bounds=phi_bounds
+        self.max_steps = max_steps
+        self.tolerance = tolerance
+        self.step_scale=step_scale#0.05 would be a suitable value
+
+        self.steps = 0
+        self.x = None
+        self.prev_f = None
+        self.best_x = None
+        self.best_f = None
+
+        self.action_space = gym.spaces.Box(
+            low=-1.0, high=1.0, shape=(self.dim,), dtype=np.float32
+        )
+        low_bounds, high_bounds = self.phi_bounds.numpy()
+        self.low_bounds = low.astype(np.float32)
+        self.high_bounds = high.astype(np.float32)
+        obs_low = np.concatenate([self.low_bounds, np.array([-np.inf], dtype=np.float32)])
+        obs_high = np.concatenate([self.high_bounds, np.array([np.inf], dtype=np.float32)])
+        self.observation_space = gym.spaces.Box(
+            low=obs_low, high=obs_high, dtype=np.float32
+        )
+        self.step_scale=[self.step_scale*(high.item()-low.item()) for low,high in self.phi_bounds.T]
+
+        self.reset()#TO_DO: Check if I need to reset here
+
+    def reset(self, *, seed=None, options=None):
+        if seed is not None:
+            np.random.seed(seed)
+        #TO_DO: Think about proper initialization
+        initial_point=[self.problem_fn.initial_phi.tolist()[gene_index]+0.0001*np.random.normal(0, self.mutation_std_deviations[gene_index]) for gene_index in range(len(self.phi_bounds.T))]
+        print(type(initial_point))
+        print(hola)
+
+        #self.x = np.random.uniform(
+        #    -self.init_scale, self.init_scale, size=(self.dim,)
+        #).astype(np.float32)
+
+        phi=torch.tensor(self.x, dtype=torch.float32).unsqueeze(0)
+        y = self.problem_fn(phi)
+
+        self.prev_f = y
+        self.best_x = self.x.copy()
+        self.best_f = self.prev_f
+        self.steps = 0
+
+        obs = np.concatenate([self.x, np.array([self.prev_f], dtype=np.float32)])
+        return obs, {}
+
+    def step(self, action):
+        action = np.asarray(action, dtype=np.float32)
+        action = np.clip(action, -1.0, 1.0)
+        delta = action * self.step_scale
+        self.x = np.clip(self.x + delta, self.low_bounds, self.high_bounds)
+
+        phi=torch.tensor(self.x, dtype=torch.float32).unsqueeze(0)
+        y = self.problem_fn(phi)
+        f_val=y
+        reward = self.prev_f - f_val  #Improvement reward: Note that since we are minimizing the loss, the reward is the previous loss minus the current loss
+        self.prev_f = f_val
+        self.steps += 1
+
+        # track best
+        if f_val < self.best_f:
+            self.best_f = f_val
+            self.best_x = self.x.copy()
+
+        done = bool(f_val <= self.tolerance)
+        truncated = bool(self.steps >= self.max_steps)
+
+        obs = np.concatenate([self.x, np.array([f_val], dtype=np.float32)])
+        info = {"best_f": self.best_f, "best_x": self.best_x.copy()}
+
+        return obs, float(reward), done, truncated, info
+
+    def render(self, mode="human"):
+        print(f"step={self.steps}, x={self.x}, f(x)={self.prev_f:.4f}, best_f={self.best_f:.4f}")
+
+    def seed(self, seed=None):
+        np.random.seed(seed)
+"""
 class BayesianOptimizer(OptimizerClass):
     
     def __init__(self,true_model,
