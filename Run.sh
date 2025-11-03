@@ -7,16 +7,24 @@ PYTHON_SCRIPT_DIR="$PROJECT_DIR/BlackBoxOptimization"
 
 nvidia-smi
 
-read -p "Enter the CUDA device index to use (e.g. 0, 1, 2, ...): " CUDA_DEVICE
-if [[ -z "$CUDA_DEVICE" ]]; then
-    echo "Error: You must specify a CUDA device index."
-    exit 1
-fi
-
 read -p "Select optimization method (GA/bayesian): " OPT_METHOD
 if [[ "$OPT_METHOD" != "GA" && "$OPT_METHOD" != "bayesian" ]]; then
     echo "Error: Invalid choice. Must be 'GA' or 'bayesian'."
     exit 1
+fi
+
+if [[ "$OPT_METHOD" == "bayesian" ]]; then
+    read -p "Enter the CUDA device index to use (e.g. 0, 1, 2, ...): " CUDA_DEVICE
+    if [[ -z "$CUDA_DEVICE" ]]; then
+        echo "Error: You must specify a CUDA device index."
+        exit 1
+    fi
+else
+    read -p "Enter the CUDA device indexes to use (comma-separated, e.g. 0,1,2): " CUDA_DEVICE
+    if [[ -z "$CUDA_DEVICE" ]]; then
+        echo "Error: You must specify at least one CUDA device index."
+        exit 1
+    fi
 fi
 
 read -p "Enter the name for the Results folder: " RESULTS_NAME

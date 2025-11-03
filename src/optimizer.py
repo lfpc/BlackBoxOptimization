@@ -15,6 +15,8 @@ from utils import normalize_vector, denormalize_vector
 #torch.set_default_dtype(torch.float64)
 from time import time
 import random
+import queue
+import threading
 
 class OptimizerClass():
     '''Mother class for optimizers'''
@@ -620,7 +622,55 @@ class LCSO(OptimizerClass):
         self.phi_optimizer.step()
         return self._current_phi
 
+def gpu_worker(device, task_queue, results):
+    """
+    Worker function that runs on a specific GPU.
+    It continuously pulls individuals from the queue and evaluates them.
+    """
+    torch.cuda.set_device(device)
+    while True:
+        try:
+            ind = task_queue.get(timeout=1)  # 1s timeout to exit gracefully
+        except queue.Empty:
+            break  # no more tasks
+        try:
+            ind.device = device
+            ind.compute_simulation()
+            results.append(ind)
+        except Exception as e:
+            print(f"Error on device {device}: {e}")
+        finally:
+            task_queue.task_done()
 
+def simulate_population_multigpu(population,devices):
+    num_gpus = len(devices)
+    if num_gpus == 0:
+        raise RuntimeError("No GPUs available")
+    # Prepare queue and result container
+    task_queue = queue.Queue()
+    results = []
+    # Fill queue with individuals
+    for ind in population:
+        task_queue.put(ind)
+    # Start one thread per GPU
+    threads = []
+    for device in devices:
+        t = threading.Thread(target=gpu_worker, args=(device, task_queue, results))
+        t.start()
+        threads.append(t)
+    # Wait for all work to finish
+    for t in threads:
+        t.join()
+    for ind in results:
+        unique_representation=ind.unique_representation
+        if unique_representation in ind.computed_fitness_values.keys():
+            iterations,fitness=ind.computed_fitness_values[unique_representation]
+            aux=(ind.simulated_fitness+iterations*fitness)/(iterations+1)
+            ind.computed_fitness_values[unique_representation]=(iterations+1,aux)
+        else:
+            aux=ind.simulated_fitness
+            ind.computed_fitness_values[unique_representation]=(1,aux)
+    return results
 
 class Individual():
     def __init__(self,problem_fn,genes,computed_fitness_values,device):
@@ -628,21 +678,16 @@ class Individual():
         self.genes=genes.copy()
         self.computed_fitness_values=computed_fitness_values
         self.device=device
-        self.evaluate()
-    
-    def evaluate(self):
+
+    def compute_simulation(self):
         phi=torch.tensor(self.genes, dtype=torch.float32).unsqueeze(0)
         y = self.problem_fn(phi)
         loss=y
-        unique_representation=self.get_unique_representation_of_genes()
-        if unique_representation in self.computed_fitness_values.keys():
-            iterations,fitness=self.computed_fitness_values[unique_representation]
-            self.fitness=(-loss+iterations*fitness)/(iterations+1)
-            self.computed_fitness_values[unique_representation]=(iterations+1,self.fitness)
-        else:
-            self.fitness=-loss
-            self.computed_fitness_values[unique_representation]=(1,self.fitness)
+        self.unique_representation=self.get_unique_representation_of_genes()
         self.simulated_fitness=-loss
+
+    def evaluate(self):
+        self.fitness=self.computed_fitness_values[self.unique_representation][1]
 
     def get_unique_representation_of_genes(self):
         return tuple(round(g, 6) for g in self.genes)
@@ -652,14 +697,17 @@ class Individual():
         return cloned_individual
 
 class Population():
-    def __init__(self,problem_fn,population_size,generations,phi_bounds,mutation_probability,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size,device,WandB):
+    def __init__(self,problem_fn,population_size,generations,phi_bounds,blend_crossover_probability,blend_crossover_alpha,mutation_probability,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size,device,devices,WandB):
         self.device=device
+        self.devices=devices
         self.WandB=WandB
         self.problem_fn=problem_fn
         self.population_size=population_size
         self.generations=generations
         self.computed_fitness_values=dict()
         self.phi_bounds=phi_bounds*0.6###TO_DO: Ask LF about why some phis require much longer simulation times, and delete the *0.6
+        self.blend_crossover_probability=blend_crossover_probability#0.7 is a suitable value
+        self.blend_crossover_alpha=blend_crossover_alpha#0.3 is a suitable value
         self.mutation_probability=mutation_probability
         self.random_immigration_probability=random_immigration_probability#0.01 would be a suitable value
         self.mutation_std_deviations_factor=mutation_std_deviations_factor#0.05 would be a suitable value
@@ -670,6 +718,10 @@ class Population():
             genes=self.get_initial_genes()
             individual=Individual(self.problem_fn,genes,self.computed_fitness_values,self.device)
             self.population.append(individual)
+        simulate_population_multigpu(self.population,self.devices)
+        #torch.cuda.empty_cache()
+        for individual in self.population:
+            individual.evaluate()
         self.elite=[]
         self.elite_size=elite_size
         self.hall_of_fame=[]
@@ -680,21 +732,64 @@ class Population():
         #print(self.problem_fn.initial_phi)
         initial_genes=[self.problem_fn.initial_phi.tolist()[gene_index]+0.0001*np.random.normal(0, self.mutation_std_deviations[gene_index]) for gene_index in range(len(self.phi_bounds.T))]#TO_DO: Check if a more suitable initialization exists (a more spread initialization over the search space maybe)
         return initial_genes
-        
-    def update_elite(self):
-        self.elite=sorted(self.population, key=lambda ind: ind.fitness, reverse=True)[:self.elite_size]#TO_DO: Check if I would need a more suitable elite, like saving all individuals with a fitness value above a threshold, or avoiding storing individuals with the same genes
 
-    def update_hall_of_fame(self):
-        aux=self.hall_of_fame+self.elite
-        self.hall_of_fame=sorted(aux, key=lambda ind: ind.fitness, reverse=True)[:self.hall_of_fame_size]#TO_DO: Check if I would need a more suitable elite, like saving all individuals with a fitness value above a threshold, or avoiding storing individuals with the same genes
+    def update_elite(self):#TO_DO: Check if I would need a more suitable elite, like saving all individuals with a fitness value above a threshold
+        unique_signatures = set()
+        new_elite = []
+        for ind in sorted(self.population, key=lambda ind: ind.fitness, reverse=True):
+            sig = ind.unique_representation
+            if sig not in unique_signatures:
+                new_elite.append(ind)
+                unique_signatures.add(sig)
+            if len(new_elite) == self.elite_size:
+                break
+        self.elite = new_elite
 
-    def crossover(self,individual1,individual2):
+    def update_hall_of_fame(self):#TO_DO: Check if I would need a more suitable hall of fame, like saving all individuals with a fitness value above a threshold
+        combined = self.hall_of_fame + self.elite
+        combined_sorted = sorted(combined, key=lambda ind: ind.fitness, reverse=True)
+        unique_signatures = set()
+        new_hof = []
+        for ind in combined_sorted:
+            sig = ind.unique_representation
+            if sig not in unique_signatures:
+                new_hof.append(ind)
+                unique_signatures.add(sig)
+            if len(new_hof) == self.hall_of_fame_size:
+                break
+        self.hall_of_fame = new_hof
+
+    def uniform_swap(self,individual1,individual2):
         for gene_index in range(len(individual1.genes)):
             if random.random()<0.5:
                 aux=individual1.genes[gene_index]
                 individual1.genes[gene_index]=individual2.genes[gene_index]
                 individual2.genes[gene_index]=aux
         return individual1,individual2
+
+    def blend_crossover(self, ind1, ind2):
+        child1_genes, child2_genes = [], []
+        for i, (g1, g2) in enumerate(zip(ind1.genes, ind2.genes)):
+            d = abs(g1 - g2)
+            low = min(g1, g2) - self.blend_crossover_alpha * d
+            high = max(g1, g2) + self.blend_crossover_alpha * d
+            #Sample new genes:
+            new_g1 = random.uniform(low, high)
+            new_g2 = random.uniform(low, high)
+            #Clamp to phi_bounds:
+            new_g1 = max(min(new_g1, self.phi_bounds.T[i][1].item()), self.phi_bounds.T[i][0].item())
+            new_g2 = max(min(new_g2, self.phi_bounds.T[i][1].item()), self.phi_bounds.T[i][0].item())
+            child1_genes.append(new_g1)
+            child2_genes.append(new_g2)
+        ind1.genes = child1_genes
+        ind2.genes = child2_genes
+        return ind1, ind2
+
+    def crossover(self, ind1, ind2):
+        if random.random() < self.blend_crossover_probability:#Do blend crossover
+            return self.blend_crossover(ind1, ind2)
+        else:# Do uniform swap
+            return self.uniform_swap(ind1, ind2)
 
     def mutation(self,individual):
         for gene_index in range(len(individual.genes)):
@@ -725,21 +820,47 @@ class Population():
                 cloned_population[i] = self.mutation(cloned_population[i])
                 cloned_population[i+1] = self.mutation(cloned_population[i+1])
         #Update the fitness values:
-        for ind in cloned_population:
-            ind.evaluate()
+        simulate_population_multigpu(cloned_population,self.devices)#TO_DO: Check that individuals' fitness is being correctly updated
+        #torch.cuda.empty_cache()#TO_DO: Check if needed
         #Merge original population and offspring
         self.population+=cloned_population
-        #Elite individuals survive to the next generation:
+        for individual in self.population:
+            individual.evaluate()
+        #Update elite and hall of fame:
         self.update_elite()
         self.update_hall_of_fame()
+        #Elite individuals automatically survive to the next generation:
         new_generation=[]
+        unique_signatures = set()
         for ind in self.elite:
             new_generation.append(ind)
+            unique_signatures.add(ind.unique_representation)
         #Selection process based on tournaments:
-        for _ in range(self.population_size-len(self.elite)):
+        attempts = 0
+        max_attempts = self.population_size*10#Maximum number of allowed tournaments
+        while len(new_generation) < self.population_size and attempts < max_attempts:
             participants = random.sample(self.population, self.tournament_size)
-            new_generation.append(max(participants, key=lambda ind: ind.fitness)) 
-        self.population=new_generation.copy()
+            winner = max(participants, key=lambda ind: ind.fitness)
+            signature = winner.unique_representation
+            if signature not in unique_signatures:
+                new_generation.append(winner)
+                unique_signatures.add(signature)
+            else:
+                attempts += 1
+        #If diversity is too low and the maximum number of allowed tournaments is reached, fill population with random immigrants
+        if len(new_generation) < self.population_size:
+            missing = self.population_size - len(new_generation)
+            print(f"Warning: only {len(unique_signatures)} unique individuals found, creating {missing} random immigrants.")
+            immigrants_list=[]
+            for _ in range(missing):
+                immigrant = Individual(self.problem_fn,self.get_initial_genes(),self.computed_fitness_values,self.device)
+                immigrants_list.append(immigrant)
+            simulate_population_multigpu(immigrants_list,self.devices)
+            #torch.cuda.empty_cache()
+            new_generation+=immigrants_list
+            for individual in new_generation:
+                individual.evaluate()
+        self.population=new_generation.copy()#TO_DO: Check if the .copy() can be removed
 
     def play_evolution(self):
         hist_best_loss=1e16#Huge number
@@ -770,11 +891,13 @@ class Population():
         return self.hall_of_fame
 
 class GA():   
-    def __init__(self,problem_fn,population_size,generations,phi_bounds,mutation_probability,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size,device,WandB):
+    def __init__(self,problem_fn,population_size,generations,phi_bounds,blend_crossover_probability,blend_crossover_alpha,mutation_probability,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size,device,devices,WandB):
         self.problem_fn=problem_fn
         self.population_size=population_size
         self.generations=generations
         self.phi_bounds=phi_bounds
+        self.blend_crossover_probability=blend_crossover_probability
+        self.blend_crossover_alpha=blend_crossover_alpha
         self.mutation_probability=mutation_probability
         self.random_immigration_probability=random_immigration_probability
         self.mutation_std_deviations_factor=mutation_std_deviations_factor
@@ -782,8 +905,9 @@ class GA():
         self.elite_size=elite_size
         self.hall_of_fame_size=hall_of_fame_size
         self.device=device
+        self.devices=devices
         self.WandB=WandB
-        self.the_population=Population(self.problem_fn,self.population_size,self.generations,self.phi_bounds,self.mutation_probability,self.random_immigration_probability,self.mutation_std_deviations_factor,self.tournament_size,self.elite_size,self.hall_of_fame_size,self.device,self.WandB)
+        self.the_population=Population(self.problem_fn,self.population_size,self.generations,self.phi_bounds,self.blend_crossover_probability,self.blend_crossover_alpha,self.mutation_probability,self.random_immigration_probability,self.mutation_std_deviations_factor,self.tournament_size,self.elite_size,self.hall_of_fame_size,self.device,self.devices,self.WandB)
 
     def run_optimization(self):        
         hall_of_fame=self.the_population.play_evolution()
@@ -829,7 +953,7 @@ class RL_muons_env(gym.Env):
         if seed is not None:
             np.random.seed(seed)
         #TO_DO: Think about proper initialization
-        initial_point=[self.problem_fn.initial_phi.tolist()[gene_index]+0.0001*np.random.normal(0, self.mutation_std_deviations[gene_index]) for gene_index in range(len(self.phi_bounds.T))]
+        initial_point=[self.problem_fn.initial_phi.tolist()[param_index]+0.0001*np.random.normal(0, self.step_scale[param_index]) for param_index in range(len(self.phi_bounds.T))]
         print(type(initial_point))
         print(hola)
 

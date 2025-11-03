@@ -78,6 +78,8 @@ if args.optimization == 'GA':
     GA_dict={}
     GA_dict["population_size"]=20
     GA_dict["generations"]=100#50
+    GA_dict["blend_crossover_probability"]=0.7
+    GA_dict["blend_crossover_alpha"]=0.3
     GA_dict["mutation_probability"]=0.1
     GA_dict["random_immigration_probability"]=0.01
     GA_dict["mutation_std_deviations_factor"]=0.05
@@ -178,10 +180,14 @@ if __name__ == "__main__":
                        }
 
     if args.optimization == 'GA':#Genetic Algorithms
+        num_gpus = torch.cuda.device_count()
+        devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
         GA(problem_fn=problem_fn,
             population_size=GA_dict["population_size"],
             generations=GA_dict["generations"],
             phi_bounds=phi_bounds,
+            blend_crossover_probability=GA_dict["blend_crossover_probability"],
+            blend_crossover_alpha=GA_dict["blend_crossover_alpha"],
             mutation_probability=GA_dict["mutation_probability"],
             random_immigration_probability=GA_dict["random_immigration_probability"],
             mutation_std_deviations_factor=GA_dict["mutation_std_deviations_factor"],
@@ -189,6 +195,7 @@ if __name__ == "__main__":
             elite_size=GA_dict["elite_size"],
             hall_of_fame_size=GA_dict["hall_of_fame_size"],
             device=dev,
+            devices=devices,
             WandB=WANDB).run_optimization()
         sys.exit()
 
