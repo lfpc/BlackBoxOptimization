@@ -18,6 +18,8 @@ import random
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import csv
+import os
 
 class OptimizerClass():
     '''Mother class for optimizers'''
@@ -893,8 +895,23 @@ class Population():
                 wb.log(log_dict)
                 pbar.set_description(f"hist_best_loss: {log_dict['hist_best_loss']} (gen. {log_dict['generation']})")
                 pbar.update()
+                self.save_population_history(generation)
         wb.finish()
         return self.hall_of_fame
+
+    def save_population_history(self, generation):
+        filename=f"outputs/{self.WandB['name']}/population_history.csv"
+        os.makedirs(os.path.dirname(filename), exist_ok=True) if os.path.dirname(filename) else None
+        write_header = False
+        if not os.path.exists(filename):
+            write_header = True
+        with open(filename, "a", newline="") as f:
+            writer = csv.writer(f)
+            if write_header:
+                header = ["generation"] + [f"gene_{i}" for i in range(len(self.population[0].genes))] + ["fitness"]
+                writer.writerow(header)
+            for ind in self.population:
+                writer.writerow([generation] + ind.genes + [ind.fitness])
 
 class GA():   
     def __init__(self,problem_fn,population_size,generations,phi_bounds,blend_crossover_probability,blend_crossover_alpha,mutation_probability,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size,device,devices,WandB):
@@ -921,8 +938,23 @@ class GA():
         for individual_index in range(len(hall_of_fame)):
             individual=hall_of_fame[individual_index]
             print(f"Individual: {individual}, fitness value: {individual.fitness}, genes: {individual.genes}")
-        with open("hall_of_fame_3.pkl", "wb") as f:
-            dump(hall_of_fame, f)
+        self.save_last_population()
+
+    def save_last_population(self):
+        #Save genes of best individual of hall of fame
+        with open(f"outputs/{self.WandB['name']}/phi_optm_GA.txt", "w") as f:
+            for gene in self.the_population.hall_of_fame[0].genes:
+                f.write(f"{gene}\n")
+        #Save computed_fitness_values dictionary:
+        with open(f"outputs/{self.WandB['name']}/computed_fitness_values.pkl", "wb") as f:
+            dump(self.the_population.population[0].computed_fitness_values, f)
+        #Save all individuals in the last generation without the dictionary, the device and the problem_fn:
+        for ind in self.the_population.population:
+            ind.problem_fn = None
+            ind.device = None
+            ind.computed_fitness_values = None
+        with open(f"outputs/{self.WandB['name']}/last_generation.pkl", "wb") as f:
+            dump(self.the_population.population, f)
 """
 class RL_muons_env(gym.Env):
     def __init__(self, dim, problem_fn, phi_bounds, max_steps, tolerance):
