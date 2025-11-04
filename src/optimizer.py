@@ -17,6 +17,7 @@ from time import time
 import random
 import queue
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class OptimizerClass():
     '''Mother class for optimizers'''
@@ -652,15 +653,20 @@ def simulate_population_multigpu(population,devices):
     # Fill queue with individuals
     for ind in population:
         task_queue.put(ind)
-    # Start one thread per GPU
-    threads = []
-    for device in devices:
-        t = threading.Thread(target=gpu_worker, args=(device, task_queue, results))
-        t.start()
-        threads.append(t)
-    # Wait for all work to finish
-    for t in threads:
-        t.join()
+    # Start one thread per GPU using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=num_gpus) as executor:
+        futures = [
+            executor.submit(gpu_worker, device, task_queue, results)
+            for device in devices
+        ]
+        # Wait for all queued tasks to be marked done
+        task_queue.join()
+        # Wait for all worker threads to finish gracefully
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                print(f"Worker thread failed: {e}")
     for ind in results:
         unique_representation=ind.unique_representation
         if unique_representation in ind.computed_fitness_values.keys():
