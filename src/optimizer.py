@@ -1,5 +1,6 @@
 import botorch
 import torch
+import torch.multiprocessing as mp
 from tqdm import tqdm
 from scipy.stats.qmc import LatinHypercube
 from matplotlib import pyplot as plt
@@ -625,60 +626,60 @@ class LCSO(OptimizerClass):
         self.phi_optimizer.step()
         return self._current_phi
 
-def gpu_worker(device, task_queue, results):
-    """
-    Worker function that runs on a specific GPU.
-    It continuously pulls individuals from the queue and evaluates them.
-    """
+def gpu_worker(device, indexed_genes_batch, problem_fn, results):
     torch.cuda.set_device(device)
-    while True:
-        try:
-            ind = task_queue.get(timeout=1)  # 1s timeout to exit gracefully
-        except queue.Empty:
-            break  # no more tasks
-        try:
-            ind.device = device
-            ind.compute_simulation()
-            results.append(ind)
-        except Exception as e:
-            print(f"Error on device {device}: {e}")
-        finally:
-            task_queue.task_done()
+    local_results = []
+    for idx, genes in indexed_genes_batch:
+        phi = torch.tensor(genes, dtype=torch.float32, device=device).unsqueeze(0)
+        y = problem_fn(phi)
+        local_results.append((idx, y.cpu()))
+    results.extend(local_results)
 
-def simulate_population_multigpu(population,devices):
+def split_population(indexed_data, num_chunks):
+    avg = len(indexed_data) // num_chunks
+    return [indexed_data[i*avg : (i+1)*avg if i < num_chunks-1 else len(indexed_data)]
+            for i in range(num_chunks)]
+
+def simulate_population_multiprocessing(population, problem_fn, devices):
     num_gpus = len(devices)
     if num_gpus == 0:
         raise RuntimeError("No GPUs available")
-    # Prepare queue and result container
-    task_queue = queue.Queue()
-    results = []
-    # Fill queue with individuals
+    indexed_genes = list(enumerate([ind.genes for ind in population]))
+    #Manager list for shared results:
+    manager = mp.Manager()
+    results = manager.list()
+    #Split work into chunks for each GPU:
+    chunks = split_population(indexed_genes, num_gpus)
+    mp.set_start_method("spawn", force=True)
+    #Launch one process per GPU:
+    processes = []
+    for device, chunk in zip(devices, chunks):
+        p = mp.Process(target=gpu_worker, args=(device, chunk, problem_fn, results))
+        p.start()
+        processes.append(p)
+    for p in processes:
+        p.join()
+    #Sort results by original index to preserve population order:
+    ordered_results = sorted(list(results), key=lambda x: x[0])
+    return [y for _, y in ordered_results]
+
+def compute_simulation(population, problem_fn, devices):
+    #Run GPU parallel computation:
+    raw_results = simulate_population_multiprocessing(population, problem_fn, devices)
+    #Map results back to Individuals:
+    for ind, y in zip(population, raw_results):
+        loss = y.item() if torch.is_tensor(y) else float(y)
+        ind.unique_representation = ind.get_unique_representation_of_genes()
+        ind.simulated_fitness = -loss
+    #Update computed_fitness_values dictionary:
     for ind in population:
-        task_queue.put(ind)
-    # Start one thread per GPU using ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=num_gpus) as executor:
-        futures = [
-            executor.submit(gpu_worker, device, task_queue, results)
-            for device in devices
-        ]
-        # Wait for all queued tasks to be marked done
-        task_queue.join()
-        # Wait for all worker threads to finish gracefully
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print(f"Worker thread failed: {e}")
-    for ind in results:
         unique_representation=ind.unique_representation
-        if unique_representation in ind.computed_fitness_values.keys():
+        if unique_representation in ind.computed_fitness_values:
             iterations,fitness=ind.computed_fitness_values[unique_representation]
             aux=(ind.simulated_fitness+iterations*fitness)/(iterations+1)
             ind.computed_fitness_values[unique_representation]=(iterations+1,aux)
         else:
-            aux=ind.simulated_fitness
-            ind.computed_fitness_values[unique_representation]=(1,aux)
-    return results
+            ind.computed_fitness_values[unique_representation]=(1,ind.simulated_fitness)
 
 class Individual():
     def __init__(self,problem_fn,genes,computed_fitness_values,device):
@@ -687,12 +688,6 @@ class Individual():
         self.computed_fitness_values=computed_fitness_values
         self.device=device
 
-    def compute_simulation(self):
-        phi=torch.tensor(self.genes, dtype=torch.float32).unsqueeze(0)
-        y = self.problem_fn(phi)
-        loss=y
-        self.unique_representation=self.get_unique_representation_of_genes()
-        self.simulated_fitness=-loss
 
     def evaluate(self):
         self.fitness=self.computed_fitness_values[self.unique_representation][1]
@@ -726,7 +721,7 @@ class Population():
             genes=self.get_initial_genes()
             individual=Individual(self.problem_fn,genes,self.computed_fitness_values,self.device)
             self.population.append(individual)
-        simulate_population_multigpu(self.population,self.devices)
+        compute_simulation(self.population,self.problem_fn,self.devices)
         #torch.cuda.empty_cache()
         for individual in self.population:
             individual.evaluate()
@@ -828,7 +823,7 @@ class Population():
                 cloned_population[i] = self.mutation(cloned_population[i])
                 cloned_population[i+1] = self.mutation(cloned_population[i+1])
         #Update the fitness values:
-        simulate_population_multigpu(cloned_population,self.devices)#TO_DO: Check that individuals' fitness is being correctly updated
+        compute_simulation(cloned_population,self.problem_fn,self.devices)#TO_DO: Check that individuals' fitness is being correctly updated
         #torch.cuda.empty_cache()#TO_DO: Check if needed
         #Merge original population and offspring
         self.population+=cloned_population
@@ -863,7 +858,7 @@ class Population():
             for _ in range(missing):
                 immigrant = Individual(self.problem_fn,self.get_initial_genes(),self.computed_fitness_values,self.device)
                 immigrants_list.append(immigrant)
-            simulate_population_multigpu(immigrants_list,self.devices)
+            compute_simulation(immigrants_list,self.problem_fn,self.devices)
             #torch.cuda.empty_cache()
             new_generation+=immigrants_list
             for individual in new_generation:
@@ -1372,6 +1367,7 @@ class PowellOptimizer(OptimizerClass):
     
     
 if __name__ == '__main__':
+    mp.set_start_method("spawn", force=True)
     from problems import stochastic_RosenbrockProblem
     from models import GANModel,GP_RBF
     dev = torch.device('cuda')
