@@ -708,7 +708,7 @@ class Population():
         self.population_size=population_size
         self.generations=generations
         self.computed_fitness_values=dict()
-        self.phi_bounds=phi_bounds*0.6###TO_DO: Ask LF about why some phis require much longer simulation times, and delete the *0.6
+        self.phi_bounds=phi_bounds
         self.blend_crossover_probability=blend_crossover_probability#0.7 is a suitable value
         self.blend_crossover_alpha=blend_crossover_alpha#0.3 is a suitable value
         self.mutation_probability=mutation_probability
