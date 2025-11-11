@@ -8,6 +8,7 @@ from pickle import dump,  load
 import wandb
 from os.path import join
 from scipy.optimize import minimize, Bounds as ScipyBounds, NonlinearConstraint
+from scipy.spatial.distance import pdist
 import numpy as np
 import sys
 sys.path.append('..')
@@ -794,6 +795,27 @@ class Population():
         else:# Do uniform swap
             return self.uniform_swap(ind1, ind2)
 
+    def compute_diversity(self):
+        #Create a matrix of genes:
+        gene_matrix = np.array([ind.genes for ind in self.population])
+        #Normalize each gene to [0,1] based on phi_bounds:
+        gene_min = self.phi_bounds.T[:, 0].cpu().numpy()
+        gene_max = self.phi_bounds.T[:, 1].cpu().numpy()
+        gene_range = gene_max - gene_min + 1e-12#avoid division by zero
+        normalized_matrix = (gene_matrix - gene_min) / gene_range
+        #Compute pairwise Euclidean distances on normalized genes to obtain gene diversity:
+        pairwise_distances = pdist(normalized_matrix, metric='euclidean')
+        self.gene_diversity = np.mean(pairwise_distances)
+        
+        #Compute normalized fitness diversity:
+        fitness_values = np.array([ind.fitness for ind in self.population])
+        std = np.std(fitness_values)
+        mean = np.mean(fitness_values)
+        fitness_diversity = std / (abs(mean) + 1e-12)
+        #Normalize diversity into [0,1]:
+        normalized_div = np.clip(fitness_diversity / (fitness_diversity + 1), 0, 1)
+        self.fitness_diverstity=normalized_div
+
     def mutation(self,individual):
         for gene_index in range(len(individual.genes)):
             if random.random() < self.mutation_probability:
@@ -813,6 +835,8 @@ class Population():
         #Clone the population:
         cloned_population = [ind.clone() for ind in self.population]
         random.shuffle(cloned_population)
+        #Compute diversity:
+        self.compute_diversity()
         # Apply crossover and mutation to the cloned population:
         for i in range(0,self.population_size,2):
             if random.random()<self.random_immigration_probability:
@@ -868,9 +892,15 @@ class Population():
     def play_evolution(self):
         hist_best_loss=1e16#Huge number
         hist_best_simulated_loss=1e16
+        self.no_progress_counter=0
         with wandb.init(reinit = True,**self.WandB) as wb, tqdm(total=self.generations) as pbar:
             for generation in range(self.generations):
                 self.update_generation()
+                if generation>0:
+                    if -self.hall_of_fame[0].fitness<current_best_loss:
+                        self.no_progress_counter=0
+                    else:
+                        self.no_progress_counter+=1
                 current_best_loss=-self.hall_of_fame[0].fitness
                 if current_best_loss<hist_best_loss:
                     hist_best_loss=current_best_loss
@@ -885,7 +915,11 @@ class Population():
                     'generation': generation + 1,
                     'current_best_loss': current_best_loss,
                     'hist_best_loss': hist_best_loss,
-                    'hist_best_simulated_loss': hist_best_simulated_loss
+                    'hist_best_simulated_loss': hist_best_simulated_loss,
+                    'gene_diversity': self.gene_diversity,
+                    'fitness_diverstity': self.fitness_diverstity,
+                    'no_progress_counter': self.no_progress_counter,
+                    'mutation_probability': self.mutation_probability
                 }
                 wb.log(log_dict)
                 pbar.set_description(f"hist_best_loss: {log_dict['hist_best_loss']} (gen. {log_dict['generation']})")
