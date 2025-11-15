@@ -701,7 +701,8 @@ class Individual():
         return cloned_individual
 
 class Population():
-    def __init__(self,problem_fn,population_size,generations,phi_bounds,blend_crossover_probability,blend_crossover_alpha,mutation_probability,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size,device,devices,WandB):
+    def __init__(self,problem_fn,population_size,generations,phi_bounds,blend_crossover_probability,blend_crossover_alpha,mutation_probability,local_search_period,num_local_searches,local_search_std_deviations_factor,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size,device,devices,WandB):
+        self.num_evaluations=0
         self.device=device
         self.devices=devices
         self.WandB=WandB
@@ -716,6 +717,10 @@ class Population():
         self.random_immigration_probability=random_immigration_probability#0.01 would be a suitable value
         self.mutation_std_deviations_factor=mutation_std_deviations_factor#0.05 would be a suitable value
         self.mutation_std_deviations=[self.mutation_std_deviations_factor*(high.item()-low.item()) for low,high in self.phi_bounds.T]
+        self.local_search_period=local_search_period
+        self.num_local_searches=num_local_searches
+        self.local_search_std_deviations_factor=local_search_std_deviations_factor
+        self.local_search_std_deviations=[self.local_search_std_deviations_factor*elem for elem in self.mutation_std_deviations]
         self.tournament_size=tournament_size
         self.population=[]
         for _ in range(self.population_size):
@@ -723,6 +728,7 @@ class Population():
             individual=Individual(self.problem_fn,genes,self.computed_fitness_values,self.device)
             self.population.append(individual)
         compute_simulation(self.population,self.problem_fn,self.devices)
+        self.num_evaluations+=len(self.population)
         #torch.cuda.empty_cache()
         for individual in self.population:
             individual.evaluate()
@@ -826,6 +832,18 @@ class Population():
                     individual.genes[gene_index]=self.phi_bounds.T[gene_index][1].item()
         return individual
 
+    def local_search(self,individual):
+        cloned_individuals = [individual.clone() for _ in range(self.num_local_searches)]
+        for ind in cloned_individuals:
+            for gene_index in range(len(ind.genes)):
+                if random.random() < self.mutation_probability:
+                    ind.genes[gene_index]+=np.random.normal(0, self.local_search_std_deviations[gene_index])
+                    if ind.genes[gene_index]<self.phi_bounds.T[gene_index][0].item():#Make sure genes don't escape the bounds
+                        ind.genes[gene_index]=self.phi_bounds.T[gene_index][0].item()
+                    elif ind.genes[gene_index]>self.phi_bounds.T[gene_index][1].item():
+                        ind.genes[gene_index]=self.phi_bounds.T[gene_index][1].item()
+        return cloned_individuals
+
     def random_immigration(self,individual):
         initial_genes=self.get_initial_genes()
         individual.genes=initial_genes.copy()
@@ -848,6 +866,7 @@ class Population():
                 cloned_population[i+1] = self.mutation(cloned_population[i+1])
         #Update the fitness values:
         compute_simulation(cloned_population,self.problem_fn,self.devices)#TO_DO: Check that individuals' fitness is being correctly updated
+        self.num_evaluations+=len(cloned_population)
         #torch.cuda.empty_cache()#TO_DO: Check if needed
         #Merge original population and offspring
         self.population+=cloned_population
@@ -883,6 +902,7 @@ class Population():
                 immigrant = Individual(self.problem_fn,self.get_initial_genes(),self.computed_fitness_values,self.device)
                 immigrants_list.append(immigrant)
             compute_simulation(immigrants_list,self.problem_fn,self.devices)
+            self.num_evaluations+=len(immigrants_list)
             #torch.cuda.empty_cache()
             new_generation+=immigrants_list
             for individual in new_generation:
@@ -901,6 +921,22 @@ class Population():
                         self.no_progress_counter=0
                     else:
                         self.no_progress_counter+=1
+                if self.no_progress_counter>0 and self.no_progress_counter%self.local_search_period==0:
+                    locally_searched_individuals=self.local_search(self.elite[0])
+                    compute_simulation(locally_searched_individuals,self.problem_fn,self.devices)
+                    self.num_evaluations+=len(locally_searched_individuals)
+                    for individual in self.population+locally_searched_individuals:
+                        individual.evaluate()
+                    locally_searched_individuals_sorted = sorted(locally_searched_individuals, key=lambda ind: ind.fitness, reverse=True)
+                    print(f"Fitness of best individual: {self.elite[0].fitness}")
+                    print("Fitness of locally searched individuals:")
+                    print([ind.fitness for ind in locally_searched_individuals_sorted])
+                    if locally_searched_individuals_sorted[0].fitness>self.elite[0].fitness:
+                        print(f"Local search found a better individual with fitness: {locally_searched_individuals_sorted[0].fitness}")
+                        self.no_progress_counter=0
+                        self.population[0]=locally_searched_individuals_sorted[0]
+                        self.update_elite()
+                        self.update_hall_of_fame()
                 current_best_loss=-self.hall_of_fame[0].fitness
                 if current_best_loss<hist_best_loss:
                     hist_best_loss=current_best_loss
@@ -919,7 +955,7 @@ class Population():
                     'gene_diversity': self.gene_diversity,
                     'fitness_diverstity': self.fitness_diverstity,
                     'no_progress_counter': self.no_progress_counter,
-                    'mutation_probability': self.mutation_probability
+                    'num_evaluations':self.num_evaluations
                 }
                 wb.log(log_dict)
                 pbar.set_description(f"hist_best_loss: {log_dict['hist_best_loss']} (gen. {log_dict['generation']})")
@@ -943,7 +979,7 @@ class Population():
                 writer.writerow([generation] + ind.genes + [ind.fitness])
 
 class GA():   
-    def __init__(self,problem_fn,population_size,generations,phi_bounds,blend_crossover_probability,blend_crossover_alpha,mutation_probability,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size,device,devices,WandB):
+    def __init__(self,problem_fn,population_size,generations,phi_bounds,blend_crossover_probability,blend_crossover_alpha,mutation_probability,local_search_period,num_local_searches,local_search_std_deviations_factor,random_immigration_probability,mutation_std_deviations_factor,tournament_size,elite_size,hall_of_fame_size,device,devices,WandB):
         self.problem_fn=problem_fn
         self.population_size=population_size
         self.generations=generations
@@ -951,6 +987,9 @@ class GA():
         self.blend_crossover_probability=blend_crossover_probability
         self.blend_crossover_alpha=blend_crossover_alpha
         self.mutation_probability=mutation_probability
+        self.local_search_period=local_search_period
+        self.num_local_searches=num_local_searches
+        self.local_search_std_deviations_factor=local_search_std_deviations_factor
         self.random_immigration_probability=random_immigration_probability
         self.mutation_std_deviations_factor=mutation_std_deviations_factor
         self.tournament_size=tournament_size
@@ -959,7 +998,7 @@ class GA():
         self.device=device
         self.devices=devices
         self.WandB=WandB
-        self.the_population=Population(self.problem_fn,self.population_size,self.generations,self.phi_bounds,self.blend_crossover_probability,self.blend_crossover_alpha,self.mutation_probability,self.random_immigration_probability,self.mutation_std_deviations_factor,self.tournament_size,self.elite_size,self.hall_of_fame_size,self.device,self.devices,self.WandB)
+        self.the_population=Population(self.problem_fn,self.population_size,self.generations,self.phi_bounds,self.blend_crossover_probability,self.blend_crossover_alpha,self.mutation_probability,self.local_search_period,self.num_local_searches,self.local_search_std_deviations_factor,self.random_immigration_probability,self.mutation_std_deviations_factor,self.tournament_size,self.elite_size,self.hall_of_fame_size,self.device,self.devices,self.WandB)
 
     def run_optimization(self):        
         hall_of_fame=self.the_population.play_evolution()

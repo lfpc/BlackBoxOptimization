@@ -81,6 +81,9 @@ if args.optimization == 'GA':
     GA_dict["blend_crossover_probability"]=0#0.7
     GA_dict["blend_crossover_alpha"]=0.3
     GA_dict["mutation_probability"]=0.1
+    GA_dict["local_search_period"]=8
+    GA_dict["num_local_searches"]=20
+    GA_dict["local_search_std_deviations_factor"]=0.05
     GA_dict["random_immigration_probability"]=0.01
     GA_dict["mutation_std_deviations_factor"]=0.05
     GA_dict["tournament_size"]=3
@@ -189,6 +192,9 @@ if __name__ == "__main__":
             blend_crossover_probability=GA_dict["blend_crossover_probability"],
             blend_crossover_alpha=GA_dict["blend_crossover_alpha"],
             mutation_probability=GA_dict["mutation_probability"],
+            local_search_period=GA_dict["local_search_period"],
+            num_local_searches=GA_dict["num_local_searches"],
+            local_search_std_deviations_factor=GA_dict["local_search_std_deviations_factor"],
             random_immigration_probability=GA_dict["random_immigration_probability"],
             mutation_std_deviations_factor=GA_dict["mutation_std_deviations_factor"],
             tournament_size=GA_dict["tournament_size"],
