@@ -22,6 +22,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
 import os
+import gymnasium as gym
+import d3rlpy
+from d3rlpy.models import IQNQFunctionFactory
+from d3rlpy.metrics import EnvironmentEvaluator
 
 class OptimizerClass():
     '''Mother class for optimizers'''
@@ -1023,11 +1027,10 @@ class GA():
             ind.computed_fitness_values = None
         with open(f"outputs/{self.WandB['name']}/last_generation.pkl", "wb") as f:
             dump(self.the_population.population, f)
-"""
+#"""
 class RL_muons_env(gym.Env):
-    def __init__(self, dim, problem_fn, phi_bounds, max_steps, tolerance):
+    def __init__(self, problem_fn, phi_bounds, max_steps, tolerance):
         super().__init__()
-        self.dim=dim
         self.problem_fn=problem_fn
         self.phi_bounds=phi_bounds
         self.max_steps = max_steps
@@ -1040,6 +1043,7 @@ class RL_muons_env(gym.Env):
         self.best_x = None
         self.best_f = None
 
+        self.dim=len(self.phi_bounds.T)
         self.action_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(self.dim,), dtype=np.float32
         )
@@ -1059,8 +1063,8 @@ class RL_muons_env(gym.Env):
         if seed is not None:
             np.random.seed(seed)
         #TO_DO: Think about proper initialization
-        initial_point=[self.problem_fn.initial_phi.tolist()[param_index]+0.0001*np.random.normal(0, self.step_scale[param_index]) for param_index in range(len(self.phi_bounds.T))]
-        print(type(initial_point))
+        self.x=[self.problem_fn.initial_phi.tolist()[param_index]+0.0001*np.random.normal(0, self.step_scale[param_index]) for param_index in range(len(self.phi_bounds.T))]
+        print(type(self.x))
         print(hola)
 
         #self.x = np.random.uniform(
@@ -1109,7 +1113,56 @@ class RL_muons_env(gym.Env):
 
     def seed(self, seed=None):
         np.random.seed(seed)
-"""
+
+class RL():
+    def __init__(self,problem_fn,phi_bounds,max_steps,tolerance,device,devices,WandB):
+        self.problem_fn=problem_fn
+        self.phi_bounds=phi_bounds
+        self.max_steps=max_steps
+        self.tolerance=tolerance
+        self.device=device
+        self.devices=devices
+        self.WandB=WandB
+
+    def run_optimization(self):        
+        env = RL_muons_env(self.problem_fn, self.phi_bounds, self.max_steps, self.tolerance)
+        eval_env = RL_muons_env(self.problem_fn, self.phi_bounds, self.max_steps, self.tolerance)
+
+        # 2) Build IQN Q-function factory
+        iqn_q_function = IQNQFunctionFactory(
+            n_quantiles=32,         # number of quantile samples for learning
+            n_greedy_quantiles=32,  # quantiles used for greedy action evaluation
+            embed_size=64           # size of quantile embedding
+        )
+
+        # 3) Create SAC with IQN critic
+        sac = d3rlpy.algos.SACConfig(
+            q_func_factory=iqn_q_function,   # <-- plug IQN in here
+            batch_size=256,
+            n_critics=2,
+            gamma=0.99,
+            tau=5e-3,
+            #learning_rate=3e-4,
+            initial_temperature=0.1
+        ).create(device="cuda:0")            # or device="cpu"
+        sac.build_with_env(env)
+
+        # 4) Train online (interacts with env)
+        sac.fit_online(
+            env,
+            eval_env=eval_env,
+            n_steps=2000,#20000,          # your total interaction steps
+            #logdir="logs/iqn_sac",
+            #eval_interval=10_000      # evaluate every N steps
+        )
+
+        env_evaluator = EnvironmentEvaluator(eval_env)
+        rewards = env_evaluator(sac, dataset=None)  # runs a few episodes and returns average reward
+        print("Evaluation rewards:", rewards)
+
+        # 5) Save / load
+        sac.save_model(f"outputs/{self.WandB['name']}/iqn_sac_model.d3")
+#"""
 class BayesianOptimizer(OptimizerClass):
     
     def __init__(self,true_model,

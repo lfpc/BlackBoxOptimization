@@ -90,6 +90,11 @@ if args.optimization == 'GA':
     GA_dict["elite_size"]=3
     GA_dict["hall_of_fame_size"]=3
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **GA_dict}, 'name': args.name}
+elif args.optimization == 'RL':
+    RL_dict={}
+    RL_dict["max_steps"]=20#TO_DO: Identify a proper value
+    RL_dict["tolerance"]=2.0#TO_DO: Identify a proper value
+    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **RL_dict}, 'name': args.name}
 else:
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': {**vars(args), **CONFIG}, 'name': args.name}
 
@@ -200,6 +205,17 @@ if __name__ == "__main__":
             tournament_size=GA_dict["tournament_size"],
             elite_size=GA_dict["elite_size"],
             hall_of_fame_size=GA_dict["hall_of_fame_size"],
+            device=dev,
+            devices=devices,
+            WandB=WANDB).run_optimization()
+        sys.exit()
+    elif args.optimization == 'RL':#Reinforcement Learning
+        num_gpus = torch.cuda.device_count()
+        devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
+        RL(problem_fn=problem_fn,
+            phi_bounds=phi_bounds,
+            max_steps=RL_dict["max_steps"],
+            tolerance=RL_dict["tolerance"],
             device=dev,
             devices=devices,
             WandB=WANDB).run_optimization()
