@@ -1,8 +1,8 @@
 import torch
 from botorch import acquisition, settings
-from src.optimizer import BayesianOptimizer,LGSO,GA
+from src.optimizer import BayesianOptimizer,LGSO,TurboOptimizer,LCSO,GA,RL
 from src import problems
-from src.models import GP_RBF, GP_Cylindrical_Custom, SingleTaskIBNN
+from src.models import GP_RBF, GP_BOCK, GP_IBNN
 from utils.acquisition_functions import Custom_LogEI
 from matplotlib import pyplot as plt
 import argparse
@@ -31,7 +31,6 @@ parser.add_argument("--reduce_bounds", type=int, default=1000)
 parser.add_argument("--multi_fidelity", type=int, nargs='?', const=-1, default=None)
 parser.add_argument("--parallel", type=int, default = 1)
 parser.add_argument("--model_switch", type=int,default = -1)
-parser.add_argument('--n_samples', type=int, default=0)
 parser.add_argument("--n_initial", type=int, default=-1)
 parser.add_argument('--float64', action = 'store_true')
 parser.add_argument('--config_file', type=str, default='outputs/config.json')
@@ -98,8 +97,22 @@ elif args.optimization == 'RL':
 else:
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': {**vars(args), **CONFIG}, 'name': args.name}
 
-if args.cuda: assert torch.cuda.is_available()
-if torch.cuda.is_available() and args.cuda: dev = torch.device('cuda')
+
+def get_freest_gpu():
+    import subprocess
+    if not torch.cuda.is_available():
+        return torch.device('cpu')
+    result = subprocess.run(
+        ['nvidia-smi', '--query-gpu=memory.free', '--format=csv,nounits,noheader'],
+        stdout=subprocess.PIPE, encoding='utf-8'
+    )
+    # Parse free memory for each GPU
+    mem_free = [int(x) for x in result.stdout.strip().split('\n')]
+    max_idx = mem_free.index(max(mem_free))
+    return torch.device(f'cuda:{max_idx}')
+if torch.cuda.is_available() and args.cuda: 
+    dev = get_freest_gpu()
+    torch.cuda.set_device(dev)
 else: dev = torch.device('cpu')
 print('Device:', dev)
 torch.manual_seed(args.seed)
@@ -137,6 +150,18 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_bounds, m
                                       acquisition_params = {'q':q,'num_restarts': 30, 'raw_samples':5000},
                                       multi_fidelity= args.multi_fidelity,
                                       resume = args.resume)
+    elif args.optimization == 'turbo':
+        acquisition_fn = Custom_LogEI#acquisition.qLogExpectedImprovement if args.parallel>1 else acquisition.LogExpectedImprovement
+        q = min(args.parallel,problem_fn.cores)
+        optimizer = TurboOptimizer(problem_fn,model,
+                                      phi_bounds,
+                                      acquisition_fn=acquisition_fn,
+                                      initial_phi = initial_phi,
+                                      device = dev, 
+                                      outputs_dir=OUTPUTS_DIR,
+                                      WandB = WANDB,
+                                      acquisition_params = {'q':q,'num_restarts': 30, 'raw_samples':5000},
+                                      resume = args.resume)
 
     elif args.optimization == 'lgso':
         optimizer = LGSO(problem_fn,
@@ -166,9 +191,9 @@ if __name__ == "__main__":
     #if args.n_tasks is None: n_tasks = args.nodes*args.n_tasks_per_node
     #else: n_tasks = args.n_tasks
 
-    if args.problem == 'stochastic_rosenbrock': problem_fn = problems.stochastic_RosenbrockProblem(n_samples=args.n_samples,std = args.noise)
+    if args.problem == 'stochastic_rosenbrock': problem_fn = problems.stochastic_RosenbrockProblem(std = args.noise)
     elif args.problem == 'rosenbrock': problem_fn = problems.RosenbrockProblem(args.noise)
-    elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(n_samples=args.n_samples,std = args.noise)
+    elif args.problem == 'stochastic_threehump': problem_fn = problems.stochastic_ThreeHump(std = args.noise)
     elif args.problem == 'ship': 
         problem_fn = problems.ShipMuonShieldCluster(parallel=args.parallel,**CONFIG)
     elif args.problem == 'ship_cuda':
@@ -182,9 +207,9 @@ if __name__ == "__main__":
         if phi_bounds.size(1) != dimensions: phi_bounds = phi_bounds.repeat(1,dimensions)
 
     if args.model == 'gp_rbf': model = GP_RBF(phi_bounds,device = dev)
-    elif args.model == 'gp_bock': model = GP_Cylindrical_Custom(phi_bounds,device = dev)
-    elif args.model == 'ibnn': model = SingleTaskIBNN(phi_bounds,device = dev)
-    model_scheduler = {args.model_switch:SingleTaskIBNN
+    elif args.model == 'bock': model = GP_BOCK(phi_bounds,device = dev)
+    elif args.model == 'ibnn': model = GP_IBNN(phi_bounds,device = dev)
+    model_scheduler = {args.model_switch:GP_IBNN
                        }
 
     if args.optimization == 'GA':#Genetic Algorithms

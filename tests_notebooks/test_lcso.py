@@ -1,18 +1,22 @@
+import json
 import torch
 import matplotlib.pyplot as plt
 import sys
 import os
 import pickle
 sys.path.append(os.path.abspath(os.path.join('..', 'src')))
-from optimizer import LGSO, LCSO
-from problems import ShipMuonShield
-from models import VAEModel, NormalizingFlowModel, BinaryClassifierModel
+from optimizer import LCSO
+from problems import ThreeHump_stochastic_hits, Rosenbrock_stochastic_hits, HelicalValley_stochastic_hits, ShipMuonShieldCuda
+from models import BinaryClassifierModel
 import torch
 import subprocess
 import wandb
 import argparse
+import numpy as np
 
 torch.autograd.set_detect_anomaly(True)
+torch.manual_seed(42)
+np.random.seed(42)
 
 def get_freest_gpu():
     if not torch.cuda.is_available():
@@ -21,118 +25,181 @@ def get_freest_gpu():
         ['nvidia-smi', '--query-gpu=memory.free', '--format=csv,nounits,noheader'],
         stdout=subprocess.PIPE, encoding='utf-8'
     )
-    # Parse free memory for each GPU
     mem_free = [int(x) for x in result.stdout.strip().split('\n')]
     max_idx = mem_free.index(max(mem_free))
     return torch.device(f'cuda:{max_idx}')
 
-dev = get_freest_gpu()
-dim = 63
-epsilon = 0.1  # Local search radius
-samples_phi = 50  # Number of samples for phi
-n_muons = 100_000
-initial_lambda_constraints = 1e-1 #1e-3
-initial_lr = 0.1
+
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--name', type=str, default='TestSecondOrder', help='WandB run name')
+parser.add_argument('--name', type=str, default=None, help='WandB run name')
+parser.add_argument('--second_order', action='store_true', help='Use second order optimization')
+parser.add_argument('--analytical', action='store_true', help='Use analytical gradients')
+parser.add_argument('--n_iters', type=int, default=30, help='Number of optimization iterations')
+parser.add_argument('--n_samples', type=int, default=100_000, help='Number of samples per phi')
+parser.add_argument('--lr', type=float, default=1.0, help='Initial learning rate for phi optimization')
+parser.add_argument('--problem', type=str, choices=['ThreeHump', 'Rosenbrock', 'HelicalValley', 'MuonShield'], default='ThreeHump', help='Optimization problem to use')
+parser.add_argument('--samples_phi', type=int, default=5, help='Number of samples for phi in each iteration')
 args = parser.parse_args()
 
-WANDB = {'project': 'LCSOTests_warm_baseline_normalized', 'name': args.name, 'config': {
+dev = get_freest_gpu()
+outputs_dir = '/home/hep/lprate/projects/BlackBoxOptimization/outputs/test_lcso'
+os.makedirs(outputs_dir, exist_ok=True)
+epsilon = 0.1  # Local search radius
+n_samples = args.n_samples
+initial_lambda_constraints = 1e-3
+initial_lr = args.lr
+weight_hits = False
+
+if args.name is None:
+    name = 'SecondOrder_' if args.second_order else 'FirstOrder_'
+    name += f'lr{str(initial_lr).replace(".", "_")}'
+else:
+    name = args.name
+
+if args.problem == 'ThreeHump':
+    dim = 2
+    samples_phi = args.samples_phi  
+    x_dim = 2
+    problem = ThreeHump_stochastic_hits(n_samples = n_samples, 
+                                    phi_bounds = ((-2.3,-2),(2.3,2)), 
+                                    x_bounds = (-3,3),
+                                    reduction = 'none')
+    initial_phi = torch.tensor([-2.1,2.0])#torch.tensor([-1.2, 1.0])
+elif args.problem == 'Rosenbrock':
+    dim = 20
+    samples_phi = args.samples_phi
+    x_dim = 2
+    problem = Rosenbrock_stochastic_hits(dim = dim, n_samples = n_samples, 
+                                    phi_bounds = ((-2.0, 2.0)), 
+                                    x_bounds = (-3,3),
+                                    reduction = 'none')
+    initial_phi = torch.tensor([[-1.2, 1.8]*(dim//2)]).flatten()
+elif args.problem == 'HelicalValley':
+    dim = 3
+    samples_phi = args.samples_phi
+    x_dim = 2
+    problem = HelicalValley_stochastic_hits(n_samples = n_samples, 
+                                    phi_bounds = ((-10.0, 10.0)), 
+                                    x_bounds = (-5,5),
+                                    reduction = 'none')
+    initial_phi = torch.tensor([-9, -1.0, -9.0])
+
+elif args.problem == 'MuonShield':
+    dim = 63
+    samples_phi = args.samples_phi 
+    x_dim = 8
+    config_file = "/home/hep/lprate/projects/BlackBoxOptimization/outputs/config.json"
+    with open(config_file, 'r') as f:
+        CONFIG = json.load(f)
+    CONFIG.pop("data_treatment", None)
+    CONFIG.pop('results_dir', None)
+    CONFIG['dimensions_phi'] = 63
+    CONFIG['initial_phi'] = ShipMuonShieldCuda.params['warm_baseline']
+    CONFIG['n_samples'] = n_samples
+    CONFIG['reduction'] = 'none'
+    CONFIG['cost_as_constraint'] = False
+    problem = ShipMuonShieldCuda(**CONFIG)
+    initial_phi = problem.initial_phi
+
+
+
+WANDB = {'project': 'LCSOTests_' + args.problem, 'name': name, 'config': {
     'dim': dim,
     'epsilon': epsilon,
-    'samples_phi': samples_phi}}
+    'samples_phi': samples_phi,
+    'n_samples': n_samples,
+    'initial_lambda_constraints': initial_lambda_constraints,
+    'initial_lr': initial_lr,
+    'weight_hits': weight_hits}}
 
-
-# Minimal ShipMuonShield setup for fast LGSO test
-problem = ShipMuonShield(
-    simulate_fields=False,  # No real field simulation
-    n_samples=n_muons,           # Very low number of samples for speed
-    apply_det_loss=False,  # Skip detector loss for speed
-    cost_loss_fn=None,     # No cost penalty
-    dimensions_phi=dim,
-    default_phi=torch.tensor(ShipMuonShield.warm_baseline), 
-    cores = 80,
-    SND = False,
-    parallel = False,
-    fSC_mag = False,
-    cavern = True,
-    sensitive_plane = [{'dz': 0.01, 'dx': 4, 'dy': 6,'position': 82}]
-)
-
-# Get bounds for the reduced problem
 bounds = problem.GetBounds(device=torch.device('cpu'))
 
-# Initial phi
-initial_phi = problem.initial_phi
-
 # Set up a simple generative model (GANModel)
-generative_model = BinaryClassifierModel(phi_dim=dim,
-                            x_dim = 7,
+classifier = BinaryClassifierModel(phi_dim=dim,
+                            x_dim = x_dim,
                             n_epochs = 15,
                             batch_size = 2048,
                             lr = 1e-3,
-                            device = dev)
+                            device = dev,
+                            activation = 'silu' if args.second_order else 'relu'
+                            )
 
 # Set up LGSO optimizer
 optimizer = LCSO(
     true_model=problem,
-    surrogate_model=generative_model,
+    surrogate_model=classifier,
     bounds=bounds,
     samples_phi=samples_phi,
     epsilon=epsilon,
     initial_phi=initial_phi,
     initial_lambda_constraints=initial_lambda_constraints,  # Initial lambda for constraints
     initial_lr=initial_lr,  # Initial learning rate or trust_radius for phi optimization
+    weight_hits=weight_hits,
     device='cpu',
-    outputs_dir='/home/hep/lprate/projects/BlackBoxOptimization/outputs/test_robustness',
+    outputs_dir=outputs_dir,
     resume=False)
 
 # Run a short LGSO optimization and record losses
-n_iters = 10
+n_iters = args.n_iters
 train_losses = []
 
-objective_losses = [optimizer.loss(*optimizer.history).item()*n_muons]
+objective_losses = [optimizer.loss(*optimizer.history).item()*n_samples]
 print(f"Initial Objective loss = {objective_losses[0]}")
 
 wandb.login()
 with wandb.init(reinit = True,**WANDB) as wb:
-    wb.log({'objective_loss': objective_losses[0], 
+    log = {'objective_loss': objective_losses[0], 
             'constraints': problem.get_constraints(initial_phi).item(), 
             'violated_bounds': initial_phi.lt(bounds[0]).logical_or(initial_phi.gt(bounds[1])).sum().float().item(),
             'distance_from_origin': 0.0,
-            'trust_radius': optimizer.trust_radius})
+            'trust_radius': optimizer.trust_radius,
+            'phi_1': initial_phi[0].item(),
+            'phi_2': initial_phi[1].item()}
+    if args.problem != 'MuonShield':
+        log['real_loss'] = super(type(problem), problem).loss(initial_phi).item()
+    wb.log(log)
     old_phi = initial_phi.clone().detach()
     for i in range(n_iters):
-        if i > 0: generative_model.n_epochs = 6
+        if i > 0: classifier.n_epochs = 6
         #if i in [15, 20, 25]:  # Reduce learning rate at specific iterations
         #    optimizer.phi_optimizer.param_groups[0]['lr'] *= 0.2
         if i in [3,6, 9]:
             optimizer.lambda_constraints *= 0.1
-        phi, obj_loss = optimizer.optimization_iteration_second_order()
-        obj_loss *= n_muons
+        if args.second_order:
+            phi, obj_loss, cos_step = optimizer.optimization_iteration_second_order(True)
+        else:
+            phi, obj_loss = optimizer.optimization_iteration()
+            cos_step = -1.0
+        obj_loss *= n_samples
         print("Optimized phi:", phi)
-        predicted_loss = optimizer.get_model_pred(phi).item()*n_muons
+        predicted_loss = optimizer.get_model_pred(phi).item()*n_samples
 
         with torch.no_grad(): contraints = problem.get_constraints(phi)
-        assert torch.all(phi >= bounds[0].to(phi.device)) and torch.all(phi <= bounds[1].to(phi.device)), "current_phi is out of bounds after optimization step"
+        assert torch.all(phi >= bounds[0].to(phi.device)) and torch.all(phi <= bounds[1].to(phi.device)), f"current_phi is out of bounds after optimization step, {phi} not in {bounds}"
         #assert contraints.gt(0).all(), "Constraints must be positive after optimization step"
         violated_bounds = phi.lt(bounds[0]).logical_or(phi.gt(bounds[1])).sum().float().item()
         step_norm = torch.norm(phi - old_phi, p=2)
         distance_from_origin = torch.norm(phi - initial_phi, p=2)
 
         lr = optimizer.trust_radius
-        wb.log({'objective_loss': obj_loss.item(), 
-                'constraints': contraints, 
-                'violated_bounds': violated_bounds, 
-                'step_norm' : step_norm.item(), 
-                'distance_from_origin' : distance_from_origin.item(), 
-                'rho': optimizer.rhos[-1], 'trust_radius': lr,
-                'predicted_loss': predicted_loss,})
+        log = {'objective_loss': obj_loss.item(), 
+            'constraints': contraints, 
+            'violated_bounds': violated_bounds, 
+            'step_norm' : step_norm.item(), 
+            'distance_from_origin' : distance_from_origin.item(), 
+            'trust_radius': lr,
+            'phi_1': phi[0].item(),
+            'phi_2': phi[1].item(),
+            'cosine_step': cos_step,
+            'predicted_loss': predicted_loss,}
+        if args.problem != 'MuonShield':
+            log['real_loss'] = super(type(problem), problem).loss(phi).item()
+
+        wb.log(log)
 
         optimizer._i += 1
-        print("Difference between current_phi and initial_phi:", (optimizer.current_phi - initial_phi).detach().cpu().numpy())
         # For generative model training loss, use the surrogate's fit loss if available, else dummy
         train_losses.extend(optimizer.model.last_train_loss)
 
@@ -166,9 +233,9 @@ plt.ylabel('Objective Loss')
 plt.grid(True)
 
 plt.tight_layout()
-plt.savefig('robustness_test_losses.png')
+plt.savefig('figs/test_lcso.png')
 
-print('Figure saved as robustness_test_losses.png')
+print('Figure saved as figs/test_lcso.png')
 
 print(f"Final Objective loss = {objective_losses[-1]}") 
 
