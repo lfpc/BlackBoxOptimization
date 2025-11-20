@@ -1199,6 +1199,10 @@ class GA():
         with open(f"outputs/{self.WandB['name']}/phi_optm_GA.txt", "w") as f:
             for gene in self.the_population.hall_of_fame[0].genes:
                 f.write(f"{gene}\n")
+        #Save genes of best individual of hall of fame with fixed parameters
+        with open(f"outputs/{self.WandB['name']}/phi_optm_GA_with_fixed_params.txt", "w") as f:
+            for gene in self.problem_fn.add_fixed_params(torch.tensor(self.the_population.hall_of_fame[0].genes, dtype=torch.float32, device=self.device)):
+                f.write(f"{gene}\n")
         #Save computed_fitness_values dictionary:
         with open(f"outputs/{self.WandB['name']}/computed_fitness_values.pkl", "wb") as f:
             dump(self.the_population.population[0].computed_fitness_values, f)
