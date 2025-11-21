@@ -37,10 +37,11 @@ if torch.cuda.is_available():
     torch.cuda.set_device(dev)
 
 class RL_muons_env(gym.Env):
-    def __init__(self, problem_fn, phi_bounds, max_steps, tolerance, step_scale):
+    def __init__(self, problem_fn, phi_bounds, initial_phi, max_steps, tolerance, step_scale):
         super().__init__()
         self.problem_fn=problem_fn
         self.phi_bounds=phi_bounds
+        self.initial_phi=initial_phi
         self.max_steps = max_steps
         self.tolerance = tolerance
         self.step_scale=step_scale#0.05 would be a suitable value
@@ -74,9 +75,10 @@ class RL_muons_env(gym.Env):
         if seed is not None:
             np.random.seed(seed)
         #TO_DO: Think about proper initialization
-        self.x=np.random.uniform(
-            self.low_bounds, self.high_bounds#, size=(self.dim,)
-        ).astype(np.float32)
+        #self.x=np.random.uniform(
+        #    self.low_bounds, self.high_bounds#, size=(self.dim,)
+        #).astype(np.float32)
+        self.x=self.initial_phi.copy()
         #self.x=[self.problem_fn.initial_phi.tolist()[param_index]+0.0001*np.random.normal(0, self.step_scale[param_index]) for param_index in range(len(self.phi_bounds.T))]
 
         #self.x = np.random.uniform(
@@ -134,9 +136,10 @@ class RL_muons_env(gym.Env):
         np.random.seed(seed)
 
 class RL():
-    def __init__(self,problem_fn,phi_bounds,max_steps,tolerance,step_scale,device,devices):
+    def __init__(self,problem_fn,phi_bounds,initial_phi,max_steps,tolerance,step_scale,device,devices):
         self.problem_fn=problem_fn
         self.phi_bounds=phi_bounds
+        self.initial_phi=initial_phi
         self.max_steps=max_steps
         self.tolerance=tolerance
         self.step_scale=step_scale
@@ -144,8 +147,8 @@ class RL():
         self.devices=devices
 
     def run_optimization(self):        
-        env = RL_muons_env(self.problem_fn, self.phi_bounds, self.max_steps, self.tolerance, self.step_scale)
-        eval_env = RL_muons_env(self.problem_fn, self.phi_bounds, self.max_steps, self.tolerance, self.step_scale)
+        env = RL_muons_env(self.problem_fn, self.phi_bounds, self.initial_phi, self.max_steps, self.tolerance, self.step_scale)
+        eval_env = RL_muons_env(self.problem_fn, self.phi_bounds, self.initial_phi, self.max_steps, self.tolerance, self.step_scale)
 
         # 2) Build IQN Q-function factory
         iqn_q_function = IQNQFunctionFactory(
@@ -170,7 +173,7 @@ class RL():
         sac.fit_online(
             env,
             eval_env=eval_env,
-            n_steps=20000,#20000,          # your total interaction steps
+            n_steps=200000,#20000,          # your total interaction steps
             #logdir="logs/iqn_sac",
             #eval_interval=10_000      # evaluate every N steps
         )
@@ -224,12 +227,14 @@ if __name__ == "__main__":
     num_gpus = torch.cuda.device_count()
     devices = [torch.device(f'cuda:0')]
     phi_bounds=torch.tensor(((-2,-2),(2,2)))
+    initial_phi=np.array([0,0], dtype=np.float32)
     RL_dict={}
-    RL_dict["max_steps"]=20#TO_DO: Identify a proper value
+    RL_dict["max_steps"]=50#TO_DO: Identify a proper value
     RL_dict["tolerance"]=-210/200#TO_DO: Identify a proper value
     RL_dict["step_scale"]=0.05
     historic_best_x,historic_best_f=RL(problem_fn=f,
         phi_bounds=phi_bounds,
+        initial_phi=initial_phi,
         max_steps=RL_dict["max_steps"],
         tolerance=RL_dict["tolerance"],
         step_scale=RL_dict["step_scale"],
@@ -240,7 +245,7 @@ if __name__ == "__main__":
     os.makedirs(frames_dir, exist_ok=True)
     frame_files = []
     sac=d3rlpy.load_learnable("outputs/RL_tests/iqn_sac_model.d3")
-    play_env = RL_muons_env(f,phi_bounds,RL_dict["max_steps"],RL_dict["tolerance"],RL_dict["step_scale"])
+    play_env = RL_muons_env(f,phi_bounds,initial_phi,RL_dict["max_steps"],RL_dict["tolerance"],RL_dict["step_scale"])
     obs, _ = play_env.reset()
     done = False
     truncated = False
