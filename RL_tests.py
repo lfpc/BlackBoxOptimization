@@ -1,5 +1,9 @@
 import math
 import torch
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+import imageio
+import os
 import numpy as np
 import gymnasium as gym
 import d3rlpy
@@ -29,7 +33,7 @@ def get_freest_gpu():
     max_idx = mem_free.index(max(mem_free))
     return torch.device(f'cuda:{max_idx}')
 if torch.cuda.is_available(): 
-    dev = get_freest_gpu()
+    dev=torch.device(f'cuda:0')
     torch.cuda.set_device(dev)
 
 class RL_muons_env(gym.Env):
@@ -180,6 +184,40 @@ class RL():
         sac.save(f"outputs/RL_tests/iqn_sac_model.d3")
 
         print(f"Best evaluation achieved during training: x={env.historic_best_x}, f(x)={env.historic_best_f:.4f}")
+        return env.historic_best_x,env.historic_best_f
+
+def plot_frame(f, x_range, y_range, obs, historic_best_obs, filename, step):
+    fig = plt.figure(figsize=(6,5))
+    ax = fig.add_subplot(111, projection='3d')
+    # mesh grid
+    X = np.linspace(x_range[0], x_range[1], 100)
+    Y = np.linspace(y_range[0], y_range[1], 100)
+    X, Y = np.meshgrid(X, Y)
+    Z = np.zeros_like(X)
+    # compute f for the grid
+    for i in range(X.shape[0]):
+        for j in range(X.shape[1]):
+            phi = torch.tensor([[X[i,j], Y[i,j]]], dtype=torch.float32)
+            Z[i,j] = f(phi)
+    # surface
+    ax.plot_surface(X, Y, Z, cmap='viridis', alpha=0.7)
+    # blue dot for best historic observation during training
+    x_obs, y_obs = historic_best_obs[:-1]
+    z_obs = historic_best_obs[-1]
+    ax.scatter(x_obs, y_obs, z_obs, color='blue', s=50, label='Best evaluation during training')
+    # red dot for current observation
+    x_obs, y_obs = obs[:-1]
+    z_obs = obs[-1]
+    ax.scatter(x_obs, y_obs, z_obs, color='red', s=50, label='Current observation')
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_zlabel("f(x,y)") 
+    ax.set_title(f"Step: {step}", fontsize=14)
+    ax.legend()   
+    plt.tight_layout()
+    plt.savefig(filename)
+    plt.close(fig)
+
 
 if __name__ == "__main__":
     num_gpus = torch.cuda.device_count()
@@ -187,9 +225,9 @@ if __name__ == "__main__":
     phi_bounds=torch.tensor(((-2,-2),(2,2)))
     RL_dict={}
     RL_dict["max_steps"]=50#TO_DO: Identify a proper value
-    RL_dict["tolerance"]=-200#TO_DO: Identify a proper value
+    RL_dict["tolerance"]=-210#TO_DO: Identify a proper value
     RL_dict["step_scale"]=0.05
-    RL(problem_fn=f,
+    historic_best_x,historic_best_f=RL(problem_fn=f,
         phi_bounds=phi_bounds,
         max_steps=RL_dict["max_steps"],
         tolerance=RL_dict["tolerance"],
@@ -197,14 +235,35 @@ if __name__ == "__main__":
         device=dev,
         devices=devices).run_optimization()
     #Play an episode with trained agent:
+    frames_dir = "outputs/RL_tests/frames"
+    os.makedirs(frames_dir, exist_ok=True)
+    frame_files = []
     sac=d3rlpy.load_learnable("outputs/RL_tests/iqn_sac_model.d3")
     play_env = RL_muons_env(f,phi_bounds,RL_dict["max_steps"],RL_dict["tolerance"],RL_dict["step_scale"])
     obs, _ = play_env.reset()
     done = False
     truncated = False
+    frame_idx = 0
+    low_bounds, high_bounds = phi_bounds.numpy()
+    x_bounds=(low_bounds[0],high_bounds[0])
+    y_bounds=(low_bounds[1],high_bounds[1])
+    historic_best_obs_frame=np.concatenate([historic_best_x,np.array([historic_best_f], dtype=np.float32)])
     while not (done or truncated):
         action = sac.predict(np.array(obs, dtype=np.float32).reshape(1, -1))[0]
         obs, reward, done, truncated, info = play_env.step(action)
+        # Create a frame
+        obs_frame = np.concatenate([obs[:-1], [obs[-1]]])
+        filename = os.path.join(frames_dir, f"frame_{frame_idx:03d}.png")
+        plot_frame(f, x_bounds, y_bounds, obs_frame, historic_best_obs_frame, filename, frame_idx)
+        frame_files.append(filename)
+        frame_idx += 1
     # Show final results
     print("Episode played with trained agent: ")
-    play_env.render()
+    play_env.render() 
+    # Build GIF
+    gif_path = f"outputs/RL_tests/episode.gif"
+    with imageio.get_writer(gif_path, mode='I', duration=0.3) as writer:
+        for filename in frame_files:
+            image = imageio.imread(filename)
+            writer.append_data(image)
+
