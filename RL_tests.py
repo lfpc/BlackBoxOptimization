@@ -10,7 +10,7 @@ import d3rlpy
 from d3rlpy.models import IQNQFunctionFactory
 from d3rlpy.metrics import EnvironmentEvaluator
 
-def f(phi):#Minimum is for x=y=5.4829 and f=-210.4823
+def f(phi):#Minimum is for x=y=5.4829 and f=-210.4823/200
     x,y=phi.squeeze().unbind()
     sum_x=0
     for n in range(1,6):
@@ -18,7 +18,7 @@ def f(phi):#Minimum is for x=y=5.4829 and f=-210.4823
     sum_y=0
     for n in range(1,6):
         sum_y+=n*math.cos(n+y*(n+1))
-    return -sum_x*sum_y
+    return -sum_x*sum_y/200
     
 def get_freest_gpu():
     import subprocess
@@ -212,7 +212,8 @@ def plot_frame(f, x_range, y_range, obs, historic_best_obs, filename, step):
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_zlabel("f(x,y)") 
-    ax.set_title(f"Step: {step}", fontsize=14)
+    ax.set_title(f"Step {step}: f(x,y)={z_obs:.3f}", fontsize=14)
+    plt.suptitle(f"Best training score: f={historic_best_obs[-1]:.3f}. True minimum: f={-210.482/200:.3f}", y=0.95, fontsize=14)
     ax.legend()   
     plt.tight_layout()
     plt.savefig(filename)
@@ -224,8 +225,8 @@ if __name__ == "__main__":
     devices = [torch.device(f'cuda:0')]
     phi_bounds=torch.tensor(((-2,-2),(2,2)))
     RL_dict={}
-    RL_dict["max_steps"]=50#TO_DO: Identify a proper value
-    RL_dict["tolerance"]=-210#TO_DO: Identify a proper value
+    RL_dict["max_steps"]=20#TO_DO: Identify a proper value
+    RL_dict["tolerance"]=-210/200#TO_DO: Identify a proper value
     RL_dict["step_scale"]=0.05
     historic_best_x,historic_best_f=RL(problem_fn=f,
         phi_bounds=phi_bounds,
