@@ -56,6 +56,9 @@ class RL_muons_env(gym.Env):
         self.historic_best_x=None
         self.historic_best_f=1e16#Huge number
         self.training_last_f=[]
+        self.historic_best_f_history=[]
+        self.total_steps=0
+        self.total_steps_history=[]
 
         self.dim=len(self.phi_bounds.T)
         self.action_space = gym.spaces.Box(
@@ -99,6 +102,7 @@ class RL_muons_env(gym.Env):
         return obs, {}
 
     def step(self, action):
+        self.total_steps+=1
         action = np.asarray(action, dtype=np.float32)
         action = np.clip(action, -1.0, 1.0)
         delta = action * self.step_scale
@@ -128,6 +132,8 @@ class RL_muons_env(gym.Env):
             if self.best_f<self.historic_best_f:#TO_DO: At some point I might parallelize the playing of training episodes, for which this check should be done carefully to avoid race conditions
                 self.historic_best_f=self.best_f
                 self.historic_best_x=self.best_x.copy()
+                self.historic_best_f_history.append(self.historic_best_f)
+                self.total_steps_history.append(self.total_steps)
             self.training_last_f.append(f_val)
 
         return obs, float(reward), done, truncated, info
@@ -227,6 +233,15 @@ class RL():
         plt.title("Periodic deterministic evaluations")
         plt.grid(True)
         plt.savefig(f"outputs/RL_tests/deterministic_final_f.png")
+        plt.close(fig)
+
+        fig=plt.figure()
+        plt.plot(env.total_steps_history,env.historic_best_f_history,marker='o')
+        plt.xlabel("Training steps")
+        plt.ylabel("Best training f")
+        plt.title("Best training evaluation")
+        plt.grid(True)
+        plt.savefig(f"outputs/RL_tests/best_training_f.png")
         plt.close(fig)
 
         return env.historic_best_x,env.historic_best_f
