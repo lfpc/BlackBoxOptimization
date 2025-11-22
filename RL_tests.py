@@ -9,6 +9,7 @@ import gymnasium as gym
 import d3rlpy
 from d3rlpy.models import IQNQFunctionFactory
 from d3rlpy.metrics import EnvironmentEvaluator
+import shutil
 
 def f(phi):#Minimum is for x=y=5.4829 and f=-210.4823/200
     x,y=phi.squeeze().unbind()
@@ -18,7 +19,7 @@ def f(phi):#Minimum is for x=y=5.4829 and f=-210.4823/200
     sum_y=0
     for n in range(1,6):
         sum_y+=n*math.cos(n+y*(n+1))
-    return -sum_x*sum_y/200
+    return -sum_x*sum_y/200#TO_DO: Add a noise gaussian with amplitude 0.05
     
 def get_freest_gpu():
     import subprocess
@@ -54,6 +55,7 @@ class RL_muons_env(gym.Env):
 
         self.historic_best_x=None
         self.historic_best_f=1e16#Huge number
+        self.training_last_f=[]
 
         self.dim=len(self.phi_bounds.T)
         self.action_space = gym.spaces.Box(
@@ -126,6 +128,7 @@ class RL_muons_env(gym.Env):
             if self.best_f<self.historic_best_f:#TO_DO: At some point I might parallelize the playing of training episodes, for which this check should be done carefully to avoid race conditions
                 self.historic_best_f=self.best_f
                 self.historic_best_x=self.best_x.copy()
+            self.training_last_f.append(f_val)
 
         return obs, float(reward), done, truncated, info
 
@@ -135,20 +138,41 @@ class RL_muons_env(gym.Env):
     def seed(self, seed=None):
         np.random.seed(seed)
 
+class DeterministicEvaluator():
+    def __init__(self, eval_env, step_interval):
+        self.eval_env = eval_env
+        self.step_interval = step_interval
+        self.last_eval_step = 0
+        self.scores = []
+
+    def __call__(self, algo, epoch, total_step):
+        if total_step - self.last_eval_step >= self.step_interval:
+            obs, _ = self.eval_env.reset()
+            done, truncated = False, False
+            while not (done or truncated):
+                action = algo.predict(obs.reshape(1, -1))[0]
+                obs, reward, done, truncated, info = self.eval_env.step(action)
+            final_f = obs[-1]
+            self.scores.append(final_f)
+            self.last_eval_step = total_step
+
 class RL():
-    def __init__(self,problem_fn,phi_bounds,initial_phi,max_steps,tolerance,step_scale,device,devices):
+    def __init__(self,problem_fn,phi_bounds,initial_phi,max_steps,tolerance,step_scale,training_steps,device,devices):
         self.problem_fn=problem_fn
         self.phi_bounds=phi_bounds
         self.initial_phi=initial_phi
         self.max_steps=max_steps
         self.tolerance=tolerance
         self.step_scale=step_scale
+        self.training_steps=training_steps
         self.device=device
         self.devices=devices
 
     def run_optimization(self):        
         env = RL_muons_env(self.problem_fn, self.phi_bounds, self.initial_phi, self.max_steps, self.tolerance, self.step_scale)
         eval_env = RL_muons_env(self.problem_fn, self.phi_bounds, self.initial_phi, self.max_steps, self.tolerance, self.step_scale)
+
+        det_eval = DeterministicEvaluator(eval_env, step_interval=int(0.05 * self.training_steps))
 
         # 2) Build IQN Q-function factory
         iqn_q_function = IQNQFunctionFactory(
@@ -173,20 +197,38 @@ class RL():
         sac.fit_online(
             env,
             eval_env=eval_env,
-            n_steps=200000,#20000,          # your total interaction steps
+            n_steps=self.training_steps,#20000,          # your total interaction steps
             #logdir="logs/iqn_sac",
             #eval_interval=10_000      # evaluate every N steps
+            callback=det_eval
         )
 
-        env_evaluator = EnvironmentEvaluator(eval_env)
-        rewards = env_evaluator(sac, dataset=None)  # runs a few episodes and returns average reward
-        print("Evaluation rewards:", rewards)
 
         # 5) Save / load
         #sac.save_model(f"outputs/RL_tests/iqn_sac_model.d3")
         sac.save(f"outputs/RL_tests/iqn_sac_model.d3")
 
         print(f"Best evaluation achieved during training: x={env.historic_best_x}, f(x)={env.historic_best_f:.4f}")
+
+        #Plots:
+        fig=plt.figure()
+        plt.plot(env.training_last_f,marker='o')
+        plt.xlabel("Episode")
+        plt.ylabel("Final f")
+        plt.title("Final f per training episode")
+        plt.grid(True)
+        plt.savefig(f"outputs/RL_tests/training_final_f.png")
+        plt.close(fig)
+
+        fig=plt.figure()
+        plt.plot(100*np.linspace(0, 1, len(det_eval.scores)),det_eval.scores,marker='o')
+        plt.xlabel("Training %")
+        plt.ylabel("Deterministic evaluation final f")
+        plt.title("Periodic deterministic evaluations")
+        plt.grid(True)
+        plt.savefig(f"outputs/RL_tests/deterministic_final_f.png")
+        plt.close(fig)
+
         return env.historic_best_x,env.historic_best_f
 
 def plot_frame(f, x_range, y_range, obs, historic_best_obs, filename, step):
@@ -227,21 +269,25 @@ if __name__ == "__main__":
     num_gpus = torch.cuda.device_count()
     devices = [torch.device(f'cuda:0')]
     phi_bounds=torch.tensor(((-2,-2),(2,2)))
-    initial_phi=np.array([0,0], dtype=np.float32)
+    initial_phi=np.array([0.5,0.5], dtype=np.float32)
     RL_dict={}
     RL_dict["max_steps"]=50#TO_DO: Identify a proper value
     RL_dict["tolerance"]=-210/200#TO_DO: Identify a proper value
     RL_dict["step_scale"]=0.05
+    RL_dict["training_steps"]=200000
     historic_best_x,historic_best_f=RL(problem_fn=f,
         phi_bounds=phi_bounds,
         initial_phi=initial_phi,
         max_steps=RL_dict["max_steps"],
         tolerance=RL_dict["tolerance"],
         step_scale=RL_dict["step_scale"],
+        training_steps=RL_dict["training_steps"],
         device=dev,
         devices=devices).run_optimization()
     #Play an episode with trained agent:
     frames_dir = "outputs/RL_tests/frames"
+    if os.path.exists(frames_dir):
+        shutil.rmtree(frames_dir)#Delete old frames
     os.makedirs(frames_dir, exist_ok=True)
     frame_files = []
     sac=d3rlpy.load_learnable("outputs/RL_tests/iqn_sac_model.d3")
@@ -255,7 +301,7 @@ if __name__ == "__main__":
     y_bounds=(low_bounds[1],high_bounds[1])
     historic_best_obs_frame=np.concatenate([historic_best_x,np.array([historic_best_f], dtype=np.float32)])
     while not (done or truncated):
-        action = sac.predict(np.array(obs, dtype=np.float32).reshape(1, -1))[0]
+        action = sac.predict(np.array(obs, dtype=np.float32).reshape(1, -1))[0]#This computes the action deterministically
         obs, reward, done, truncated, info = play_env.step(action)
         # Create a frame
         obs_frame = np.concatenate([obs[:-1], [obs[-1]]])
@@ -268,7 +314,7 @@ if __name__ == "__main__":
     play_env.render() 
     # Build GIF
     gif_path = f"outputs/RL_tests/episode.gif"
-    with imageio.get_writer(gif_path, mode='I', duration=0.3) as writer:
+    with imageio.get_writer(gif_path, mode='I', duration=1.0) as writer:
         for filename in frame_files:
             image = imageio.imread(filename)
             writer.append_data(image)
