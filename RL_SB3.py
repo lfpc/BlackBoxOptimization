@@ -15,24 +15,22 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import SubprocVecEnv
 
 if torch.cuda.is_available(): 
     dev=torch.device(f'cuda:0')
     torch.cuda.set_device(dev)
 
-def f(phi,noise=True):#Minimum is for x=y=5.4829 and f=-210.4823/200
-    x,y=phi.squeeze().unbind()
-    sum_x=0
-    for n in range(1,6):
-        sum_x+=n*math.cos(n+x*(n+1))
-    sum_y=0
-    for n in range(1,6):
-        sum_y+=n*math.cos(n+y*(n+1))
+def f(phi,noise=True):#Minimum is for x=y=5.4829 and f=-210.4823/2
+    n = torch.arange(1,6, dtype=phi.dtype, device=phi.device)
+    x, y = phi[...,0], phi[...,1]
+    sum_x = (n * torch.cos(n + x.unsqueeze(-1)*(n+1))).sum(dim=-1)
+    sum_y = (n * torch.cos(n + y.unsqueeze(-1)*(n+1))).sum(dim=-1)
+    val = -0.5 * sum_x * sum_y
     if noise:
-        return 100*(-sum_x*sum_y/200)#+np.random.normal(0, 0.03))#TO_DO: Add a noise gaussian with amplitude 0.05
-    else:
-        return 100*(-sum_x*sum_y/200)
-    
+        val += 0.03*torch.randn_like(val)
+    return val
+
 class RL_muons_env(gym.Env):
     def __init__(self, problem_fn, phi_bounds, initial_phi, max_steps, tolerance, step_scale):
         super().__init__()
@@ -102,14 +100,15 @@ class RL_muons_env(gym.Env):
         obs = np.concatenate([self.x, np.array([f_val], dtype=np.float32)])
         info = {"best_f": self.best_f, "best_x": self.best_x.copy()}
         if done or truncated:
-            print(f"Done: {done}, truncated: {truncated}")
+            #print(f"Done: {done}, truncated: {truncated}")
             self.render()
             self.last_x_before_reset = self.x.copy()
             self.last_f_before_reset = f_val
         return obs, float(reward), done, truncated, info
 
     def render(self, mode="human"):
-        print(f"step={self.steps}, x={self.x}, f(x)={self.prev_f:.4f}, best_x={self.best_x}, best_f={self.best_f:.4f}")
+        pass
+        #print(f"step={self.steps}, x={self.x}, f(x)={self.prev_f:.4f}, best_x={self.best_x}, best_f={self.best_f:.4f}")
 
     def seed(self, seed=None):
         np.random.seed(seed)
@@ -173,16 +172,19 @@ class RL():
     def run_optimization(self):        
         eval_env = RL_muons_env(self.problem_fn, self.phi_bounds, self.initial_phi, self.max_steps, self.tolerance, self.step_scale)
 
-        # Wrap with Monitor and DummyVecEnv for SB3:
-        def make_train_env():
-            return Monitor(RL_muons_env(self.problem_fn, self.phi_bounds, self.initial_phi, self.max_steps, self.tolerance, self.step_scale))
-        vec_env = DummyVecEnv([make_train_env])  # single-env vectorization
+        def make_train_env(seed):
+            def _init():
+                env = RL_muons_env(self.problem_fn, self.phi_bounds, self.initial_phi, self.max_steps, self.tolerance, self.step_scale)
+                env.seed(seed)
+                return Monitor(env)
+            return _init
+        num_envs = 5
+        vec_env = SubprocVecEnv([make_train_env(seed=100+i) for i in range(num_envs)])
 
         # Evaluation callback: evaluate every eval_freq timesteps
-        eval_freq = max(1, int(0.05 * self.training_steps))  # similar to your det_eval interval
+        eval_freq = max(1, int(0.05 * self.training_steps))  
         callback = TrainingStatsCallback(eval_env=eval_env, eval_freq=eval_freq, verbose=1)
 
-        # Policy kwargs: small MLP similar to what you want
         policy_kwargs = dict(
             net_arch=[dict(pi=[256, 256], vf=[256, 256])],
             activation_fn=torch.nn.ReLU
@@ -267,7 +269,7 @@ def plot_frame(f, x_range, y_range, obs, historic_best_obs, filename, step):
     ax.set_ylabel("y")
     ax.set_zlabel("f(x,y)") 
     ax.set_title(f"Step {step}: f(x,y)={-z_obs:.3f}", fontsize=14)
-    plt.suptitle(f"Best training score: f={-historic_best_obs[-1]:.3f}. True maximum: f={100*210.482/200:.3f}", y=0.95, fontsize=14)
+    plt.suptitle(f"Best training score: f={-historic_best_obs[-1]:.3f}. True maximum: f={210.482/2:.3f}", y=0.95, fontsize=14)
     ax.legend()   
     plt.tight_layout()
     plt.savefig(filename)
@@ -281,7 +283,7 @@ if __name__ == "__main__":
     initial_phi=np.array([0,0], dtype=np.float32)
     RL_dict={}
     RL_dict["max_steps"]=50#50#TO_DO: Identify a proper value
-    RL_dict["tolerance"]=-100*210/200#TO_DO: Identify a proper value
+    RL_dict["tolerance"]=-210/2#TO_DO: Identify a proper value
     RL_dict["step_scale"]=0.05
     RL_dict["training_steps"]=200000
     historic_best_x,historic_best_f=RL(problem_fn=f,
