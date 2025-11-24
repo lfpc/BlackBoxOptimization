@@ -21,15 +21,18 @@ if torch.cuda.is_available():
     dev=torch.device(f'cuda:0')
     torch.cuda.set_device(dev)
 
-def f(phi,noise=True):#Minimum is for x=y=5.4829 and f=-210.4823/2
-    n = torch.arange(1,6, dtype=phi.dtype, device=phi.device)
-    x, y = phi[...,0], phi[...,1]
-    sum_x = (n * torch.cos(n + x.unsqueeze(-1)*(n+1))).sum(dim=-1)
-    sum_y = (n * torch.cos(n + y.unsqueeze(-1)*(n+1))).sum(dim=-1)
-    val = -0.5 * sum_x * sum_y
+def f(phi,noise=True):#Minimum is for x=y=5.4829 and f=-210.4823/200
+    x,y=phi.squeeze().unbind()
+    sum_x=0
+    for n in range(1,6):
+        sum_x+=n*math.cos(n+x*(n+1))
+    sum_y=0
+    for n in range(1,6):
+        sum_y+=n*math.cos(n+y*(n+1))
     if noise:
-        val += 0.03*torch.randn_like(val)
-    return val
+        return 100*(-sum_x*sum_y/200)+np.random.normal(0, 0.03)
+    else:
+        return 100*(-sum_x*sum_y/200)
 
 class RL_muons_env(gym.Env):
     def __init__(self, problem_fn, phi_bounds, initial_phi, max_steps, tolerance, step_scale):
@@ -178,7 +181,7 @@ class RL():
                 env.seed(seed)
                 return Monitor(env)
             return _init
-        num_envs = 5
+        num_envs = 10
         vec_env = SubprocVecEnv([make_train_env(seed=100+i) for i in range(num_envs)])
 
         # Evaluation callback: evaluate every eval_freq timesteps
@@ -194,7 +197,7 @@ class RL():
             policy="MlpPolicy",
             env=vec_env,
             learning_rate=3e-4,
-            n_steps=2048,           
+            n_steps=2048//num_envs,           
             batch_size=64,
             n_epochs=10,
             gamma=0.9,#Need to use small values of gamma like 0.9, as 0.99 leads to unsuccessful training!
@@ -208,7 +211,7 @@ class RL():
         model.learn(total_timesteps=self.training_steps, callback=callback)
 
         # 5) Save / load
-        model.save(f"outputs/RL_tests_5/ppo_model")
+        model.save(f"outputs/RL_tests_6/ppo_model")
 
         print(f"Best evaluation achieved during training: x={callback.best_x}, f(x)={callback.best_f:.4f}")
 
@@ -219,7 +222,7 @@ class RL():
         plt.ylabel("Final f")
         plt.title("Final f per training episode")
         plt.grid(True)
-        plt.savefig(f"outputs/RL_tests_5/training_final_f.png")
+        plt.savefig(f"outputs/RL_tests_6/training_final_f.png")
         plt.close(fig)
 
         fig=plt.figure()
@@ -228,7 +231,7 @@ class RL():
         plt.ylabel("Deterministic evaluation final f")
         plt.title("Periodic deterministic evaluations")
         plt.grid(True)
-        plt.savefig(f"outputs/RL_tests_5/deterministic_final_f.png")
+        plt.savefig(f"outputs/RL_tests_6/deterministic_final_f.png")
         plt.close(fig)
 
         fig=plt.figure()
@@ -237,7 +240,7 @@ class RL():
         plt.ylabel("Best training f")
         plt.title("Best training evaluation")
         plt.grid(True)
-        plt.savefig(f"outputs/RL_tests_5/best_training_f.png")
+        plt.savefig(f"outputs/RL_tests_6/best_training_f.png")
         plt.close(fig)
 
         return callback.best_x,callback.best_f
@@ -296,12 +299,12 @@ if __name__ == "__main__":
         device=dev,
         devices=devices).run_optimization()
     #Play an episode with trained agent:
-    frames_dir = "outputs/RL_tests_5/frames"
+    frames_dir = "outputs/RL_tests_6/frames"
     if os.path.exists(frames_dir):
         shutil.rmtree(frames_dir)#Delete old frames
     os.makedirs(frames_dir, exist_ok=True)
     frame_files = []
-    model = PPO.load("outputs/RL_tests_5/ppo_model", device=dev)
+    model = PPO.load("outputs/RL_tests_6/ppo_model", device=dev)
     play_env = RL_muons_env(f,phi_bounds,initial_phi,RL_dict["max_steps"],RL_dict["tolerance"],RL_dict["step_scale"])
     obs, _ = play_env.reset()
     done = False
@@ -324,7 +327,7 @@ if __name__ == "__main__":
     print("Episode played with trained agent: ")
     play_env.render() 
     # Build GIF
-    gif_path = f"outputs/RL_tests_5/episode.gif"
+    gif_path = f"outputs/RL_tests_6/episode.gif"
     with imageio.get_writer(gif_path, mode='I', format='GIF', fps=2) as writer:
         for filename in frame_files:
             image = imageio.imread(filename)
