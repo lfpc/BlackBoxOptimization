@@ -19,11 +19,12 @@ from utils import normalize_vector, denormalize_vector
 from time import time
 import random
 import csv
-import gymnasium as gym
-import d3rlpy
-from d3rlpy.models import IQNQFunctionFactory
-from d3rlpy.metrics import EnvironmentEvaluator
+#import gymnasium as gym
+#import d3rlpy
+#from d3rlpy.models import IQNQFunctionFactory
+#from d3rlpy.metrics import EnvironmentEvaluator
 import h5py
+import cma
 
 
 class OptimizerClass():
@@ -1213,9 +1214,9 @@ class GA():
             ind.computed_fitness_values = None
         with open(f"outputs/{self.WandB['name']}/last_generation.pkl", "wb") as f:
             dump(self.the_population.population, f)
-#"""
+"""
 class RL_muons_env(gym.Env):
-    def __init__(self, problem_fn, phi_bounds, max_steps, tolerance):
+    def __init__(self, problem_fn, phi_bounds, max_steps, tolerance, step_scale):
         super().__init__()
         self.problem_fn=problem_fn
         self.phi_bounds=phi_bounds
@@ -1234,8 +1235,8 @@ class RL_muons_env(gym.Env):
             low=-1.0, high=1.0, shape=(self.dim,), dtype=np.float32
         )
         low_bounds, high_bounds = self.phi_bounds.numpy()
-        self.low_bounds = low.astype(np.float32)
-        self.high_bounds = high.astype(np.float32)
+        self.low_bounds = low_bounds.astype(np.float32)
+        self.high_bounds = high_bounds.astype(np.float32)
         obs_low = np.concatenate([self.low_bounds, np.array([-np.inf], dtype=np.float32)])
         obs_high = np.concatenate([self.high_bounds, np.array([np.inf], dtype=np.float32)])
         self.observation_space = gym.spaces.Box(
@@ -1301,18 +1302,19 @@ class RL_muons_env(gym.Env):
         np.random.seed(seed)
 
 class RL():
-    def __init__(self,problem_fn,phi_bounds,max_steps,tolerance,device,devices,WandB):
+    def __init__(self,problem_fn,phi_bounds,max_steps,tolerance,step_scale,device,devices,WandB):
         self.problem_fn=problem_fn
         self.phi_bounds=phi_bounds
         self.max_steps=max_steps
         self.tolerance=tolerance
+        self.step_scale=step_scale
         self.device=device
         self.devices=devices
         self.WandB=WandB
 
     def run_optimization(self):        
-        env = RL_muons_env(self.problem_fn, self.phi_bounds, self.max_steps, self.tolerance)
-        eval_env = RL_muons_env(self.problem_fn, self.phi_bounds, self.max_steps, self.tolerance)
+        env = RL_muons_env(self.problem_fn, self.phi_bounds, self.max_steps, self.tolerance, self.step_scale)
+        eval_env = RL_muons_env(self.problem_fn, self.phi_bounds, self.max_steps, self.tolerance, self.step_scale)
 
         # 2) Build IQN Q-function factory
         iqn_q_function = IQNQFunctionFactory(
@@ -1348,7 +1350,60 @@ class RL():
 
         # 5) Save / load
         sac.save_model(f"outputs/{self.WandB['name']}/iqn_sac_model.d3")
-#"""
+"""
+
+class CMAES():
+    def __init__(self,problem_fn,phi_bounds,initial_step_size,population_size,generations,device,devices,WandB):
+        self.problem_fn=problem_fn
+        self.phi_bounds=phi_bounds
+        self.initial_step_size=initial_step_size
+        self.population_size=population_size
+        self.generations=generations
+        self.device=device
+        self.devices=devices
+        self.WandB=WandB
+
+    def run_optimization(self):
+        initial_phi=self.problem_fn.initial_phi.tolist()
+        low_bounds, high_bounds = self.phi_bounds.cpu().numpy()
+        sigma_vector = high_bounds - low_bounds
+        es = cma.CMAEvolutionStrategy(initial_phi, self.initial_step_size, {'bounds': [low_bounds, high_bounds], 'popsize': self.population_size, 'CMA_stds': sigma_vector})
+        with wandb.init(reinit = True,**self.WandB) as wb, tqdm(total=self.generations) as pbar:
+            for generation in range(self.generations):
+                solutions = es.ask()
+                losses = [self.problem_fn(torch.tensor(s, dtype=torch.float32, device=self.device).unsqueeze(0)).item() for s in solutions]
+                es.tell(solutions, losses)
+                es.logger.add()
+                es.disp()
+                current_best_loss=min(losses)
+                log_dict = {
+                    'generation': generation + 1,
+                    'current_best_loss': current_best_loss,
+                    'hist_best_loss': es.result.fbest,
+                    'num_evaluations':es.result.evaluations
+                }
+                wb.log(log_dict)
+                pbar.set_description(f"hist_best_loss: {log_dict['hist_best_loss']} (gen. {log_dict['generation']})")
+                pbar.update()
+        wb.finish()
+        #Save genes of best individual:
+        with open(f"outputs/{self.WandB['name']}/phi_optm_CMAES.txt", "w") as f:
+            f.write("Solution with best simulated loss:\n")
+            for variable in es.result.xbest:
+                f.write(f"{variable}\n")
+            f.write("Solution with favorite mean loss:\n")
+            for variable in es.result.xfavorite:
+                f.write(f"{variable}\n")
+        #Save genes of best individual of hall of fame with fixed parameters:
+        with open(f"outputs/{self.WandB['name']}/phi_optm_CMAES_with_fixed_params.txt", "w") as f:
+            f.write("Solution with best simulated loss:\n")
+            for variable in self.problem_fn.add_fixed_params(torch.tensor(es.result.xbest, dtype=torch.float32, device=self.device)):
+                f.write(f"{variable}\n")
+            f.write("Solution with favorite mean loss:\n")
+            for variable in self.problem_fn.add_fixed_params(torch.tensor(es.result.xfavorite, dtype=torch.float32, device=self.device)):
+                f.write(f"{variable}\n")
+        return es
+
 class BayesianOptimizer(OptimizerClass):
     
     def __init__(self,true_model,

@@ -7,8 +7,8 @@ PYTHON_SCRIPT_DIR="$PROJECT_DIR/BlackBoxOptimization"
 
 nvidia-smi
 
-read -p "Select optimization method (GA/RL/bayesian): " OPT_METHOD
-if [[ "$OPT_METHOD" != "GA" && "$OPT_METHOD" != "RL" && "$OPT_METHOD" != "bayesian" ]]; then
+read -p "Select optimization method (GA/RL/CMAES/bayesian): " OPT_METHOD
+if [[ "$OPT_METHOD" != "GA" && "$OPT_METHOD" != "RL" && "$OPT_METHOD" != "CMAES" && "$OPT_METHOD" != "bayesian" ]]; then
     echo "Error: Invalid choice. Must be 'GA', 'RL' or 'bayesian'."
     exit 1
 fi
@@ -41,12 +41,19 @@ mkdir -p "$RESULTS_DIR"
 
 LOG_FILE="$RESULTS_DIR/output_${OPT_METHOD}.log"
 
+#Install locally the python libraries that are missing in the container:
+LOCAL_LIBRARIES_DIR="/home/hep/$USER_NAME/MuonShieldProject/BlackBoxOptimization/local_python_libs"
+mkdir -p "$LOCAL_LIBRARIES_DIR"
+pip install --target "$LOCAL_LIBRARIES_DIR" --no-deps cma gymnasium # Install locally if missing
+
 nohup apptainer exec --nv \
   -B /cvmfs \
   -B /disk/users/$USER_NAME \
   -B /home/hep/$USER_NAME \
+  -B "$LOCAL_LIBRARIES_DIR" \
   $CONTAINER_PATH \
   bash --login -i -c "
+    export PYTHONPATH=\$PYTHONPATH:$LOCAL_LIBRARIES_DIR
     cd $PROJECT_DIR/MuonsAndMatter
     source ./set_env.sh
     cd $PYTHON_SCRIPT_DIR

@@ -1,6 +1,6 @@
 import torch
 from botorch import acquisition, settings
-from src.optimizer import BayesianOptimizer,LGSO,TurboOptimizer,LCSO,GA,RL
+from src.optimizer import BayesianOptimizer,LGSO,TurboOptimizer,LCSO,GA,CMAES#,RL
 from src import problems
 from src.models import GP_RBF, GP_BOCK, GP_IBNN
 from utils.acquisition_functions import Custom_LogEI
@@ -93,7 +93,14 @@ elif args.optimization == 'RL':
     RL_dict={}
     RL_dict["max_steps"]=20#TO_DO: Identify a proper value
     RL_dict["tolerance"]=2.0#TO_DO: Identify a proper value
+    RL_dict["step_scale"]=0.05#TO_DO: Identify a proper value
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **RL_dict}, 'name': args.name}
+elif args.optimization == 'CMAES':
+    CMAES_dict={}
+    CMAES_dict["initial_step_size"]=0.0001#0.3#TO_DO: Identify a proper value
+    CMAES_dict["population_size"]=20
+    CMAES_dict["generations"]=100
+    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **CMAES_dict}, 'name': args.name}
 else:
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': {**vars(args), **CONFIG}, 'name': args.name}
 
@@ -111,8 +118,11 @@ def get_freest_gpu():
     max_idx = mem_free.index(max(mem_free))
     return torch.device(f'cuda:{max_idx}')
 if torch.cuda.is_available() and args.cuda: 
-    dev = get_freest_gpu()
-    torch.cuda.set_device(dev)
+    if args.optimization == 'GA' or args.optimization == 'RL' or args.optimization == 'CMAES':
+        dev=torch.device('cuda')
+    else:
+        dev = get_freest_gpu()
+        torch.cuda.set_device(dev)
 else: dev = torch.device('cpu')
 print('Device:', dev)
 torch.manual_seed(args.seed)
@@ -241,6 +251,19 @@ if __name__ == "__main__":
             phi_bounds=phi_bounds,
             max_steps=RL_dict["max_steps"],
             tolerance=RL_dict["tolerance"],
+            step_scale=RL_dict["step_scale"],
+            device=dev,
+            devices=devices,
+            WandB=WANDB).run_optimization()
+        sys.exit()
+    elif args.optimization == 'CMAES':#Covariance Matrix Adaptation Evolution Strategy
+        num_gpus = torch.cuda.device_count()
+        devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
+        CMAES(problem_fn=problem_fn,
+            phi_bounds=phi_bounds,
+            initial_step_size=CMAES_dict["initial_step_size"],
+            population_size=CMAES_dict["population_size"],
+            generations=CMAES_dict["generations"],
             device=dev,
             devices=devices,
             WandB=WANDB).run_optimization()
