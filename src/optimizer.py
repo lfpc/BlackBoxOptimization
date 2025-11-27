@@ -1364,14 +1364,31 @@ class CMAES():
         self.WandB=WandB
 
     def run_optimization(self):
-        initial_phi=self.problem_fn.initial_phi.tolist()
+        initial_phi=self.problem_fn.initial_phi.tolist()#TO_DO: Implement possibility to initialize optimization on the solution found by another optimization
         low_bounds, high_bounds = self.phi_bounds.cpu().numpy()
         sigma_vector = high_bounds - low_bounds
         es = cma.CMAEvolutionStrategy(initial_phi, self.initial_step_size, {'bounds': [low_bounds, high_bounds], 'popsize': self.population_size, 'CMA_stds': sigma_vector})
         with wandb.init(reinit = True,**self.WandB) as wb, tqdm(total=self.generations) as pbar:
             for generation in range(self.generations):
                 solutions = es.ask()
-                losses = [self.problem_fn(torch.tensor(s, dtype=torch.float32, device=self.device).unsqueeze(0)).item() for s in solutions]
+                indexed_solutions=list(enumerate([s for s in solutions]))
+                #Manager list for shared results:
+                manager = mp.Manager()
+                results = manager.list()
+                #Split work into chunks for each GPU:
+                chunks = split_population(indexed_solutions, len(self.devices))
+                mp.set_start_method("spawn", force=True)
+                #Launch one process per GPU:
+                processes = []
+                for device, chunk in zip(self.devices, chunks):
+                    p = mp.Process(target=gpu_worker, args=(device, chunk, self.problem_fn, results))
+                    p.start()
+                    processes.append(p)
+                for p in processes:
+                    p.join()
+                #Sort results by original index to preserve population order:
+                ordered_results = sorted(list(results), key=lambda x: x[0])
+                losses=[y.item() for _, y in ordered_results]
                 es.tell(solutions, losses)
                 es.logger.add()
                 es.disp()
