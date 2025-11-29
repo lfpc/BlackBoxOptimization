@@ -9,7 +9,7 @@ nvidia-smi
 
 read -p "Select optimization method (GA/RL/CMAES/bayesian): " OPT_METHOD
 if [[ "$OPT_METHOD" != "GA" && "$OPT_METHOD" != "RL" && "$OPT_METHOD" != "CMAES" && "$OPT_METHOD" != "bayesian" ]]; then
-    echo "Error: Invalid choice. Must be 'GA', 'RL' or 'bayesian'."
+    echo "Error: Invalid choice. Must be 'GA', 'RL', 'CMAES' or 'bayesian'."
     exit 1
 fi
 

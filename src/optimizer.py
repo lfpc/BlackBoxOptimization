@@ -928,6 +928,11 @@ class Population():
         #initial_genes=[random.uniform(low.item(), high.item()) for low,high in self.phi_bounds.T]
         #print(self.problem_fn.initial_phi)
         initial_genes=[self.problem_fn.initial_phi.tolist()[gene_index]+0.0001*np.random.normal(0, self.mutation_std_deviations[gene_index]) for gene_index in range(len(self.phi_bounds.T))]#TO_DO: Check if a more suitable initialization exists (a more spread initialization over the search space maybe)
+        for gene_index in range(len(initial_genes)):#Make sure genes don't escape the bounds
+            if initial_genes[gene_index]<self.phi_bounds.T[gene_index][0].item():
+                initial_genes[gene_index]=self.phi_bounds.T[gene_index][0].item()
+            elif initial_genes[gene_index]>self.phi_bounds.T[gene_index][1].item():
+                initial_genes[gene_index]=self.phi_bounds.T[gene_index][1].item()
         return initial_genes
 
     def update_elite(self):#TO_DO: Check if I would need a more suitable elite, like saving all individuals with a fitness value above a threshold
@@ -1363,9 +1368,18 @@ class CMAES():
         self.devices=devices
         self.WandB=WandB
 
-    def run_optimization(self):
-        initial_phi=self.problem_fn.initial_phi.tolist()#TO_DO: Implement possibility to initialize optimization on the solution found by another optimization
+    def run_optimization(self,previous_optimization_folder=None):
         low_bounds, high_bounds = self.phi_bounds.cpu().numpy()
+        if previous_optimization_folder is not None:
+            with open(f"outputs/{previous_optimization_folder}/phi_optm_GA.txt", "r") as f:
+                initial_phi = [float(line.strip()) for line in f]
+                for i in range(len(initial_phi)):
+                    if initial_phi[i]<low_bounds[i]:
+                        initial_phi[i]=low_bounds[i]
+                    elif initial_phi[i]>high_bounds[i]:
+                        initial_phi[i]=high_bounds[i]
+        else:
+            initial_phi=self.problem_fn.initial_phi.tolist()
         sigma_vector = high_bounds - low_bounds
         es = cma.CMAEvolutionStrategy(initial_phi, self.initial_step_size, {'bounds': [low_bounds, high_bounds], 'popsize': self.population_size, 'CMA_stds': sigma_vector})
         with wandb.init(reinit = True,**self.WandB) as wb, tqdm(total=self.generations) as pbar:
@@ -1402,6 +1416,7 @@ class CMAES():
                 wb.log(log_dict)
                 pbar.set_description(f"hist_best_loss: {log_dict['hist_best_loss']} (gen. {log_dict['generation']})")
                 pbar.update()
+                self.save_population_history(generation,solutions,losses)
         wb.finish()
         #Save genes of best individual:
         with open(f"outputs/{self.WandB['name']}/phi_optm_CMAES.txt", "w") as f:
@@ -1420,6 +1435,22 @@ class CMAES():
             for variable in self.problem_fn.add_fixed_params(torch.tensor(es.result.xfavorite, dtype=torch.float32, device=self.device)):
                 f.write(f"{variable}\n")
         return es
+
+    def save_population_history(self, generation, solutions, losses):
+        filename=f"outputs/{self.WandB['name']}/population_history.csv"
+        os.makedirs(os.path.dirname(filename), exist_ok=True) if os.path.dirname(filename) else None
+        write_header = False
+        if not os.path.exists(filename):
+            write_header = True
+        with open(filename, "a", newline="") as f:
+            writer = csv.writer(f)
+            if write_header:
+                header = ["generation"] + [f"gene_{i}" for i in range(len(solutions[0]))] + ["fitness"]
+                writer.writerow(header)
+            for i in range(len(solutions)):
+                s=solutions[i]
+                loss=losses[i]
+                writer.writerow([generation] + s.tolist() + [loss])
 
 class BayesianOptimizer(OptimizerClass):
     

@@ -34,8 +34,13 @@ parser.add_argument("--model_switch", type=int,default = -1)
 parser.add_argument("--n_initial", type=int, default=-1)
 parser.add_argument('--float64', action = 'store_true')
 parser.add_argument('--config_file', type=str, default='outputs/config.json')
+parser.add_argument('--fine_tune', type=str, default=None)
 
 args = parser.parse_args()
+
+if args.fine_tune is not None and args.optimization!="CMAES":
+    print("Finetuning is currently only implemented for CMAES!")
+    sys.exit()
 
 OUTPUTS_DIR = os.path.join(PROJECTS_DIR,'BlackBoxOptimization/outputs',args.name)
 config_file = os.path.join(OUTPUTS_DIR,'config.json')
@@ -266,7 +271,7 @@ if __name__ == "__main__":
             generations=CMAES_dict["generations"],
             device=dev,
             devices=devices,
-            WandB=WANDB).run_optimization()
+            WandB=WANDB).run_optimization(args.fine_tune)
         sys.exit()
 
     optimizer = main(model,problem_fn,dimensions,args.maxiter,args.n_initial,phi_bounds, model_scheduler)
