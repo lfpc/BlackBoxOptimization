@@ -1,6 +1,6 @@
 import torch
 from botorch import acquisition, settings
-from src.optimizer import BayesianOptimizer,LGSO,TurboOptimizer,LCSO,GA,CMAES#,RL
+from src.optimizer import BayesianOptimizer,LGSO,TurboOptimizer,LCSO,GA,CMAES,CEM#,RL
 from src import problems
 from src.models import GP_RBF, GP_BOCK, GP_IBNN
 from utils.acquisition_functions import Custom_LogEI
@@ -38,8 +38,8 @@ parser.add_argument('--fine_tune', type=str, default=None)
 
 args = parser.parse_args()
 
-if args.fine_tune is not None and args.optimization!="CMAES":
-    print("Finetuning is currently only implemented for CMAES!")
+if args.fine_tune is not None and args.optimization!="CMAES" and args.optimization!="CEM":
+    print("Finetuning is currently only implemented for CMAES and CEM!")
     sys.exit()
 
 OUTPUTS_DIR = os.path.join(PROJECTS_DIR,'BlackBoxOptimization/outputs',args.name)
@@ -102,10 +102,17 @@ elif args.optimization == 'RL':
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **RL_dict}, 'name': args.name}
 elif args.optimization == 'CMAES':
     CMAES_dict={}
-    CMAES_dict["initial_step_size"]=0.0001#0.3#TO_DO: Identify a proper value
+    CMAES_dict["initial_step_size"]=0.00001#0.3#TO_DO: Identify a proper value
     CMAES_dict["population_size"]=20
     CMAES_dict["generations"]=100
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **CMAES_dict}, 'name': args.name}
+elif args.optimization == 'CEM':
+    CEM_dict={}
+    CEM_dict["initial_std_factor"]=0.0001#0.3#TO_DO: Identify a proper value
+    CEM_dict["elite_frac"]=0.2
+    CEM_dict["population_size"]=80
+    CEM_dict["generations"]=25
+    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **CEM_dict}, 'name': args.name}
 else:
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': {**vars(args), **CONFIG}, 'name': args.name}
 
@@ -123,7 +130,7 @@ def get_freest_gpu():
     max_idx = mem_free.index(max(mem_free))
     return torch.device(f'cuda:{max_idx}')
 if torch.cuda.is_available() and args.cuda: 
-    if args.optimization == 'GA' or args.optimization == 'RL' or args.optimization == 'CMAES':
+    if args.optimization == 'GA' or args.optimization == 'RL' or args.optimization == 'CMAES' or args.optimization == 'CEM':
         dev=torch.device('cuda')
     else:
         dev = get_freest_gpu()
@@ -269,6 +276,19 @@ if __name__ == "__main__":
             initial_step_size=CMAES_dict["initial_step_size"],
             population_size=CMAES_dict["population_size"],
             generations=CMAES_dict["generations"],
+            device=dev,
+            devices=devices,
+            WandB=WANDB).run_optimization(args.fine_tune)
+        sys.exit()
+    elif args.optimization == 'CEM':#Cross Entropy Method
+        num_gpus = torch.cuda.device_count()
+        devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
+        CEM(problem_fn=problem_fn,
+            phi_bounds=phi_bounds,
+            initial_std_factor=CEM_dict["initial_std_factor"],
+            elite_frac=CEM_dict["elite_frac"],
+            population_size=CEM_dict["population_size"],
+            generations=CEM_dict["generations"],
             device=dev,
             devices=devices,
             WandB=WANDB).run_optimization(args.fine_tune)

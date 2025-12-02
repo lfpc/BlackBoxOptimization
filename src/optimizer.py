@@ -19,7 +19,7 @@ from utils import normalize_vector, denormalize_vector
 from time import time
 import random
 import csv
-#import gymnasium as gym
+import gymnasium as gym
 #import d3rlpy
 #from d3rlpy.models import IQNQFunctionFactory
 #from d3rlpy.metrics import EnvironmentEvaluator
@@ -1504,6 +1504,118 @@ class RL():
         # 5) Save / load
         sac.save_model(f"outputs/{self.WandB['name']}/iqn_sac_model.d3")
 #"""
+
+class CEM():
+    def __init__(self,problem_fn,phi_bounds,initial_std_factor,elite_frac,population_size,generations,device,devices,WandB):
+        self.problem_fn=problem_fn
+        self.phi_bounds=phi_bounds
+        self.initial_std_factor=initial_std_factor
+        self.elite_frac=elite_frac
+        self.population_size=population_size
+        self.generations=generations
+        self.device=device
+        self.devices=devices
+        self.WandB=WandB
+
+    def run_optimization(self,previous_optimization_folder=None):
+        low_bounds, high_bounds = self.phi_bounds.cpu().numpy()
+        if previous_optimization_folder is not None:
+            with open(f"outputs/{previous_optimization_folder}/phi_optm_GA.txt", "r") as f:
+                initial_phi = [float(line.strip()) for line in f]
+                for i in range(len(initial_phi)):
+                    if initial_phi[i]<low_bounds[i]:
+                        initial_phi[i]=low_bounds[i]
+                    elif initial_phi[i]>high_bounds[i]:
+                        initial_phi[i]=high_bounds[i]
+        else:
+            initial_phi=self.problem_fn.initial_phi.tolist()
+
+        n_elite = max(1, int(self.population_size * self.elite_frac))
+        dim=len(initial_phi)
+        mean=initial_phi.copy()
+        std=(high_bounds-low_bounds)*self.initial_std_factor
+        hist_best_loss = np.inf
+        hist_best_solution = None
+        with wandb.init(reinit = True,**self.WandB) as wb, tqdm(total=self.generations) as pbar:
+            for generation in range(self.generations):
+                #Sample population:
+                solutions = np.random.randn(self.population_size, dim) * std + mean
+                #Clip to bounds:
+                solutions = np.clip(solutions, low_bounds, high_bounds)
+                #Evaluate population:
+                indexed_solutions=list(enumerate([s for s in solutions]))
+                #Manager list for shared results:
+                manager = mp.Manager()
+                results = manager.list()
+                #Split work into chunks for each GPU:
+                chunks = split_population(indexed_solutions, len(self.devices))
+                mp.set_start_method("spawn", force=True)
+                #Launch one process per GPU:
+                processes = []
+                for device, chunk in zip(self.devices, chunks):
+                    p = mp.Process(target=gpu_worker, args=(device, chunk, self.problem_fn, results))
+                    p.start()
+                    processes.append(p)
+                for p in processes:
+                    p.join()
+                #Sort results by original index to preserve population order:
+                ordered_results = sorted(list(results), key=lambda x: x[0])
+                losses=[y.item() for _, y in ordered_results]
+                #Select elite set:
+                elite_idx = np.argsort(losses)[:n_elite]
+                elites = solutions[elite_idx]
+                #Update mean and std:
+                mean = elites.mean(axis=0)
+                std = elites.std(axis=0) + 1e-9  # avoid division by zero
+                #Track historical best:
+                current_best_loss = losses[elite_idx[0]]
+                if current_best_loss < hist_best_loss:
+                    hist_best_loss = current_best_loss
+                    hist_best_solution = solutions[elite_idx[0]].copy()
+                log_dict = {
+                    'generation': generation + 1,
+                    'current_best_loss': current_best_loss,
+                    'hist_best_loss': hist_best_loss,
+                    'num_evaluations':(generation+1)*self.population_size
+                }
+                wb.log(log_dict)
+                pbar.set_description(f"hist_best_loss: {log_dict['hist_best_loss']} (gen. {log_dict['generation']})")
+                pbar.update()
+                self.save_population_history(generation,solutions,losses)
+        wb.finish()
+        #Save genes of best individual:
+        with open(f"outputs/{self.WandB['name']}/phi_optm_CEM.txt", "w") as f:
+            f.write("Solution with best simulated loss:\n")
+            for variable in hist_best_solution:
+                f.write(f"{variable}\n")
+            f.write("Best solution in last generation:\n")
+            for variable in solutions[elite_idx[0]].copy():
+                f.write(f"{variable}\n")
+        #Save genes of best individual of hall of fame with fixed parameters:
+        with open(f"outputs/{self.WandB['name']}/phi_optm_CEM_with_fixed_params.txt", "w") as f:
+            f.write("Solution with best simulated loss:\n")
+            for variable in self.problem_fn.add_fixed_params(torch.tensor(hist_best_solution, dtype=torch.float32, device=self.device)):
+                f.write(f"{variable}\n")
+            f.write("Best solution in last generation:\n")
+            for variable in self.problem_fn.add_fixed_params(torch.tensor(solutions[elite_idx[0]].copy(), dtype=torch.float32, device=self.device)):
+                f.write(f"{variable}\n")
+        return es
+
+    def save_population_history(self, generation, solutions, losses):
+        filename=f"outputs/{self.WandB['name']}/population_history.csv"
+        os.makedirs(os.path.dirname(filename), exist_ok=True) if os.path.dirname(filename) else None
+        write_header = False
+        if not os.path.exists(filename):
+            write_header = True
+        with open(filename, "a", newline="") as f:
+            writer = csv.writer(f)
+            if write_header:
+                header = ["generation"] + [f"gene_{i}" for i in range(len(solutions[0]))] + ["fitness"]
+                writer.writerow(header)
+            for i in range(len(solutions)):
+                s=solutions[i]
+                loss=losses[i]
+                writer.writerow([generation] + s.tolist() + [loss])
 
 class CMAES():
     def __init__(self,problem_fn,phi_bounds,initial_step_size,population_size,generations,device,devices,WandB):

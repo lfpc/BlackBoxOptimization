@@ -7,9 +7,9 @@ PYTHON_SCRIPT_DIR="$PROJECT_DIR/BlackBoxOptimization"
 
 nvidia-smi
 
-read -p "Select optimization method (GA/RL/CMAES/bayesian): " OPT_METHOD
-if [[ "$OPT_METHOD" != "GA" && "$OPT_METHOD" != "RL" && "$OPT_METHOD" != "CMAES" && "$OPT_METHOD" != "bayesian" ]]; then
-    echo "Error: Invalid choice. Must be 'GA', 'RL', 'CMAES' or 'bayesian'."
+read -p "Select optimization method (GA/RL/CMAES/CEM/bayesian): " OPT_METHOD
+if [[ "$OPT_METHOD" != "GA" && "$OPT_METHOD" != "RL" && "$OPT_METHOD" != "CMAES" && "$OPT_METHOD" != "CEM" && "$OPT_METHOD" != "bayesian" ]]; then
+    echo "Error: Invalid choice. Must be 'GA', 'RL', 'CMAES', 'CEM' or 'bayesian'."
     exit 1
 fi
 
@@ -44,7 +44,7 @@ LOG_FILE="$RESULTS_DIR/output_${OPT_METHOD}.log"
 #Install locally the python libraries that are missing in the container:
 LOCAL_LIBRARIES_DIR="/home/hep/$USER_NAME/MuonShieldProject/BlackBoxOptimization/local_python_libs"
 mkdir -p "$LOCAL_LIBRARIES_DIR"
-pip install --target "$LOCAL_LIBRARIES_DIR" --no-deps cma gymnasium # Install locally if missing
+pip install --target "$LOCAL_LIBRARIES_DIR" --no-deps cma cross-entropy-method gymnasium d3rlpy # Install locally if missing
 
 nohup apptainer exec --nv \
   -B /cvmfs \
