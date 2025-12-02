@@ -1219,7 +1219,155 @@ class GA():
             ind.computed_fitness_values = None
         with open(f"outputs/{self.WandB['name']}/last_generation.pkl", "wb") as f:
             dump(self.the_population.population, f)
-"""
+#"""
+class RL_muons_env_new(gym.Env):
+    def __init__(self, problem_fn):
+        super().__init__()
+        self.problem_fn=problem_fn
+        self.n_magnets=problem_fn.n_magnets
+        self.n_params=problem_fn.n_params
+
+        self.low_bounds,self.high_bounds=self.GetBounds()#TO_DO: Check if I need to set the device here
+        self.observation_space = gym.spaces.Box(
+            low=self.low_bounds, 
+            high=self.high_bounds, 
+            dtype=np.float32
+        )
+        self.action_space = gym.spaces.Box(
+            low=-1.0, high=1.0, shape=(self.n_params,), dtype=np.float32
+        )
+
+    def reset(self, *, seed=None, options=None):
+        if seed is not None:
+            np.random.seed(seed)
+        self.obs = np.zeros(self.observation_space.shape, dtype=np.float32)
+        self.current_magnet=0
+        return obs, {}
+
+    def step(self, action):#TO_DO: Consider the restrictions of the variables based on parametrization["warm_idx"] and add_fixed_params()
+        start = self.current_magnet * self.n_params
+        end   = (self.current_magnet + 1) * self.n_params
+
+        low_slice = np.asarray(self.low_bounds[start:end], dtype=np.float32)
+        high_slice = np.asarray(self.high_bounds[start:end], dtype=np.float32)
+        self.obs[start:end] = self.map_action_to_bounds(action,low_slice,high_slice)
+        self.current_magnet+=1
+
+        terminated = (self.current_magnet >= self.n_magnets)
+        reward = 0.0
+        if terminated:
+            phi=torch.tensor(self.obs, dtype=torch.float32).unsqueeze(0)
+            reward = self.problem_fn(phi)
+        truncated = False
+        info = {}
+        return self.obs, reward, terminated, truncated, info
+
+    def render(self, mode="human"):
+        print(self.phi)
+
+    def seed(self, seed=None):
+        np.random.seed(seed)
+
+    def map_action_to_bounds(self, action, low_slice, high_slice):
+        return (action + 1.0) * 0.5 * (high_slice - low_slice) + low_slice
+
+    def GetBounds(self,device = torch.device('cpu')):#TO_DO: I copied this function from problems.py, find a better way to extract the bounds as this would cause problems if the original function is modified
+        z_gap = (10,50)
+        magnet_lengths = (100, 350)
+        dY_bounds = (5, 250)
+        dY_yoke_bounds = (5, 450)
+        if self.use_B_goal: NI_bounds = (0.1,1.9)
+        else: NI_bounds = (0.0, 70e3)
+        if self.use_diluted:
+            dX_bounds = (1, 85)
+            gap_bounds = (5, 80)
+            inner_gap_bounds = (0., 30.)
+            yoke_bounds = (1,141)
+        else:
+            dX_bounds = (5, 250)
+            gap_bounds = (2, 150)
+            yoke_bounds = (0.99,3)
+            inner_gap_bounds = (0., 150.)
+
+        bounds_low = torch.tensor([[z_gap[0],magnet_lengths[0], 
+                       dX_bounds[0], dX_bounds[0], 
+                       dY_bounds[0], dY_bounds[0],
+                       gap_bounds[0], gap_bounds[0],
+                       yoke_bounds[0], yoke_bounds[0],
+                       dY_yoke_bounds[0], dY_yoke_bounds[0],
+                       inner_gap_bounds[0], inner_gap_bounds[0],
+                       NI_bounds[0]] for _ in range(self.n_magnets)],device=device,dtype=torch.get_default_dtype())
+        bounds_high = torch.tensor([[z_gap[1],magnet_lengths[1], 
+                        dX_bounds[1], dX_bounds[1], 
+                        dY_bounds[1], dY_bounds[1],
+                        gap_bounds[1], gap_bounds[1],
+                        yoke_bounds[1], yoke_bounds[1],
+                        dY_yoke_bounds[1], dY_yoke_bounds[1],
+                        inner_gap_bounds[1], inner_gap_bounds[1],
+                        NI_bounds[1]] for _ in range(self.n_magnets)],device=device,dtype=torch.get_default_dtype())
+        bounds_low[0,0] = 0
+
+        inverted_polarity = self.DEFAULT_PHI[:, 14] < 0
+        if inverted_polarity.any():
+            bounds_low[inverted_polarity, 14] = -NI_bounds[1]
+            bounds_high[inverted_polarity, 14] = -NI_bounds[0]
+            if not self.use_diluted:
+                bounds_low[inverted_polarity, 8] = 1.0 / yoke_bounds[1]
+                bounds_high[inverted_polarity, 8] = 1.0 / yoke_bounds[0]
+                bounds_low[inverted_polarity, 9] = 1.0 / yoke_bounds[1]
+                bounds_high[inverted_polarity, 9] = 1.0 / yoke_bounds[0]
+
+        if self.use_diluted:
+            bounds_low[0,6] = 2.0
+            bounds_low[0,7] = 2.0
+            bounds_low[0,1] = 120.5
+            bounds_low[1,1] = 485.5
+            bounds_low[2,1] = 285
+            bounds_low[3:,1] = 30
+            bounds_high[:,1] = 500
+        
+        if self.SND:
+            bounds_low[-2,1] = 90
+            bounds_high[-2,1] = 350
+            bounds_low[-2,[12,13]] = 30
+            bounds_high[-2,[12,13]] = 150
+            bounds_low[-1,1] = 170
+            bounds_high[-1,1] = 350
+            bounds_low[-1,2] = 30
+            bounds_high[-1,2] = 250
+            bounds_low[-1,3] = 40
+            bounds_high[-1,3] = 250
+
+        if self.fSC_mag: 
+            bounds_low[1,0] = 30
+            bounds_high[1,0] = 300
+            bounds_low[2,0] = 30
+            bounds_high[2,0] = 300
+            bounds_low[1,1] = 50
+            bounds_high[1,1] = 400
+            bounds_low[1,2] = 30
+            bounds_high[1,2] = 50
+            bounds_low[1,3] = 30
+            bounds_high[1,3] = 50
+            bounds_low[1,4] = 15
+            bounds_high[1,4] = 30
+            bounds_low[1,5] = 15
+            bounds_high[1,5] = 30
+            bounds_low[1,6] = 15
+            bounds_high[1,6] = 150
+            bounds_low[1,7] = 1.0
+            bounds_high[1,7] = 4
+            bounds_low[1,8] = 1.0
+            bounds_high[1,8] = 4
+            bounds_low[1,9] = 1.0
+            bounds_high[1,9] = 4
+        return bounds_low,bounds_high
+        bounds_low = apply_index(bounds_low, self.params_idx).flatten()
+        bounds_high = apply_index(bounds_high, self.params_idx).flatten()
+        bounds = torch.stack([bounds_low, bounds_high])
+        return bounds
+
+
 class RL_muons_env(gym.Env):
     def __init__(self, problem_fn, phi_bounds, max_steps, tolerance, step_scale):
         super().__init__()
@@ -1355,7 +1503,7 @@ class RL():
 
         # 5) Save / load
         sac.save_model(f"outputs/{self.WandB['name']}/iqn_sac_model.d3")
-"""
+#"""
 
 class CMAES():
     def __init__(self,problem_fn,phi_bounds,initial_step_size,population_size,generations,device,devices,WandB):
