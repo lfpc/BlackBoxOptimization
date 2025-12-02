@@ -17,7 +17,7 @@ def f(phi, noise=True):
     val = -sum_x * sum_y / 200
 
     if noise:
-        return val #+ np.random.normal(0, 0.03)
+        return val + np.random.normal(0, 0.03)
     else:
         return val
 
@@ -64,7 +64,7 @@ x0 = np.array([0.0, 0.0])
 lower_bounds = np.array([-2, -20])
 upper_bounds = np.array([2, 20])
 
-population_size = 20
+population_size = 40
 elite_frac = 0.2
 n_elite = max(1, int(population_size * elite_frac))
 
@@ -72,7 +72,7 @@ n_elite = max(1, int(population_size * elite_frac))
 mean = x0.copy()
 std = (upper_bounds - lower_bounds) * 0.3   # similar scale to sigma_vector
 
-generations = 50
+generations = 25
 best_fitness_hist = 1e9
 best_solution_hist = None
 
