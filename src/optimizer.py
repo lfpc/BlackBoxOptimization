@@ -20,6 +20,9 @@ from time import time
 import random
 import csv
 import gymnasium as gym
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback
+
 #import d3rlpy
 #from d3rlpy.models import IQNQFunctionFactory
 #from d3rlpy.metrics import EnvironmentEvaluator
@@ -1228,6 +1231,8 @@ class RL_muons_env_new(gym.Env):
         self.n_params=problem_fn.n_params
 
         self.low_bounds,self.high_bounds=self.GetBounds()#TO_DO: Check if I need to set the device here
+        self.low_bounds=self.low_bounds.detach().cpu().numpy()
+        self.high_bounds=self.high_bounds.detach().cpu().numpy()
         self.observation_space = gym.spaces.Box(
             low=self.low_bounds, 
             high=self.high_bounds, 
@@ -1237,14 +1242,14 @@ class RL_muons_env_new(gym.Env):
             low=-1.0, high=1.0, shape=(self.n_params,), dtype=np.float32
         )
 
-    def reset(self, *, seed=None, options=None):
+    def reset(self, *, seed=None, options=None):#TO_DO: Algorithm should probably receive the info of a warm baseline
         if seed is not None:
             np.random.seed(seed)
         self.obs = np.zeros(self.observation_space.shape, dtype=np.float32)
         self.current_magnet=0
-        return obs, {}
+        return self.obs, {}
 
-    def step(self, action):#TO_DO: Consider the restrictions of the variables based on parametrization["warm_idx"] and add_fixed_params()
+    def step(self, action):
         start = self.current_magnet * self.n_params
         end   = (self.current_magnet + 1) * self.n_params
 
@@ -1256,7 +1261,8 @@ class RL_muons_env_new(gym.Env):
         terminated = (self.current_magnet >= self.n_magnets)
         reward = 0.0
         if terminated:
-            phi=torch.tensor(self.obs, dtype=torch.float32).unsqueeze(0)
+            phi=torch.tensor(self.obs, dtype=torch.float32)
+            phi=self.enforce_constraints(phi).flatten()
             reward = self.problem_fn(phi)
         truncated = False
         info = {}
@@ -1271,14 +1277,37 @@ class RL_muons_env_new(gym.Env):
     def map_action_to_bounds(self, action, low_slice, high_slice):
         return (action + 1.0) * 0.5 * (high_slice - low_slice) + low_slice
 
+    def enforce_constraints(self, phi: torch.Tensor):#TO_DO: I considered the restrictions by rewriting the code in add_fixed_params(), check if a better alternative exists
+        new_phi = phi.clone()
+        device = phi.device
+        all_rows = torch.arange(new_phi.size(0), device=device)
+        new_phi[0, 3] = new_phi[0, 2]
+        new_phi[0, 5] = new_phi[0, 4]
+        new_phi[:, 13] = new_phi[:, 12]
+        new_phi[:, 10] = new_phi[:, 2] * new_phi[:, 8]
+        new_phi[:, 11] = new_phi[:, 3] * new_phi[:, 9]
+        if self.problem_fn.fSC_mag:
+            new_phi[1, 3] = new_phi[1, 2]
+            new_phi[1, 5] = new_phi[1, 4]
+        if self.problem_fn.dimensions_phi in [len(self.problem_fn.parametrization['piet_idx']), len(self.problem_fn.parametrization['robustness'])]:
+            rows = torch.arange(1, new_phi.size(0), device=device)
+            new_phi[rows, 10] = new_phi[rows, 2]
+            new_phi[rows, 11] = new_phi[rows, 3]
+            piet = torch.tensor(self.problem_fn.params['Piet_solution'], dtype = new_phi.dtype, device=device)
+            values_8 = ((piet[1:,2] * piet[1:,8] + piet[1:,6] + piet[1:,2] - new_phi[1:,12] - new_phi[1:,6] - new_phi[1:,2]) / new_phi[1:,2])
+            values_9 = ((piet[1:,3] * piet[1:,9] + piet[1:,7] + piet[1:,3] - new_phi[1:,13] - new_phi[1:,7] - new_phi[1:,3]) / new_phi[1:,3])
+            new_phi[rows, 8] = values_8
+            new_phi[rows, 9] = values_9
+        return new_phi
+
     def GetBounds(self,device = torch.device('cpu')):#TO_DO: I copied this function from problems.py, find a better way to extract the bounds as this would cause problems if the original function is modified
         z_gap = (10,50)
         magnet_lengths = (100, 350)
         dY_bounds = (5, 250)
         dY_yoke_bounds = (5, 450)
-        if self.use_B_goal: NI_bounds = (0.1,1.9)
+        if self.problem_fn.use_B_goal: NI_bounds = (0.1,1.9)
         else: NI_bounds = (0.0, 70e3)
-        if self.use_diluted:
+        if self.problem_fn.use_diluted:
             dX_bounds = (1, 85)
             gap_bounds = (5, 80)
             inner_gap_bounds = (0., 30.)
@@ -1296,7 +1325,7 @@ class RL_muons_env_new(gym.Env):
                        yoke_bounds[0], yoke_bounds[0],
                        dY_yoke_bounds[0], dY_yoke_bounds[0],
                        inner_gap_bounds[0], inner_gap_bounds[0],
-                       NI_bounds[0]] for _ in range(self.n_magnets)],device=device,dtype=torch.get_default_dtype())
+                       NI_bounds[0]] for _ in range(self.problem_fn.n_magnets)],device=device,dtype=torch.get_default_dtype())
         bounds_high = torch.tensor([[z_gap[1],magnet_lengths[1], 
                         dX_bounds[1], dX_bounds[1], 
                         dY_bounds[1], dY_bounds[1],
@@ -1304,20 +1333,20 @@ class RL_muons_env_new(gym.Env):
                         yoke_bounds[1], yoke_bounds[1],
                         dY_yoke_bounds[1], dY_yoke_bounds[1],
                         inner_gap_bounds[1], inner_gap_bounds[1],
-                        NI_bounds[1]] for _ in range(self.n_magnets)],device=device,dtype=torch.get_default_dtype())
+                        NI_bounds[1]] for _ in range(self.problem_fn.n_magnets)],device=device,dtype=torch.get_default_dtype())
         bounds_low[0,0] = 0
 
-        inverted_polarity = self.DEFAULT_PHI[:, 14] < 0
+        inverted_polarity = self.problem_fn.DEFAULT_PHI[:, 14] < 0
         if inverted_polarity.any():
             bounds_low[inverted_polarity, 14] = -NI_bounds[1]
             bounds_high[inverted_polarity, 14] = -NI_bounds[0]
-            if not self.use_diluted:
+            if not self.problem_fn.use_diluted:
                 bounds_low[inverted_polarity, 8] = 1.0 / yoke_bounds[1]
                 bounds_high[inverted_polarity, 8] = 1.0 / yoke_bounds[0]
                 bounds_low[inverted_polarity, 9] = 1.0 / yoke_bounds[1]
                 bounds_high[inverted_polarity, 9] = 1.0 / yoke_bounds[0]
 
-        if self.use_diluted:
+        if self.problem_fn.use_diluted:
             bounds_low[0,6] = 2.0
             bounds_low[0,7] = 2.0
             bounds_low[0,1] = 120.5
@@ -1326,7 +1355,7 @@ class RL_muons_env_new(gym.Env):
             bounds_low[3:,1] = 30
             bounds_high[:,1] = 500
         
-        if self.SND:
+        if self.problem_fn.SND:
             bounds_low[-2,1] = 90
             bounds_high[-2,1] = 350
             bounds_low[-2,[12,13]] = 30
@@ -1338,7 +1367,7 @@ class RL_muons_env_new(gym.Env):
             bounds_low[-1,3] = 40
             bounds_high[-1,3] = 250
 
-        if self.fSC_mag: 
+        if self.problem_fn.fSC_mag: 
             bounds_low[1,0] = 30
             bounds_high[1,0] = 300
             bounds_low[2,0] = 30
@@ -1454,17 +1483,122 @@ class RL_muons_env(gym.Env):
     def seed(self, seed=None):
         np.random.seed(seed)
 
+class TrainingStatsCallback(BaseCallback):
+    def __init__(self, eval_env, eval_freq: int, verbose=0):
+        super().__init__(verbose)
+        self.eval_env = eval_env
+        self.eval_freq = eval_freq
+        self.last_eval_step = 0
+        self.episode_rewards = []
+        self.best_reward = float('inf')
+        self.best_x = None
+        self.eval_scores = []
+
+        self.total_steps=0
+        self.best_reward_history=[]
+        self.total_steps_history=[]
+
+    def _on_step(self) -> bool:
+        self.total_steps+=1
+        #Detect episode end:
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            if "episode" in info:#If True it means this is the end of an episode
+                episode_reward = info["episode"]["r"]
+                self.episode_rewards.append(episode_reward)
+                #Check if this is the best episode:
+                if episode_reward < self.best_reward:
+                    self.best_reward = episode_reward
+                    self.best_x = info["terminal_observation"].copy()
+                    self.best_reward_history.append(self.best_reward)
+                    self.total_steps_history.append(self.total_steps)
+        #Periodic deterministic evaluation:
+        if self.num_timesteps - self.last_eval_step >= self.eval_freq:
+            obs, _ = self.eval_env.reset()
+            done, truncated = False, False
+            while not (done or truncated):
+                action, _ = self.model.predict(obs, deterministic=True)
+                obs, reward, done, truncated, info = self.eval_env.step(action)
+            self.eval_scores.append(reward.item())
+            self.last_eval_step = self.num_timesteps
+        return True
+
 class RL():
-    def __init__(self,problem_fn,phi_bounds,max_steps,tolerance,step_scale,device,devices,WandB):
+    def __init__(self,problem_fn,training_steps,device,devices,WandB):
+    #def __init__(self,problem_fn,phi_bounds,max_steps,tolerance,step_scale,device,devices,WandB):
         self.problem_fn=problem_fn
+        self.training_steps=training_steps
+        """
         self.phi_bounds=phi_bounds
         self.max_steps=max_steps
         self.tolerance=tolerance
         self.step_scale=step_scale
+        """
         self.device=device
         self.devices=devices
         self.WandB=WandB
 
+    def run_optimization(self):
+        train_env = RL_muons_env_new(self.problem_fn)
+        eval_env = RL_muons_env_new(self.problem_fn)
+
+        eval_freq = max(1, int(0.05 * self.training_steps))
+        callback = TrainingStatsCallback(eval_env=eval_env, eval_freq=eval_freq, verbose=1)
+
+        policy_kwargs = dict(
+            net_arch=[dict(pi=[128, 128], vf=[128, 128])],
+            activation_fn=torch.nn.ReLU
+        )
+
+        model = PPO(
+            policy="MlpPolicy",
+            env=train_env,
+            learning_rate=1e-4,
+            n_steps=256,
+            batch_size=128,
+            n_epochs=5,
+            gamma=0.99,
+            verbose=1,
+            policy_kwargs=policy_kwargs,
+            device=self.device   
+        )
+
+        model.learn(total_timesteps=self.training_steps, callback=callback)
+
+        model.save(f"outputs/{self.WandB['name']}/ppo_model")
+
+        print(f"Best evaluation achieved during training: x={callback.best_x}, f(x)={callback.best_reward:.4f}")
+
+        #Plots:
+        fig=plt.figure()
+        plt.plot(callback.episode_rewards,marker='o')
+        plt.xlabel("Episode")
+        plt.ylabel("Loss")
+        plt.title("Loss per training episode")
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/training_loss.png")
+        plt.close(fig)
+
+        fig=plt.figure()
+        plt.plot(100*np.linspace(0, 1, len(callback.eval_scores)),callback.eval_scores,marker='o')
+        plt.xlabel("Training %")
+        plt.ylabel("Deterministic evaluation loss")
+        plt.title("Periodic deterministic evaluations")
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/deterministic_loss.png")
+        plt.close(fig)
+
+        fig=plt.figure()
+        plt.plot(callback.total_steps_history,callback.best_reward_history,marker='o')
+        plt.xlabel("Training steps")
+        plt.ylabel("Best training loss")
+        plt.title("Best training evaluation")
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/best_training_loss.png")
+        plt.close(fig)
+
+        return callback.best_x,callback.best_reward
+    """
     def run_optimization(self):        
         env = RL_muons_env(self.problem_fn, self.phi_bounds, self.max_steps, self.tolerance, self.step_scale)
         eval_env = RL_muons_env(self.problem_fn, self.phi_bounds, self.max_steps, self.tolerance, self.step_scale)
@@ -1503,6 +1637,7 @@ class RL():
 
         # 5) Save / load
         sac.save_model(f"outputs/{self.WandB['name']}/iqn_sac_model.d3")
+    """
 #"""
 
 class CEM():

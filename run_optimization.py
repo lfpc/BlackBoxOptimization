@@ -1,6 +1,6 @@
 import torch
 from botorch import acquisition, settings
-from src.optimizer import BayesianOptimizer,LGSO,TurboOptimizer,LCSO,GA,CMAES,CEM#,RL
+from src.optimizer import BayesianOptimizer,LGSO,TurboOptimizer,LCSO,GA,CMAES,CEM,RL
 from src import problems
 from src.models import GP_RBF, GP_BOCK, GP_IBNN
 from utils.acquisition_functions import Custom_LogEI
@@ -96,9 +96,12 @@ if args.optimization == 'GA':
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **GA_dict}, 'name': args.name}
 elif args.optimization == 'RL':
     RL_dict={}
+    """
     RL_dict["max_steps"]=20#TO_DO: Identify a proper value
     RL_dict["tolerance"]=2.0#TO_DO: Identify a proper value
     RL_dict["step_scale"]=0.05#TO_DO: Identify a proper value
+    """
+    RL_dict["training_steps"]=2000*7#TO_DO: Identify a proper value
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **RL_dict}, 'name': args.name}
 elif args.optimization == 'CMAES':
     CMAES_dict={}
@@ -109,7 +112,7 @@ elif args.optimization == 'CMAES':
 elif args.optimization == 'CEM':
     CEM_dict={}
     CEM_dict["initial_std_factor"]=0.0001#0.3#TO_DO: Identify a proper value
-    CEM_dict["elite_frac"]=0.2
+    CEM_dict["elite_frac"]=0.1
     CEM_dict["population_size"]=80
     CEM_dict["generations"]=25
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **CEM_dict}, 'name': args.name}
@@ -260,10 +263,11 @@ if __name__ == "__main__":
         num_gpus = torch.cuda.device_count()
         devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
         RL(problem_fn=problem_fn,
-            phi_bounds=phi_bounds,
-            max_steps=RL_dict["max_steps"],
-            tolerance=RL_dict["tolerance"],
-            step_scale=RL_dict["step_scale"],
+            training_steps=RL_dict["training_steps"],
+            ###phi_bounds=phi_bounds,
+            ###max_steps=RL_dict["max_steps"],
+            ###tolerance=RL_dict["tolerance"],
+            ###step_scale=RL_dict["step_scale"],
             device=dev,
             devices=devices,
             WandB=WANDB).run_optimization()
