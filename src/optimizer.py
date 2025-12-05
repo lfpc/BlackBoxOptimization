@@ -1572,10 +1572,12 @@ class CEM():
                 if current_best_loss < hist_best_loss:
                     hist_best_loss = current_best_loss
                     hist_best_solution = solutions[elite_idx[0]].copy()
+                current_elite_loss = np.mean([losses[i] for i in elite_idx])
                 log_dict = {
                     'generation': generation + 1,
                     'current_best_loss': current_best_loss,
                     'hist_best_loss': hist_best_loss,
+                    'current_elite_loss':current_elite_loss,
                     'num_evaluations':(generation+1)*self.population_size
                 }
                 wb.log(log_dict)
