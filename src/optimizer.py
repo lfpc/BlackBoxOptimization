@@ -1263,7 +1263,7 @@ class RL_muons_env_new(gym.Env):
         if terminated:
             phi=torch.tensor(self.obs, dtype=torch.float32)
             phi=self.enforce_constraints(phi).flatten()
-            reward = self.problem_fn(phi)
+            reward = -torch.log(self.problem_fn(phi))#Consider reward=-log(loss) to deal with huge losses
         truncated = False
         info = {}
         return self.obs, reward, terminated, truncated, info
@@ -1521,6 +1521,7 @@ class TrainingStatsCallback(BaseCallback):
                 obs, reward, done, truncated, info = self.eval_env.step(action)
             self.eval_scores.append(reward.item())
             self.last_eval_step = self.num_timesteps
+            print(f"Steps played: {self.num_timesteps}")
         return True
 
 class RL():
@@ -1713,7 +1714,8 @@ class CEM():
                     'current_best_loss': current_best_loss,
                     'hist_best_loss': hist_best_loss,
                     'current_elite_loss':current_elite_loss,
-                    'num_evaluations':(generation+1)*self.population_size
+                    'num_evaluations':(generation+1)*self.population_size,
+                    'std':std
                 }
                 wb.log(log_dict)
                 pbar.set_description(f"hist_best_loss: {log_dict['hist_best_loss']} (gen. {log_dict['generation']})")
