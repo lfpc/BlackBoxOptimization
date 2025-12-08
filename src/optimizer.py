@@ -1242,7 +1242,7 @@ class RL_muons_env_new(gym.Env):
             low=-1.0, high=1.0, shape=(self.n_params,), dtype=np.float32
         )
 
-    def reset(self, *, seed=None, options=None):#TO_DO: Algorithm should probably receive the info of a warm baseline
+    def reset(self, *, seed=None, options=None):#TO_DO: Algorithm should probably receive the info of a warm baseline: Actions should be displacements from the baseline? Or should I use imitation learning?
         if seed is not None:
             np.random.seed(seed)
         self.obs = np.zeros(self.observation_space.shape, dtype=np.float32)
@@ -1263,7 +1263,7 @@ class RL_muons_env_new(gym.Env):
         if terminated:
             phi=torch.tensor(self.obs, dtype=torch.float32)
             phi=self.enforce_constraints(phi).flatten()
-            reward = -torch.log(self.problem_fn(phi))#Consider reward=-log(loss) to deal with huge losses
+            reward = -torch.log(1.0+self.problem_fn(phi))#Consider reward=-log(1+loss) to deal with huge losses
         truncated = False
         info = {}
         return self.obs, reward, terminated, truncated, info
@@ -1490,7 +1490,7 @@ class TrainingStatsCallback(BaseCallback):
         self.eval_freq = eval_freq
         self.last_eval_step = 0
         self.episode_rewards = []
-        self.best_reward = float('inf')
+        self.best_reward = -float('inf')
         self.best_x = None
         self.eval_scores = []
 
@@ -1507,7 +1507,7 @@ class TrainingStatsCallback(BaseCallback):
                 episode_reward = info["episode"]["r"]
                 self.episode_rewards.append(episode_reward)
                 #Check if this is the best episode:
-                if episode_reward < self.best_reward:
+                if episode_reward > self.best_reward:
                     self.best_reward = episode_reward
                     self.best_x = info["terminal_observation"].copy()
                     self.best_reward_history.append(self.best_reward)
@@ -1714,8 +1714,7 @@ class CEM():
                     'current_best_loss': current_best_loss,
                     'hist_best_loss': hist_best_loss,
                     'current_elite_loss':current_elite_loss,
-                    'num_evaluations':(generation+1)*self.population_size,
-                    'std':std
+                    'num_evaluations':(generation+1)*self.population_size
                 }
                 wb.log(log_dict)
                 pbar.set_description(f"hist_best_loss: {log_dict['hist_best_loss']} (gen. {log_dict['generation']})")
@@ -1738,7 +1737,6 @@ class CEM():
             f.write("Best solution in last generation:\n")
             for variable in self.problem_fn.add_fixed_params(torch.tensor(solutions[elite_idx[0]].copy(), dtype=torch.float32, device=self.device)):
                 f.write(f"{variable}\n")
-        return es
 
     def save_population_history(self, generation, solutions, losses):
         filename=f"outputs/{self.WandB['name']}/population_history.csv"

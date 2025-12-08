@@ -101,7 +101,7 @@ elif args.optimization == 'RL':
     RL_dict["tolerance"]=2.0#TO_DO: Identify a proper value
     RL_dict["step_scale"]=0.05#TO_DO: Identify a proper value
     """
-    RL_dict["training_steps"]=2000*7#TO_DO: Identify a proper value
+    RL_dict["training_steps"]=20000*7#TO_DO: Identify a proper value
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **RL_dict}, 'name': args.name}
 elif args.optimization == 'CMAES':
     CMAES_dict={}
@@ -111,7 +111,7 @@ elif args.optimization == 'CMAES':
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **CMAES_dict}, 'name': args.name}
 elif args.optimization == 'CEM':
     CEM_dict={}
-    CEM_dict["initial_std_factor"]=0.0001#0.3#TO_DO: Identify a proper value
+    CEM_dict["initial_std_factor"]=0.001
     CEM_dict["elite_frac"]=0.1
     CEM_dict["population_size"]=80
     CEM_dict["generations"]=25
