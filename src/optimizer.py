@@ -22,6 +22,11 @@ import csv
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.utils import get_schedule_fn
+from stable_baselines3.common.policies import ActorCriticPolicy
+from imitation.data.types import Trajectory
+from imitation.algorithms import bc
+from imitation.util import logger as imit_logger
 
 #import d3rlpy
 #from d3rlpy.models import IQNQFunctionFactory
@@ -1223,7 +1228,7 @@ class GA():
         with open(f"outputs/{self.WandB['name']}/last_generation.pkl", "wb") as f:
             dump(self.the_population.population, f)
 #"""
-class RL_muons_env_new(gym.Env):
+class RL_muons_env_new(gym.Env):#TO_DO: Check if I am dealing with the device correctly everywhere in the RL approach
     def __init__(self, problem_fn):
         super().__init__()
         self.problem_fn=problem_fn
@@ -1231,8 +1236,8 @@ class RL_muons_env_new(gym.Env):
         self.n_params=problem_fn.n_params
 
         self.low_bounds,self.high_bounds=self.GetBounds()#TO_DO: Check if I need to set the device here
-        self.low_bounds=self.low_bounds.detach().cpu().numpy()
-        self.high_bounds=self.high_bounds.detach().cpu().numpy()
+        self.low_bounds=self.low_bounds.detach().cpu().numpy().ravel()
+        self.high_bounds=self.high_bounds.detach().cpu().numpy().ravel()
         self.observation_space = gym.spaces.Box(
             low=self.low_bounds, 
             high=self.high_bounds, 
@@ -1242,7 +1247,7 @@ class RL_muons_env_new(gym.Env):
             low=-1.0, high=1.0, shape=(self.n_params,), dtype=np.float32
         )
 
-    def reset(self, *, seed=None, options=None):#TO_DO: Algorithm should probably receive the info of a warm baseline: Actions should be displacements from the baseline? Or should I use imitation learning?
+    def reset(self, *, seed=None, options=None):
         if seed is not None:
             np.random.seed(seed)
         self.obs = np.zeros(self.observation_space.shape, dtype=np.float32)
@@ -1261,7 +1266,7 @@ class RL_muons_env_new(gym.Env):
         terminated = (self.current_magnet >= self.n_magnets)
         reward = 0.0
         if terminated:
-            phi=torch.tensor(self.obs, dtype=torch.float32)
+            phi=torch.tensor(self.obs, dtype=torch.float32).reshape(self.n_magnets,self.n_params)
             phi=self.enforce_constraints(phi).flatten()
             reward = -torch.log(1.0+self.problem_fn(phi))#Consider reward=-log(1+loss) to deal with huge losses
         truncated = False
@@ -1524,10 +1529,70 @@ class TrainingStatsCallback(BaseCallback):
             print(f"Steps played: {self.num_timesteps}")
         return True
 
+def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10):
+    rewards = []
+    for _ in range(n_eval_episodes):
+        obs, _ = env.reset()
+        done = False
+        total_r = 0
+        while not done:
+            if hasattr(policy, "predict"):
+                action, _ = policy.predict(obs, deterministic=deterministic)
+            else:
+                action = policy(obs)   # raw PyTorch model case
+            obs, r, done, truncated, _ = env.step(action)
+            total_r += float(r)
+        rewards.append(total_r)
+    return np.mean(rewards)
+
+def generate_imitation_trajectories(env, warm_baseline, n_episodes=10):
+    trajs = []
+    for _ in range(n_episodes):
+        obs_list, act_list = [], []
+        obs, _ = env.reset()
+        done = False
+        while not done:
+            start = env.current_magnet * env.n_params
+            end   = (env.current_magnet + 1) * env.n_params
+            low  = env.low_bounds[start:end]
+            high = env.high_bounds[start:end]
+            expert_value = warm_baseline[env.current_magnet].detach().cpu().numpy()
+            action = 2.0 * (expert_value - low) / (high - low) - 1.0
+            action = action.astype(np.float32)
+            obs_list.append(obs.copy())
+            act_list.append(action.copy())
+            obs, reward, done, truncated, info = env.step(action)
+        print(f"Warm baseline reward: {reward}")
+        obs_list.append(obs.copy())
+        trajs.append(
+            Trajectory(
+                obs=np.array(obs_list, dtype=np.float32),
+                acts=np.array(act_list, dtype=np.float32),
+                infos=[{}] * len(act_list),
+                terminal=True,
+            )
+        )
+    return trajs
+
+class CustomPolicy(ActorCriticPolicy):
+    def __init__(self, observation_space, action_space, lr_schedule, **kwargs):
+        #Extract policy_kwargs passed from PPO:
+        net_arch = kwargs.pop("net_arch", None)
+        activation_fn = kwargs.pop("activation_fn", torch.nn.ReLU)
+        super().__init__(
+            observation_space=observation_space,
+            action_space=action_space,
+            lr_schedule=lr_schedule,
+            net_arch=net_arch,
+            activation_fn=activation_fn,
+            **kwargs
+        )
+
 class RL():
-    def __init__(self,problem_fn,training_steps,device,devices,WandB):
+    def __init__(self,problem_fn,warm_baseline,training_steps,device,devices,WandB):
     #def __init__(self,problem_fn,phi_bounds,max_steps,tolerance,step_scale,device,devices,WandB):
         self.problem_fn=problem_fn
+        self.warm_baseline=warm_baseline
         self.training_steps=training_steps
         """
         self.phi_bounds=phi_bounds
@@ -1540,19 +1605,36 @@ class RL():
         self.WandB=WandB
 
     def run_optimization(self):
+        policy_kwargs = dict(
+            net_arch=[dict(pi=[128, 128], vf=[128, 128])],
+            activation_fn=torch.nn.ReLU
+        )
+
+        BC_env = RL_muons_env_new(self.problem_fn)
+        lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
+        bc_policy=CustomPolicy(BC_env.observation_space, BC_env.action_space, lr_schedule, **policy_kwargs)
+        trajectories = generate_imitation_trajectories(BC_env, self.warm_baseline, n_episodes=10)
+        bc_trainer = bc.BC(
+            observation_space=BC_env.observation_space,
+            action_space=BC_env.action_space,
+            demonstrations=trajectories,
+            rng=np.random.default_rng(42),
+            policy=bc_policy
+        )
+        bc_trainer.train(n_epochs=300)
+        #Evaluate the BC policy:
+        bc_reward = evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=10)
+        print("BC reward:", bc_reward)
+
         train_env = RL_muons_env_new(self.problem_fn)
         eval_env = RL_muons_env_new(self.problem_fn)
 
         eval_freq = max(1, int(0.05 * self.training_steps))
         callback = TrainingStatsCallback(eval_env=eval_env, eval_freq=eval_freq, verbose=1)
 
-        policy_kwargs = dict(
-            net_arch=[dict(pi=[128, 128], vf=[128, 128])],
-            activation_fn=torch.nn.ReLU
-        )
 
         model = PPO(
-            policy="MlpPolicy",
+            policy=CustomPolicy,#"MlpPolicy",
             env=train_env,
             learning_rate=1e-4,
             n_steps=256,
@@ -1560,9 +1642,11 @@ class RL():
             n_epochs=5,
             gamma=0.99,
             verbose=1,
-            policy_kwargs=policy_kwargs,
+            policy_kwargs=policy_kwargs,#SB3 will pass policy_kwargs to CustomPolicy via **kwargs
             device=self.device   
         )
+
+        model.policy.load_state_dict(bc_policy.state_dict())#Load the policy that was pretrained using BC
 
         model.learn(total_timesteps=self.training_steps, callback=callback)
 

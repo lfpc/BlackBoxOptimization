@@ -263,6 +263,7 @@ if __name__ == "__main__":
         num_gpus = torch.cuda.device_count()
         devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
         RL(problem_fn=problem_fn,
+            warm_baseline=problem_fn.DEFAULT_PHI,
             training_steps=RL_dict["training_steps"],
             ###phi_bounds=phi_bounds,
             ###max_steps=RL_dict["max_steps"],
