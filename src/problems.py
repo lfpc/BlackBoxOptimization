@@ -1034,8 +1034,11 @@ class ShipMuonShield():
                 y.append(self(p))
             return torch.stack(y)
         M = self.get_total_cost(phi)
-        #if (self.get_constraints(phi) > 10 or M>((6*np.log(10)/10+1)*self.W0)) and self.reduction != 'none': 
-        #    return torch.ones((1,1),device=phi.device)*1E6
+        jump = self.get_constraints(phi) > 10
+        if not self.cost_as_constraint: jump = jump | (M > ((6 * np.log(10) / 10 + 1) * self.W0))
+        jump = jump & (self.reduction != 'none')
+        if jump: 
+            return torch.ones((1,1),device=phi.device)*1E6
         try: loss = self.simulate(phi, muons, return_all=(self.reduction=='none'))
         except Exception as e:
             print(f"Error occurred with input: {self.add_fixed_params(phi)}")
