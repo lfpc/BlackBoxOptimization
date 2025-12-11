@@ -143,6 +143,8 @@ class Rosenbrock_stochastic_hits(RosenbrockProblem):
     def sample_x(self, device='cpu'):
         """Samples the random variable X from a 2D uniform distribution."""
         return torch.empty(self.n_samples, 2).uniform_(*self.x_bounds).to(device).float()
+    def get_weights(self,x):
+        return torch.ones(x.shape[0], device=x.device)
 
     def sensitivity(self, phi, X):
         """
@@ -199,8 +201,8 @@ class Rosenbrock_stochastic_hits(RosenbrockProblem):
             
         if phi.dim() == 1:
             phi = phi.unsqueeze(0)
-
         y = self.simulate(phi, x)
+
         y = self._blackbox_loss(y)
         
         if self.reduction == 'mean':
@@ -355,6 +357,8 @@ class ThreeHump_stochastic_hits(ThreeHump):
     def sample_x(self, device='cpu'):
         """Samples the random variable X. Here, X is uniformly distributed in [0, 1]."""
         return torch.empty(self.n_samples, 2).uniform_(*self.x_bounds).to(device)
+    def get_weights(self,x):
+        return torch.ones(x.shape[0], device=x.device)
 
     def sensitivity(self, phi, X):
         """
@@ -639,14 +643,13 @@ class ShipMuonShield():
         [284.00, 249.02, 5.39, 21.56, 29.39, 17.26, 68.87, 65.04, 0.94, 0.84, 5.26, 50.07, 77.41, 77.41, -1.90],
         [10.00, 177.17, 34.20, 8.87, 100.69, 32.75, 148.15, 38.30, 0.99, 0.65, 31.66, 12.23, 51.04, 51.04, -1.90],
         [10.00, 172.25, 21.44, 62.75, 197.10, 143.48, 6.63, 22.10, 0.94, 0.94, 15.76, 69.56, 0.06, 0.06, -1.90]],
-
     'stellatryon_v2': [
-        [0, 120.5, 50.0, 50.0, 119.0, 119.0, 2.0, 2.0, 1.0, 1.0, 50.0, 50.0, 0.0, 0.0, 59120.14],
-        [10, 500.0, 67.1, 79.92, 27.0, 43.0, 5.0, 5.0, 1.38, 1.06, 67.1, 79.92, 0.0, 0.0, 38637.97],
-        [10, 285.48, 53.12, 49.56, 43.0, 56.0, 5.03, 5.0, 2.11, 2.4, 53.12, 49.56, 0.0, 0.0, 38266.52],
-        [10, 237.53, 2.73, 3.68, 56.0, 56.0, 5.0, 5.21, 60.44, 45.63, 2.73, 3.68, 0.5, 0.5, -38008.09],
-        [10, 90.0, 1.0, 77.12, 56.0, 56.0, 5.27, 5.0, 140.93, 0.88, 1.0, 77.12, 30.0, 30.0, -36907.91],
-        [10, 238.82, 30.03, 40.0, 56.0, 56.0, 5.0, 5.01, 4.83, 3.37, 30.03, 40.0, 0.0, 0.0, -41504.81]
+        [0, 120.5, 50.0, 50.0, 119.0, 119.0, 2.0, 2.0, 1.0, 1.0, 50.0, 50.0, 0.0, 0.0, 1.9],#59120.14],
+        [10, 500.0, 67.1, 79.92, 27.0, 43.0, 5.0, 5.0, 1.38, 1.06, 67.1, 79.92, 0.0, 0.0, 1.9],#38637.97],
+        [10, 285.48, 53.12, 49.56, 43.0, 56.0, 5.03, 5.0, 2.11, 2.4, 53.12, 49.56, 0.0, 0.0, 1.9],#38266.52],
+        [10, 237.53, 2.73, 3.68, 56.0, 56.0, 5.0, 5.21, 60.44, 45.63, 2.73, 3.68, 0.5, 0.5, -1.9],
+        [10, 90.0, 1.0, 77.12, 56.0, 56.0, 5.27, 5.0, 140.93, 0.88, 1.0, 77.12, 30.0, 30.0, -1.9],
+        [10, 238.82, 30.03, 40.0, 56.0, 56.0, 5.0, 5.01, 4.83, 3.37, 30.03, 40.0, 0.0, 0.0, -1.9]
     ],
     "warm_baseline": [
                 [0.,120.5, 50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 1.9],
@@ -689,32 +692,32 @@ class ShipMuonShield():
             make_index(6, list(range(1,10)) + [14])
         ),
         "robustness": (
-            make_index(0, [1,2,3,6,7,8,14]) +
-            make_index(1, [1,2,3,6,7,8,14]) +
-            make_index(2, [1,2,3,6,7,8,14]) +
-            make_index(3, [1,2,3,6,7,8,14]) +
-            make_index(4, [1,2,3,6,7,8,14]) +
-            make_index(5, [1,2,3,6,7,8,14])
+            make_index(0, [1,2,8,14]) +
+            make_index(1, [1,2,8,14]) +
+            make_index(2, [1,2,8,14]) +
+            make_index(3, [1,2,8,14]) +
+            make_index(4, [1,2,8,14]) +
+            make_index(5, [1,2,8,14])
         ),
         "piet_idx": (
-            make_index(1, [1,2,3,6,7,8]) +
-            make_index(2, [1,2,3,6,7,8]) +
-            make_index(3, [1,2,3,6,7,8] + [12,14]) +
-            make_index(4, [1,2,3,6,7,8] + [12,14]) +
-            make_index(5, [1,2,3,6,7,8] + [14])
+            make_index(1, [1,2,4,3,6,7]) +
+            make_index(2, [1,2,4,3,6,7]) +
+            make_index(3, [1,2,4,3,6,7] + [12,14]) +
+            make_index(4, [1,2,4,3,6,7] + [12,14]) +
+            make_index(5, [1,2,4,3,6,7] + [14])
         ),
         "all_7":sum((make_index(i, list(range(12)) + [12,14]) for i in range(7)), [])
     }
 
 
     
-    DEFAULT_PHI = torch.tensor(params['tokanut_v5'])
+    DEFAULT_PHI = torch.tensor(params['warm_baseline'])
     n_params = 15
     #initial_phi = DEFAULT_PHI.clone()
     MUON = 13
 
     def __init__(self,
-                 W0:float = 11E6,
+                 W0:float = 13E6,
                  L0:float = 29.7,
                  cores:int = 45,
                  n_samples:int = 0,
@@ -788,6 +791,7 @@ class ShipMuonShield():
                 self.params_idx = torch.tensor(sum((make_index(i, list(range(self.n_params))) for i in range(len(self.DEFAULT_PHI))), []))
         self.initial_phi = apply_index(self.DEFAULT_PHI, self.params_idx).flatten()
         self.dimensions_phi = self.dim = len(self.initial_phi)
+        
         self.n_magnets = len(self.DEFAULT_PHI)
 
         self.materials_directory = os.path.join(PROJECTS_DIR,'MuonsAndMatter/data/materials')
@@ -834,6 +838,8 @@ class ShipMuonShield():
         x = torch.from_numpy(x)                  
         self._sum_weights = x[:, -1].sum()    
         return x
+    def get_weights(self, x):
+        return x[:, -1]
     def simulate_mag_fields(self,phi:torch.tensor, cores:int = 7):
         phi = self.add_fixed_params(phi)
         z_gap, dZ, dXIn, dXOut, dYIn, dYOut, gapIn, gapOut, ratio_yokesIn, ratio_yokesOut, \
@@ -894,8 +900,8 @@ class ShipMuonShield():
             all_results = torch.as_tensor(all_results, device=phi.device, dtype=torch.get_default_dtype())
         return all_results
     def is_hit(self, px, py, pz, x, y, z, particle, factor=None):
-        mask = (torch.abs(x) <= self.x_margin) & (torch.abs(y) <= self.y_margin) & \
-                (torch.abs(z - self.sensitive_plane[-1]['position']) <= self.sensitive_plane[-1]['dz'])
+        mask = (torch.abs(x) <= self.x_margin) & (torch.abs(y) <= self.y_margin) 
+        mask = mask & (torch.abs(z - self.sensitive_plane[-1]['position']) <= self.sensitive_plane[-1]['dz'])
         mask = mask & (torch.abs(particle).to(torch.int)==self.MUON)
         if self.cut_P is not None: 
             p = torch.sqrt(px**2+py**2+pz**2)
@@ -1004,7 +1010,7 @@ class ShipMuonShield():
         return C_iron.detach()
     def get_total_cost(self,phi):
         try:
-            M = self.get_iron_cost(phi) #+ self.get_electrical_cost(phi)
+            M = self.get_iron_cost(phi) + self.get_electrical_cost(phi)
         except Exception as e:
             print(f"Error in cost estimation of parameters: {phi}")
             print(f"Error: {e}")
@@ -1028,8 +1034,8 @@ class ShipMuonShield():
                 y.append(self(p))
             return torch.stack(y)
         M = self.get_total_cost(phi)
-        if (self.get_constraints(phi) > 10 or M>((6*np.log(10)/10+1)*self.W0)) and self.reduction != 'none': 
-            return torch.ones((1,1),device=phi.device)*1E6
+        #if (self.get_constraints(phi) > 10 or M>((6*np.log(10)/10+1)*self.W0)) and self.reduction != 'none': 
+        #    return torch.ones((1,1),device=phi.device)*1E6
         try: loss = self.simulate(phi, muons, return_all=(self.reduction=='none'))
         except Exception as e:
             print(f"Error occurred with input: {self.add_fixed_params(phi)}")
@@ -1192,7 +1198,7 @@ class ShipMuonShield():
                     (torch.tensor([1]), torch.tensor([5])),
                     new_phi[1, 4]
                 )
-            if self.dimensions_phi in [len(self.parametrization['piet_idx']), len(self.parametrization['robustness'])]:
+            if self.use_diluted:
                 rows = torch.arange(1, new_phi.size(0), device=new_phi.device)
                 # new_phi[1:,10] = new_phi[1:, 2]
                 new_phi = new_phi.index_put(
@@ -1268,7 +1274,7 @@ class ShipMuonShield():
         """
         This is a class method that calculates all problem constraints.
         It takes a NumPy array (from SciPy) and returns a NumPy array where
-        each element represents a constraint in the form `g(x) >= 0`.
+        each element represents a constraint in the form `g(x) <= 0`.
         """
         wall_gap = 1
         def get_cavern_bounds(z):
@@ -1286,40 +1292,37 @@ class ShipMuonShield():
         #phi = torch.from_numpy(phi).float()
         
         phi = self.add_fixed_params(phi)
-        phi = phi.view(1, -1) 
         
         constraint_values = []
         length_constraint = self.L0 - self.get_total_length(phi)
         constraint_values.append(length_constraint)
         z = torch.zeros(phi.size(0))
-        for m, idx in self.parametrization.items():
-            p = phi[:, idx]
-            z = z + 2 * p[:, 1] + p[:, 0]
-            Ymgap = self.SC_Ymgap if (self.fSC_mag and m == 'M2') else 0
+        z = z + 2 * phi[:,1] + phi[:,0]
+        Ymgap = self.SC_Ymgap if (self.fSC_mag and abs(phi[:,-1])>3.0) else 0
 
-            with torch.no_grad():
-                x_min_g1, y_min_g1 = get_cavern_bounds(z - 2 * p[:, 1])
-            c1 = x_min_g1 - (p[:, 2] + p[:, 8] * p[:, 2] + p[:, 6] + p[:, 12])
-            constraint_values.append(c1)
-            c2 = y_min_g1 - (p[:, 4] + p[:, 10] + Ymgap)
-            constraint_values.append(c2)
-            with torch.no_grad():
-                x_min_g2, y_min_g2 = get_cavern_bounds(z)
-            c3 = x_min_g2 - (p[:, 3] + p[:, 9] * p[:, 3] + p[:, 7] + p[:, 13])
-            constraint_values.append(c3)
-            c4 = y_min_g2 - (p[:, 5] + p[:, 11] + Ymgap)
-            constraint_values.append(c4)
-            if self.use_diluted:
-                c5 = p[:, 8] - 1
-                constraint_values.append(c5)
-                c6 = p[:, 9] - 1
-                constraint_values.append(c6)
+        with torch.no_grad():
+            x_min_g1, y_min_g1 = get_cavern_bounds(z - 2 * phi[:,1])
+        c1 = x_min_g1 - (phi[:,2] + phi[:,8] * phi[:,2] + phi[:,6] + phi[:,12])
+        constraint_values.append(c1)
+        c2 = y_min_g1 - (phi[:,4] + phi[:,10] + Ymgap)
+        constraint_values.append(c2)
+        with torch.no_grad():
+            x_min_g2, y_min_g2 = get_cavern_bounds(z)
+        c3 = x_min_g2 - (phi[:,3] + phi[:,9] * phi[:,3] + phi[:,7] + phi[:,13])
+        constraint_values.append(c3)
+        c4 = y_min_g2 - (phi[:,5] + phi[:,11] + Ymgap)
+        constraint_values.append(c4)
+        if self.use_diluted:
+            c5 = phi[:,8] - 1
+            constraint_values.append(c5)
+            c6 = phi[:,9] - 1
+            constraint_values.append(c6)
         if self.cost_as_constraint:
             M = self.get_total_cost(phi)
             c_cost = (self.W0 - M)
             constraint_values.append(c_cost)
 
-        all_constraints_tensor = torch.cat([c.flatten() for c in constraint_values])
+        all_constraints_tensor = -torch.cat([c.flatten() for c in constraint_values])
         return all_constraints_tensor
 
        
@@ -1421,6 +1424,9 @@ class ShipMuonShieldCuda(ShipMuonShield):
         self.run_muonshield = run
         self.muons = super().sample_x()
     def sample_x(self, phi=None, idx=None):
+        if 0 < self.n_samples < self.muons.size(0):
+            indices = torch.randperm(self.muons.size(0), device=self.muons.device)[: self.n_samples]
+            return self.muons[indices].clone()
         return self.muons
 
     def simulate(self,phi:torch.tensor,muons = None, return_all = False): 
@@ -1458,7 +1464,6 @@ class ShipMuonShieldCuda(ShipMuonShield):
         particle = output['pdg_id']
         weight = output['weight']
         return torch.stack([px, py, pz, x, y, z, particle, weight])    
-
 
 class stochastic_RosenbrockProblem(RosenbrockProblem):
     def __init__(self,bounds = (-10,10), 

@@ -5,9 +5,8 @@ import os
 sys.path.append(os.path.abspath(os.path.join('..', 'src')))
 sys.path.append(os.path.abspath(os.path.join('..')))
 from models import BinaryClassifierModel, GP_RBF
-from optimizer import LCSO, denormalize_vector
+from optimizer import LCSO, denormalize_vector, normalize_vector
 from problems import ThreeHump_stochastic_hits, Rosenbrock_stochastic_hits, HelicalValley_stochastic_hits, ShipMuonShieldCuda
-from utils import normalize_vector
 import torch
 import json
 import numpy as np
@@ -15,12 +14,25 @@ import argparse
 import time
 import pickle
 import os
-torch.set_default_dtype(torch.float64)
+#torch.set_default_dtype(torch.float64)
 
-torch.autograd.set_detect_anomaly(True)
 torch.manual_seed(42)
 np.random.seed(42)
-dev = 'cuda:0'#get_freest_gpu()
+def get_freest_gpu():
+    import subprocess
+    if not torch.cuda.is_available():
+        return torch.device('cpu')
+    result = subprocess.run(
+        ['nvidia-smi', '--query-gpu=memory.free', '--format=csv,nounits,noheader'],
+        stdout=subprocess.PIPE, encoding='utf-8'
+    )
+    # Parse free memory for each GPU
+    mem_free = [int(x) for x in result.stdout.strip().split('\n')]
+    max_idx = mem_free.index(max(mem_free))
+    return torch.device(f'cuda:{max_idx}')
+torch.set_default_device('cpu')
+#\torch.cuda.set_device('cuda:2')#get_freest_gpu())
+dev = get_freest_gpu()
 
 
 parser = argparse.ArgumentParser()
@@ -34,6 +46,7 @@ parser.add_argument('--n_test', type=int, default=5, help='Number of test sample
 parser.add_argument('--n_epochs', type=int, default=30, help='Number of epochs to train the surrogate model')
 parser.add_argument('--epsilon', type=float, default=0.05, help='Trust region radius for phi optimization')
 parser.add_argument('--dims', type=int, default=4, help='Number of dimensions for Rosenbrock problem')
+parser.add_argument('--load', action='store_true', help='Load existing history instead of starting fresh')
 args = parser.parse_args()
 
 epsilon = args.epsilon
@@ -53,7 +66,7 @@ if args.problem == 'ThreeHump':
     initial_phi = torch.tensor([-1.2, 1.0])
 elif args.problem == 'Rosenbrock':
     dim = args.dims
-    x_dim = 2
+    x_dim = 7
     problem = Rosenbrock_stochastic_hits(dim = dim, n_samples = n_samples, 
                                     phi_bounds = ((-2.0, 2.0)), 
                                     x_bounds = (-3.,3.),
@@ -67,20 +80,23 @@ elif args.problem == 'HelicalValley':
                                     x_bounds = (-5,5),
                                     reduction = 'mean')
     initial_phi = torch.tensor([-9, -1.0, -9.0])
+
 elif args.problem == 'MuonShield':
-    dim = 63
+    dim = 24
     x_dim = 8
-    config_file = "/home/hep/lprate/projects/BlackBoxOptimization/outputs/config.json"
+    config_file = "/home/hep/lprate/projects/BlackBoxOptimization/outputs/config_tests.json"
     with open(config_file, 'r') as f:
         CONFIG = json.load(f)
     CONFIG.pop("data_treatment", None)
     CONFIG.pop('results_dir', None)
-    CONFIG['dimensions_phi'] = 63
-    CONFIG['initial_phi'] = ShipMuonShieldCuda.params['warm_baseline']
+    CONFIG['dimensions_phi'] = dim
+    CONFIG['initial_phi'] = ShipMuonShieldCuda.params['stellatryon_v2']
     CONFIG['n_samples'] = n_samples
-    CONFIG['reduction'] = 'mean'
+    CONFIG['reduction'] = 'sum'
+    CONFIG['cost_as_constraint'] = False
     problem = ShipMuonShieldCuda(**CONFIG)
     initial_phi = problem.initial_phi
+
 
 samples_phi = args.samples_phi
 print(f"Using problem {args.problem} with dim {dim} and x_dim {x_dim}, samples_phi = {samples_phi}")
@@ -103,47 +119,55 @@ optimizer = LCSO(
     device='cpu',
     outputs_dir=outputs_dir,
     second_order = args.second_order,
+    local_file_storage = None,
     resume=False)
 
+if not args.load:
+    phis = optimizer.sample_phi()
+    for phi in phis:
+        phi = denormalize_vector(phi, bounds)
+        print("Evaluating initial phi:", phi, 'constraints', problem.get_constraints(phi))
+        #if problem.get_constraints(phi) > 1: continue
+        y = problem(phi)# * 1e6
+        optimizer.update_history(phi,y)
+    dists = torch.norm(phis - initial_phi, dim=1).numpy()
+    history = optimizer.history
+    with open('outputs/history.pkl', 'wb') as f:
+        pickle.dump(history, f)
+else:
+    with open('outputs/history.pkl', 'rb') as f:
+        history = pickle.load(f)
+    optimizer.history = history
 
 
-phis = optimizer.sample_phi()
-for phi in phis:
-    phi = denormalize_vector(phi, bounds)
-    y = problem(phi)
-    optimizer.update_history(phi,y)
-phis = optimizer.sample_phi_uniform()
-for phi in phis:
-    phi = denormalize_vector(phi, bounds)
-    y = problem(phi)
-    optimizer.update_history(phi,y)
-history = optimizer.history
 t1 = time.time()
 surrogate_model.fit(history[0], history[1].to(torch.get_default_dtype()))
 print("Surrogate model trained in", time.time() - t1, "seconds")
 
 
-with open('outputs/history.pkl', 'wb') as f:
-    pickle.dump(history, f)
+
 
 print(f"History saved to {'outputs/history.pkl'}")
 
+orig_count = len(history[0])
+optimizer.samples_phi = args.n_test
+test_phis = optimizer.sample_phi()#_uniform()
+for phi in test_phis:
+    phi = denormalize_vector(phi, bounds)
+    #if problem.get_constraints(phi) > 1: continue
+    y = problem(phi)# * 1e6
+    optimizer.update_history(phi,y)
+test_dists = torch.norm(test_phis - initial_phi, dim=1).numpy()
 
+history = optimizer.history
 true_loss = history[1]
 sur_loss = surrogate_model.posterior(history[0].to(dev)).mean.detach().cpu().squeeze()
 sur_std = surrogate_model.posterior(history[0].to(dev)).stddev.detach().cpu().squeeze()
 
-orig_count = len(history[0])
-test_phis = initial_phi + (torch.rand(args.n_test, dim) * 2.0 - 1.0) * epsilon
-for phi in test_phis:
-    y = problem(phi)
-    optimizer.update_history(phi,y)
-dists = torch.norm(test_phis - initial_phi, dim=1).numpy()
-
 plt.figure(figsize=(6, 6))
 plt.scatter(true_loss[0], sur_loss[0], color='red', marker='*', s=100, label='Initial sample', zorder=5)
-plt.scatter(true_loss[1:orig_count], sur_loss[1:orig_count],s = 40, color='blue', label='Training samples')
-sc = plt.scatter(true_loss[orig_count:], sur_loss[orig_count:], c=dists[orig_count:], cmap='viridis', marker='x', s=30, label='Test samples')
+plt.scatter(true_loss[1:orig_count], sur_loss[1:orig_count], color='blue', s = 40, label='Training samples')
+sc = plt.scatter(true_loss[orig_count:], sur_loss[orig_count:], c=test_dists, cmap='viridis', marker='x', s=30, label='Test samples')
 plt.errorbar(true_loss[1:orig_count], sur_loss[1:orig_count], yerr=sur_std[1:orig_count], fmt='o', 
              color='blue', alpha=0.7, capsize=3)
 plt.errorbar(true_loss[orig_count:], sur_loss[orig_count:], yerr=sur_std[orig_count:], fmt='none', 
@@ -152,7 +176,7 @@ plt.colorbar(sc, label='Distance to current phi')
 plt.plot([true_loss.min().item(), true_loss.max().item()], [true_loss.min().item(), true_loss.max().item()], 'k--', label='y = x')
 plt.xlabel('True Loss'); plt.ylabel('Surrogate Loss'); plt.title('Surrogate vs True Loss')
 plt.legend(); plt.grid(True); plt.savefig('figs/surrogate_vs_true_loss_gp.png')
-print("Surrogate vs True Loss plot saved.")
+print("Surrogate vs True Loss plot saved as 'figs/surrogate_vs_true_loss_gp.png'")
 
 
 def surrogate_objective(phi):

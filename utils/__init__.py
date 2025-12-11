@@ -194,33 +194,106 @@ def denormalize_vector(x:torch.tensor, bounds:tuple):
 
 def fn_pen(x): return torch.nn.functional.relu(x,inplace=False).pow(2)
 
-class HDF5Dataset(torch.utils.data.Dataset):
-    """PyTorch Dataset for lazy-loading from HDF5 files."""
-    def __init__(self, h5_path):
+class HDF5Dataset(torch.utils.data.IterableDataset):
+    """
+    PyTorch IterableDataset for parallel HDF5 loading.
+    Designed for num_workers > 0.
+    """
+    def __init__(self, h5_path, batch_size, shuffle=True, buffer_size_factor=100):
+        super().__init__()
         self.h5_path = h5_path
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.buffer_size = batch_size * buffer_size_factor
         
-        # Open file to get metadata
-        with h5py.File(self.h5_path, 'r') as f:
-            self.n_samples = f['condition'].shape[0]
+        try:
+            with h5py.File(self.h5_path, 'r') as f:
+                self.n_samples = f['condition'].shape[0]
+        except Exception as e:
+            print(f"Error opening HDF5 file {self.h5_path} to read metadata: {e}")
+            self.n_samples = 0
         
-        # Keep file handle open for efficient reading
-        self.h5_file = None
-    
-    def __len__(self):
-        return self.n_samples
-    
-    def __getitem__(self, idx):
-        # Open file handle if not already open (for worker compatibility)
-        if self.h5_file is None:
-            self.h5_file = h5py.File(self.h5_path, 'r')
-        
-        # Read single sample        
-        condition = torch.from_numpy(self.h5_file['condition'][idx]).float()
-        y = torch.from_numpy(self.h5_file['y'][idx]).float().view(-1)
+        print(f"HDF5IterableDataset initialized: {self.n_samples} samples.")
 
-        return condition, y
-    
-    def __del__(self):
-        # Close file handle when dataset is destroyed
-        if self.h5_file is not None:
-            self.h5_file.close()
+    def __iter__(self):
+        """
+        Called once per worker to yield batches.
+        """
+        
+        # 1. Get worker info and open file handle
+        worker_info = torch.utils.data.get_worker_info()
+        try:
+            h5_file = h5py.File(self.h5_path, 'r')
+            condition_dset = h5_file['condition']
+            y_dset = h5_file['y']
+        except Exception as e:
+            print(f"Worker failed to open HDF5 file {self.h5_path}: {e}")
+            return
+            
+        # 2. Create this worker's indices
+        indices = np.arange(self.n_samples)
+        # NOTE: We do NOT shuffle the main index list if self.shuffle is True.
+        # We shuffle inside the buffer instead.
+
+        # 3. Split the work among workers
+        if worker_info is None: # num_workers = 0
+            iter_start, iter_end = 0, self.n_samples
+        else: # num_workers > 0
+            per_worker = int(np.ceil(self.n_samples / float(worker_info.num_workers)))
+            worker_id = worker_info.id
+            iter_start = worker_id * per_worker
+            iter_end = min(iter_start + per_worker, self.n_samples)
+        
+        worker_indices = indices[iter_start:iter_end]
+        
+        if not self.shuffle:
+            # If no shuffling, just read batches sequentially (original fast-path)
+            for i in range(0, len(worker_indices), self.batch_size):
+                batch_indices = worker_indices[i : i + self.batch_size]
+                if len(batch_indices) == 0: continue
+                try:
+                    # No sort needed, already sequential
+                    condition_batch = condition_dset[batch_indices]
+                    y_batch = y_dset[batch_indices]
+                    yield torch.from_numpy(condition_batch).float(), torch.from_numpy(y_batch).float()
+                except Exception as e:
+                    print(f"Worker read error (no-shuffle): {e}.")
+                    continue
+        else:
+            # --- NEW BUFFERED SHUFFLING LOGIC ---
+            # 4. Iterate over the worker's indices in large buffer-sized steps
+            for i in range(0, len(worker_indices), self.buffer_size):
+                
+                # 4a. Get indices for the sequential buffer read
+                buffer_indices = worker_indices[i : i + self.buffer_size]
+                if len(buffer_indices) == 0:
+                    continue
+                
+                try:
+                    # 4b. Read the large sequential buffer (FAST)
+                    # No np.sort(), these are sequential
+                    condition_buffer = condition_dset[buffer_indices]
+                    y_buffer = y_dset[buffer_indices]
+
+                    # 4c. Shuffle the buffer in-memory (FAST)
+                    rand_indices = np.arange(len(condition_buffer))
+                    np.random.shuffle(rand_indices)
+                    condition_buffer = condition_buffer[rand_indices]
+                    y_buffer = y_buffer[rand_indices]
+
+                    # 4d. Yield batches from the shuffled buffer
+                    for j in range(0, len(condition_buffer), self.batch_size):
+                        condition_batch = condition_buffer[j : j + self.batch_size]
+                        y_batch = y_buffer[j : j + self.batch_size]
+                        
+                        if len(condition_batch) == 0:
+                            continue
+                            
+                        yield torch.from_numpy(condition_batch).float(), torch.from_numpy(y_batch).float()
+                        
+                except Exception as e:
+                    print(f"Worker read error (shuffle): {e}.")
+                    continue
+        
+        # 5. Clean up
+        h5_file.close()

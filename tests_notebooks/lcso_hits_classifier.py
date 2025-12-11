@@ -5,7 +5,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join('..', 'src')))
 sys.path.append(os.path.abspath(os.path.join('..')))
 from models import BinaryClassifierModel
-from optimizer import LCSO, denormalize_vector
+from optimizer import LCSO, denormalize_vector, LCSO_sampled
 from problems import ThreeHump_stochastic_hits, Rosenbrock_stochastic_hits, HelicalValley_stochastic_hits, ShipMuonShieldCuda
 from utils import normalize_vector
 import torch
@@ -32,14 +32,13 @@ torch.manual_seed(42)
 np.random.seed(42)
 dev = get_freest_gpu()
 
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--second_order', action='store_true', help='Use second order optimization')
 parser.add_argument('--lr', type=float, default=0.1, help='Initial learning rate for phi optimization')
 parser.add_argument('--problem', type=str, choices=['ThreeHump', 'Rosenbrock', 'HelicalValley', 'MuonShield'], default='ThreeHump', help='Optimization problem to use')
 parser.add_argument('--batch_size', type=int, default=4096, help='Batch size for training the surrogate model')
 parser.add_argument('--samples_phi', type=int, default=5, help='Number of samples for phi in each iteration')
-parser.add_argument('--n_samples', type=int, default=100_000, help='Number of samples per phi')
+parser.add_argument('--n_samples', type=int, default=5_000_000, help='Number of samples per phi')
 parser.add_argument('--n_test', type=int, default=5, help='Number of test samples to evaluate the surrogate model')
 parser.add_argument('--n_epochs', type=int, default=30, help='Number of epochs to train the surrogate model')
 parser.add_argument('--epsilon', type=float, default=0.05, help='Trust region radius for phi optimization')
@@ -90,13 +89,6 @@ elif args.problem == 'MuonShield':
     CONFIG['n_samples'] = n_samples
     CONFIG['reduction'] = 'none'
     CONFIG['cost_as_constraint'] = False
-    CONFIG["sensitive_plane"] = [
-    {
-      "dz": 0.02,
-      "dx": 4,
-      "dy": 6,
-      "position": 82
-    }]
     problem = ShipMuonShieldCuda(**CONFIG)
     initial_phi = problem.initial_phi
 
@@ -104,7 +96,8 @@ samples_phi = args.samples_phi
 print(f"Using problem {args.problem} with dim {dim} and x_dim {x_dim}, samples_phi = {samples_phi}")
 
 bounds = problem.GetBounds(device=torch.device('cpu'))
-#diff_bounds = (bounds[1] - bounds[0])
+diff_bounds = (bounds[1] - bounds[0])
+inv_diff_bounds = 1 / diff_bounds
 surrogate_model = BinaryClassifierModel(phi_dim=dim,
                             x_dim = x_dim,
                             n_epochs = args.n_epochs,
@@ -126,8 +119,8 @@ optimizer = LCSO(
     initial_lr=initial_lr,  # Initial learning rate or trust_radius for phi optimization
     weight_hits=weight_hits,
     device='cpu',
+    second_order = args.second_order, 
     outputs_dir=outputs_dir,
-    second_order = args.second_order,
     local_file_storage = None,
     resume=False)
 
@@ -149,6 +142,7 @@ local_info = (torch.stack(local_info[0]), torch.stack(local_info[1]))
 
 t1 = time.time()
 surrogate_model.fit(local_info[0].reshape(-1, dim+x_dim), local_info[1].reshape(-1, 1))
+torch.save(surrogate_model.model.state_dict(), 'outputs/surrogate_model_ship.pth')
 print("Surrogate model trained in", time.time() - t1, "seconds")
 
 plt.figure()
@@ -165,7 +159,7 @@ def get_probs(conditions_subset):
         bs = 50
         for i in range(0, len(conditions_subset), bs):
             c = conditions_subset[i:i+bs].reshape(-1, dim+x_dim)
-            p = surrogate_model.predict_proba(c).detach().cpu()
+            p = surrogate_model._predict_proba_cond(c).detach().cpu()
             pred_probs_list.append(p)
             phi = denormalize_vector(c[:, :dim], bounds)
             p = problem.probability_of_hit(phi, c[:, dim:]).cpu() if args.problem != 'MuonShield' else p
@@ -272,12 +266,11 @@ print("Plots saved.")
 x_samp = problem.sample_x()
 def surrogate_objective(phi):
     phi = normalize_vector(phi, bounds)
-    condition = torch.cat([phi.repeat(x_samp.shape[0], 1), x_samp], dim=-1)
-    y_pred = surrogate_model.predict_proba(condition).to(phi.device)
+    y_pred = surrogate_model.predict_proba(phi,x_samp).to(phi.device)
     return optimizer.n_hits(y_pred, x_samp)
 if args.problem != 'MuonShield':
-    surrogate_grad = torch.func.grad(surrogate_objective)(optimizer.current_phi)#*diff_bounds
-    surrogate_hessian = torch.func.hessian(surrogate_objective)(optimizer.current_phi)#*diff_bounds
+    surrogate_grad = torch.func.grad(surrogate_objective)(optimizer.current_phi) * diff_bounds
+    surrogate_hessian = torch.func.hessian(surrogate_objective)(optimizer.current_phi) * diff_bounds[:, None] * diff_bounds[None, :]
     surrogate_step = -torch.linalg.solve(surrogate_hessian, surrogate_grad)
     cos_step_surrogate = (torch.dot(surrogate_grad, surrogate_step) / (torch.linalg.norm(surrogate_grad) * torch.linalg.norm(surrogate_step) + 1e-10)).item()
     print(f"Cosine between surrogate gradient and surrogate Newton step: {cos_step_surrogate}")

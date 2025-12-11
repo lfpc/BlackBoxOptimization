@@ -3,65 +3,142 @@ import matplotlib.pyplot as plt
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join('..', 'src')))
-from optimizer import LGSO, LCSO, normalize_vector
-from problems import ShipMuonShield, make_index, ShipMuonShieldCuda
+sys.path.append(os.path.abspath(os.path.join('..')))
 from models import BinaryClassifierModel, GP_RBF
+from optimizer import LCSO, denormalize_vector, normalize_vector
+from problems import ThreeHump_stochastic_hits, Rosenbrock_stochastic_hits, HelicalValley_stochastic_hits, ShipMuonShieldCuda
 import torch
-import pickle
+import json
 import numpy as np
+import argparse
+import time
+import pickle
+import os
+#torch.set_default_dtype(torch.float64)
 
-torch.autograd.set_detect_anomaly(True)
+torch.manual_seed(42)
+np.random.seed(42)
+def get_freest_gpu():
+    import subprocess
+    if not torch.cuda.is_available():
+        return torch.device('cpu')
+    result = subprocess.run(
+        ['nvidia-smi', '--query-gpu=memory.free', '--format=csv,nounits,noheader'],
+        stdout=subprocess.PIPE, encoding='utf-8'
+    )
+    # Parse free memory for each GPU
+    mem_free = [int(x) for x in result.stdout.strip().split('\n')]
+    max_idx = mem_free.index(max(mem_free))
+    return torch.device(f'cuda:{max_idx}')
+torch.set_default_device('cpu')
+#\torch.cuda.set_device('cuda:2')#get_freest_gpu())
+dev = get_freest_gpu()
 
-dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {dev}")
-dim = (
-    make_index(0, [0,1,2,4,6,8,14]) +
-    make_index(1, [0,1,2,3,4,5,6,7,8,9,14]) +
-    make_index(2, [0,1,2,3,4,5,6,7,8,9,14]) +
-    make_index(3, [0,1,2,3,4,5,6,7,8,9,14]) +
-    make_index(4, [0,1,2,3,4,5,6,7,8,9,12,13,14]) +
-    make_index(5, [0,1,2,3,4,5,6,7,8,9,12,13,14]) +
-    make_index(6, [0,1,2,3,4,5,6,7,8,9,12,13,14]))
 
-initial_phi = torch.tensor(ShipMuonShield.params["tokanut_v5"])
+parser = argparse.ArgumentParser()
+parser.add_argument('--second_order', action='store_true', help='Use second order optimization')
+parser.add_argument('--lr', type=float, default=0.1, help='Initial learning rate for phi optimization')
+parser.add_argument('--problem', type=str, choices=['ThreeHump', 'Rosenbrock', 'HelicalValley', 'MuonShield'], default='MuonShield', help='Optimization problem to use')
+parser.add_argument('--batch_size', type=int, default=4096, help='Batch size for training the surrogate model')
+parser.add_argument('--samples_phi', type=int, default=5, help='Number of samples for phi in each iteration')
+parser.add_argument('--n_samples', type=int, default=0, help='Number of samples per phi')
+parser.add_argument('--n_test', type=int, default=5, help='Number of test samples to evaluate the surrogate model')
+parser.add_argument('--n_epochs', type=int, default=30, help='Number of epochs to train the surrogate model')
+parser.add_argument('--epsilon', type=float, default=0.05, help='Trust region radius for phi optimization')
+parser.add_argument('--dims', type=int, default=4, help='Number of dimensions for Rosenbrock problem')
+parser.add_argument('--load', action='store_true', help='Load existing history instead of starting fresh')
+args = parser.parse_args()
 
-# Minimal ShipMuonShield setup for fast LGSO test
-problem = ShipMuonShieldCuda(
-            uniform_fields=False,  # No real field simulation
-            n_samples=0,       
-            apply_det_loss=False,  # Skip detector loss for speed
-            loss_fn='hits',
-            reduction='none',
-            cost_loss_fn=None,     # No cost penalty
-            dimensions_phi=dim,
-            initial_phi=initial_phi,
-            parallel = False,
-            fSC_mag = False,
-            use_B_goal = True,
-            fields_file = "/home/hep/lprate/projects/MuonsAndMatter/data/outputs/fields_rob.h5",
-            sensitive_plane = [{'dz': 0.01, 'dx': 4, 'dy': 6,'position': 82}]
-        )
+epsilon = args.epsilon
+n_samples = args.n_samples
+initial_lambda_constraints = 1e-3
+initial_lr = args.lr
+weight_hits = False
+outputs_dir = '/home/hep/lprate/projects/BlackBoxOptimization/outputs/test_lcso'
 
-initial_phi = problem.initial_phi
+if args.problem == 'ThreeHump':
+    dim = 2
+    x_dim = 2
+    problem = ThreeHump_stochastic_hits(n_samples = n_samples, 
+                                    phi_bounds = (((-2.3,-2.0), (2.0,2.0))), 
+                                    x_bounds = (-3,3),
+                                    reduction = 'mean')
+    initial_phi = torch.tensor([-1.2, 1.0])
+elif args.problem == 'Rosenbrock':
+    dim = args.dims
+    x_dim = 7
+    problem = Rosenbrock_stochastic_hits(dim = dim, n_samples = n_samples, 
+                                    phi_bounds = ((-2.0, 2.0)), 
+                                    x_bounds = (-3.,3.),
+                                    reduction = 'mean')
+    initial_phi = torch.tensor([[-1.2, 1.8]*(dim//2)]).flatten()
+elif args.problem == 'HelicalValley':
+    dim = 3
+    x_dim = 2
+    problem = HelicalValley_stochastic_hits(n_samples = n_samples, 
+                                    phi_bounds = ((-10.0, 10.0)), 
+                                    x_bounds = (-5,5),
+                                    reduction = 'mean')
+    initial_phi = torch.tensor([-9, -1.0, -9.0])
+
+elif args.problem == 'MuonShield':
+    dim = 24
+    x_dim = 8
+    config_file = "/home/hep/lprate/projects/BlackBoxOptimization/outputs/config_tests.json"
+    with open(config_file, 'r') as f:
+        CONFIG = json.load(f)
+    CONFIG.pop("data_treatment", None)
+    CONFIG.pop('results_dir', None)
+    CONFIG['dimensions_phi'] = dim
+    CONFIG['initial_phi'] = ShipMuonShieldCuda.params['stellatryon_v2']
+    CONFIG['n_samples'] = n_samples
+    CONFIG['reduction'] = 'sum'
+    CONFIG['cost_as_constraint'] = False
+    problem = ShipMuonShieldCuda(**CONFIG)
+    initial_phi = problem.initial_phi
+
+
+samples_phi = args.samples_phi
+print(f"Using problem {args.problem} with dim {dim} and x_dim {x_dim}, samples_phi = {samples_phi}")
+
 bounds = problem.GetBounds(device=torch.device('cpu'))
-print(bounds[0])
-
-# Set up a simple generative model (GANModel)
-BATCH_SIZE = 2**20
-generative_model = GP_RBF(bounds=bounds,
+diff_bounds = (bounds[1] - bounds[0])
+surrogate_model = GP_RBF(bounds=bounds,
                           device=dev)
 
-# Set up LGSO optimizer
 optimizer = LCSO(
     true_model=problem,
-    surrogate_model=generative_model,
+    surrogate_model=surrogate_model,
     bounds=bounds,
-    samples_phi=100,    
-    epsilon=0.1,       # Local search radius
+    samples_phi=samples_phi,
+    epsilon=epsilon,
     initial_phi=initial_phi,
+    initial_lambda_constraints=initial_lambda_constraints,  # Initial lambda for constraints
+    initial_lr=initial_lr,  # Initial learning rate or trust_radius for phi optimization
+    weight_hits=weight_hits,
     device='cpu',
-    outputs_dir='/home/hep/lprate/projects/BlackBoxOptimization/outputs/test_robustness',
+    outputs_dir=outputs_dir,
+    second_order = args.second_order,
+    local_file_storage = None,
     resume=False)
+
+if not args.load:
+    phis = optimizer.sample_phi()
+    for phi in phis:
+        phi = denormalize_vector(phi, bounds)
+        print("Evaluating initial phi:", phi, 'constraints', problem.get_constraints(phi))
+        #if problem.get_constraints(phi) > 1: continue
+        y = problem(phi)# * 1e6
+        optimizer.update_history(phi,y)
+    dists = torch.norm(phis - initial_phi, dim=1).numpy()
+    history = optimizer.history
+    with open('outputs/history.pkl', 'wb') as f:
+        pickle.dump(history, f)
+else:
+    with open('outputs/history.pkl', 'rb') as f:
+        history = pickle.load(f)
+    optimizer.history = history
+
 
 def get_local_info(phi):
     """
@@ -126,23 +203,11 @@ def calc_delta_loss_torch(delta_phi: torch.Tensor,
     return (linear_term + quadratic_term).item()
 
 
-loss = optimizer.history[1][0]
-phis = optimizer.sample_phi()
-for i,phi in enumerate(phis):
-    optimizer.simulate_and_update(phi, update_history=False)
-print("Completed simulations")
-with open('local_results_test.pkl', 'wb') as f:
-    pickle.dump(optimizer.local_results, f)
-print("Saved local results")
-optimizer.fit_surrogate_model()
-plt.figure()
-plt.plot(optimizer.model.last_train_loss)
-plt.xlabel('Epoch')
-plt.ylabel('Training Loss')
-plt.title('Surrogate Model Training Loss')
-plt.grid(True)
-plt.savefig('surrogate_model_train_loss.png')
-plt.close()
+t1 = time.time()
+surrogate_model.fit(history[0], history[1].to(torch.get_default_dtype()))
+print("Surrogate model trained in", time.time() - t1, "seconds")
+
+loss = problem(optimizer.current_phi)
 
 phi = optimizer.current_phi
 sur_loss, grad, hess = get_local_info(phi)

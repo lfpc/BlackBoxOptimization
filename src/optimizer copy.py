@@ -17,6 +17,7 @@ from utils import normalize_vector, denormalize_vector
 from time import time
 import h5py
 
+
 class OptimizerClass():
     '''Mother class for optimizers'''
     def __init__(self,true_model,
@@ -30,14 +31,9 @@ class OptimizerClass():
         
         self.device = device
         self.true_model = true_model
-        if resume:
-            if history == (): 
-                with open(join(outputs_dir,'history.pkl'), "rb") as f:
-                    self.history = load(f)
-        else:
-            self.history = history
+        self.history = history
         #self.model = self.surrogate_model_class(*self.history).to(self.device)
-        if len(self.history)>0: self._i = len(self.history[0]) 
+        if len(history)>0: self._i = len(self.history[0]) 
         else: self._i =  0
         print('STARTING FROM i = ', self._i)
         self.model = surrogate_model
@@ -75,7 +71,7 @@ class OptimizerClass():
         return torch.empty(1),self.loss(torch.empty(1))
     def run_optimization(self,
                          save_optimal_phi:bool = True,
-                         save_history:bool = True,
+                         save_history:bool = False,
                          **convergence_params):
         with wandb.init(reinit = True,**self.wandb) as wb, tqdm(initial = self._i,total=convergence_params['max_iter']) as pbar:
             for min_loss,phi,y in zip(self.loss(*self.history).cummin(0).values,*self.history[:2]):
@@ -107,6 +103,7 @@ class OptimizerClass():
                 self._i += 1
         wb.finish()
         return phi,loss
+
 
     
 class LGSO(OptimizerClass):
@@ -239,7 +236,7 @@ class LCSO(OptimizerClass):
                  initial_phi:torch.tensor = None,
                  history:tuple = (),
                  WandB:dict = {'name': 'LGSOptimization'},
-                 device = torch.device('cpu'),
+                 device = torch.device('cuda'),
                  outputs_dir = 'outputs',
                  resume:bool = False,
                  second_order:bool = False,
@@ -256,7 +253,6 @@ class LCSO(OptimizerClass):
                  WandB = WandB,
                  outputs_dir = outputs_dir,
                  resume = resume)
-        
         self.weight_hits = weight_hits
         self.local_results = [[],[]]
         within_lower = initial_phi.ge(self.bounds[0])
@@ -265,32 +261,35 @@ class LCSO(OptimizerClass):
         if not within_bounds.all():
             violating_indices = (~within_bounds).nonzero(as_tuple=True)
             raise ValueError(f"Some initial_phi values are out of bounds at indices: {violating_indices}\nViolating values: {initial_phi[violating_indices]}")
-        initial_phi = normalize_vector(initial_phi, self.bounds) if not resume else history[0][-1]
+        initial_phi = normalize_vector(initial_phi, self.bounds)
             
+            
+        initial_phi = initial_phi if not resume else history[0][-1]
         self._current_phi = torch.nn.Parameter(initial_phi.detach().clone().to(device))
         
         self.epsilon = epsilon
-        self.lhs_sampler = LatinHypercube(d=initial_phi.size(-1), seed=42)
+        self.lhs_sampler = LatinHypercube(d=initial_phi.size(-1))
         self.samples_phi = samples_phi
         self.phi_optimizer = torch.optim.SGD([self._current_phi],lr=initial_lr)
         self.second_order = second_order
         self.lambda_constraints = initial_lambda_constraints
         self.trust_radius = initial_lr
         if local_file_storage is not None: 
-            self.local_file_storage = local_file_storage#join(self.outputs_dir, local_file_storage)
+            self.local_file_storage = join(self.outputs_dir, local_file_storage)
             if os.path.exists(self.local_file_storage):
                 os.remove(self.local_file_storage)
         else: self.local_file_storage = None
-        self.chunk_rows = 100_000
+        self.chunk_rows = 16384
         
         self.rhos = []
-
-        if not resume:
-            if self.local_file_storage is not None: 
-                with h5py.File(self.local_file_storage, 'w', libver='latest') as file:
-                    self.simulate_and_update(initial_phi, update_history=True, file=file)
-            else:
-                self.simulate_and_update(initial_phi, update_history = True)
+        if resume: 
+            with open(join(outputs_dir,'history.pkl'), "rb") as f:
+                self.history = load(f)
+        elif self.local_file_storage is not None: 
+            with h5py.File(self.local_file_storage, 'w', libver='latest') as file:
+                self.simulate_and_update(initial_phi, update_history=True, file=file)
+        else:
+            self.simulate_and_update(initial_phi)
 
     @property
     def current_phi(self):
@@ -307,8 +306,8 @@ class LCSO(OptimizerClass):
             if self.second_order:
                 perturb_small = self.lhs_sampler.random(self.samples_phi//2)
                 perturb_small = (2*torch.from_numpy(perturb_small).to(dtype=torch.get_default_dtype()) - 1.0) * self.epsilon/2
-                perturb = torch.cat([perturb[:self.samples_phi//2], perturb_small], dim=0)
-            phis = (self._current_phi.unsqueeze(0).cpu() + perturb).clamp(0.0,1.0)
+                perturb = torch.cat([perturb, perturb_small], dim=0)
+            phis = (self._current_phi.unsqueeze(0).cpu() + perturb).clamp(0.0,1.0)#(self.bounds[0], self.bounds[1])
         return phis
     def sample_phi_uniform(self):
         """Draw samples uniformly within the bounds around current_phi."""
@@ -316,26 +315,16 @@ class LCSO(OptimizerClass):
             perturb = (torch.rand(self.samples_phi, self._current_phi.size(-1), device=self.device) * 2 - 1) * self.epsilon
             phis = (self._current_phi.unsqueeze(0).cpu() + perturb).clamp(0.0,1.0)
         return phis
-    def n_hits(self,y, w = None, mean = True):
+    def n_hits(self,y,x = None):
         y = y.flatten()
-        w = torch.ones_like(y) if (w is None or not self.weight_hits) else w.flatten().to(y.device)
-        y = (w*y).sum()
-        if mean:
-            y =  y / w.sum()
-        return y# * 1e6
-    def get_model_pred(self, phi, normalize:bool = False):
-        n_hits = 0.0
-        x = torch.as_tensor(self.true_model.sample_x(phi),device=self.device, dtype=torch.get_default_dtype())
-        if normalize:
-            phi = normalize_vector(phi, self.bounds)
-        for i in range(0, x.size(0), self.model.batch_size):
-            x_batch = x[i:i+self.model.batch_size].detach()
-            y_pred = self.model.predict_proba(phi,x_batch)
-            weights = self.true_model.get_weights(x_batch)
-            n_hits = n_hits + self.n_hits(y_pred, weights, mean = False)
-        weights = self.true_model.get_weights(x)
-        assert x.device == torch.device('cpu')
-        return n_hits / weights.sum()
+        w = torch.ones_like(y) if (x is None or not self.weight_hits) else x.flatten().to(y.device)
+        return  (w*y).sum()/w.sum()
+    def get_model_pred(self, phi):
+        phi = normalize_vector(phi, self.bounds)
+        x_samp = torch.as_tensor(self.true_model.sample_x(),device=self.device, dtype=torch.get_default_dtype())
+        condition = torch.cat([phi.repeat(x_samp.size(0), 1), x_samp], dim=-1)
+        y_pred = self.model.predict_proba(condition)
+        return self.n_hits(y_pred, self.true_model.get_weights(x_samp))
 
     def clean_training_data(self):
         if self.local_file_storage is not None and os.path.exists(self.local_file_storage):
@@ -346,62 +335,48 @@ class LCSO(OptimizerClass):
     def simulate_and_update(self, phi, update_history:bool = True, file = None):
         x = torch.as_tensor(self.true_model.sample_x(phi),device=self.device, dtype=torch.get_default_dtype())
         condition = torch.cat([phi.repeat(x.size(0), 1), x], dim=-1).to(self.device)
-        phi = denormalize_vector(phi, self.bounds).detach().cpu()
-        y = self.true_model(phi,x).view(-1,1)
+        phi = denormalize_vector(phi, self.bounds).clone().detach()
+        y = self.true_model(phi.cpu(),x).view(-1,1)
         if file is not None:
-            capacity = self.true_model.n_samples * (self.samples_phi+1+max(self.samples_phi//5, 2)) #from get_local_data
             print('Writing local results to file:', self.local_file_storage)
-            t1 = time()
             if 'condition' not in file:
-                print('Initializing datasets in HDF5 file with size', capacity)
-                file.attrs['capacity'] = capacity
-                file.attrs['write_pos'] = 0
-                file.create_dataset('condition', shape=(capacity, condition.shape[1]), 
-                                    compression=None,maxshape=(capacity, condition.shape[1]), 
-                                    chunks=(self.model.batch_size, condition.shape[1]),fillvalue=None)
-                file.create_dataset('y', shape=(capacity, y.shape[1]),
-                                    compression=None, maxshape=(capacity, y.shape[1]), 
-                                    chunks=(self.model.batch_size, y.shape[1]),fillvalue=None)
+                condition = condition.cpu().numpy()
+                y = y.cpu().numpy()
+                file.create_dataset('condition', data=condition, compression='lzf',
+                            maxshape=(None, condition.shape[1]), chunks=(self.chunk_rows, condition.shape[1]))
+                file.create_dataset('y', data=y,  compression='lzf',
+                            maxshape=(None, y.shape[1]), chunks=(self.chunk_rows, y.shape[1]))
+            else:
+                old_size = file['condition'].shape[0]
+                file['condition'].resize((old_size + condition.shape[0], condition.shape[1]))
+                file['condition'][old_size:] = condition
 
-            write_pos = file.attrs.get('write_pos', 0)
-            capacity = file.attrs.get('capacity', capacity)
-            end_pos = write_pos + condition.shape[0]
-            if end_pos > capacity:
-                print('EXCEEDING CAPACITY, RESIZING DATASETS...')
-                new_cap = max(end_pos, int(file['condition'].shape[0] * 3 // 2))
-                file['condition'].resize((new_cap, condition.shape[1]))
-                file['y'].resize((new_cap, y.shape[1]))
-                file.attrs['capacity'] = int(new_cap)
-
-            file['condition'][write_pos:end_pos] = condition.cpu().numpy()
-            file['y'][write_pos:end_pos] = y.cpu().numpy()
-            file.attrs['write_pos'] = end_pos
-
-            print('Done writing local results to file in {:.2f} seconds.'.format(time() - t1))
+                file['y'].resize((old_size + y.shape[0], y.shape[1]))
+                file['y'][old_size:] = y
             self.local_results[0] = condition
             self.local_results[1] = y
+            print('Local results written to file. Total samples stored:', file['condition'].shape[0])
         elif self.local_file_storage is not None:
             self.local_results[0] = condition
             self.local_results[1] = y
         else:
             self.local_results[0].append(condition)
             self.local_results[1].append(y)
-        loss = self.n_hits(y, self.true_model.get_weights(x)).reshape(1)
+        x = self.true_model.get_weights(x)
+        loss = self.n_hits(y, x).reshape(1)
         if update_history:
             self.update_history(phi, loss.detach())
         return loss
+
     def _get_local_data(self):
         phis = self.sample_phi()
         if self.local_file_storage is not None:
-            file = h5py.File(self.local_file_storage, 'a', libver='latest')
-            len_data = file.attrs.get('write_pos', 0)#file['condition'].shape[0] if 'condition' in file else 0
+            file = h5py.File(self.local_file_storage, 'a', libver='latest', swmr=True)
+            len_data = file['condition'].shape[0] if 'condition' in file else 0
         else: 
             file = None
             len_data = len(self.local_results[0]) 
         if len_data >= self.true_model.n_samples*self.samples_phi:
-            if len_data >= self.true_model.n_samples*(self.samples_phi + max(self.samples_phi//5, 2)):
-                print("Already have enough data stored locally, no new simulations needed.")
-                return
             n = max(self.samples_phi//5, 2)
             print("Already have enough data stored locally, simulation only {} samples.".format(n))
             phis = phis[:n]
@@ -409,15 +384,14 @@ class LCSO(OptimizerClass):
             self.simulate_and_update(phi, update_history=False, file=file)
         if file is not None:
             file.close()
-        return self.local_results
     def _clean_file(self, keep_last:bool = False):
-        with h5py.File(self.local_file_storage, 'w', libver='latest') as file:
+        with h5py.File(self.local_file_storage, 'w', libver='latest', swmr=True) as file:
             if keep_last:
-                file.create_dataset('condition', data=self.local_results[0], compression=None,
+                file.create_dataset('condition', data=self.local_results[0], compression='lzf',
                                 maxshape=(None, self.local_results[0].shape[1]), chunks=(self.chunk_rows, self.local_results[0].shape[1]))
-                file.create_dataset('y', data=self.local_results[1],  compression=None,
+                file.create_dataset('y', data=self.local_results[1],  compression='lzf',
                                 maxshape=(None, self.local_results[1].shape[1]), chunks=(self.chunk_rows, self.local_results[1].shape[1]))
-    
+        
     def optimization_iteration(self):
         """
         1) Sample locally around current_phi
@@ -432,8 +406,12 @@ class LCSO(OptimizerClass):
         print('Iteration {} : Finished simulations for local samples.'.format(self._i))
         self.fit_surrogate_model()
         
+        x_samp = torch.as_tensor(self.true_model.sample_x(),device=self.device, dtype=torch.get_default_dtype())
+        condition = torch.cat([self._current_phi.repeat(x_samp.size(0), 1), x_samp], dim=-1)
+        y_pred = self.model.predict_proba(condition)
+        
         self.phi_optimizer.zero_grad()
-        loss_sur = self.get_model_pred(self._current_phi)
+        loss_sur = self.n_hits(y_pred, self.true_model.get_weights(x_samp))
         constraints = self.true_model.get_constraints(self.current_phi).to(loss_sur.device)
         constraints = -self.lambda_constraints * torch.log(constraints + 1e-4).sum()
         loss_sur = loss_sur + constraints
@@ -447,7 +425,6 @@ class LCSO(OptimizerClass):
                 with h5py.File(self.local_file_storage, 'a', libver='latest', swmr=True) as file:
                     self.simulate_and_update(self._current_phi, update_history=True, file=file)
             else:
-                self.local_results = [[],[]]
                 self.simulate_and_update(self._current_phi, update_history=True)
 
         return self.history[0][-1], self.history[1][-1]
@@ -459,8 +436,13 @@ class LCSO(OptimizerClass):
         """
         # Constraints g(x) >= 0 are converted to -g(x) <= 0 for the penalty
         constraints = self.true_model.get_constraints(denormalize_vector(phi, self.bounds))
+        # L1 norm of constraint violations
         violation = torch.sum(torch.relu(-constraints))
         return objective_loss + self.lambda_constraints * violation
+    def surrogate_objective(self,phi, x):
+            condition = torch.cat([phi.repeat(x.size(0), 1), x], dim=-1)
+            y_pred = self.model.predict_proba(condition).to(phi.device)
+            return self.n_hits(y_pred, self.true_model.get_weights(x))
     def _get_avg_grad_fn(self, x_samp, batch_size):
         num_samples = x_samp.size(0)
 
@@ -489,9 +471,7 @@ class LCSO(OptimizerClass):
         implemented entirely in PyTorch.
         """
 
-        phis = self.sample_phi()
-        for phi in phis:
-            self.simulate_and_update(phi, update_history=False)
+        self._get_local_data()
         print('Iteration {} : Finished simulations for local samples.'.format(self._i))
         self.fit_surrogate_model()
 
@@ -506,10 +486,28 @@ class LCSO(OptimizerClass):
 
         def grad_fn(phi):
             return torch.func.grad(lambda p: self.surrogate_objective(p, x_samp))(phi)
+        
         surrogate_grad = grad_fn(current_phi)
         def hvp_func(v):
             _, hvp_val = torch.func.jvp(grad_fn, (current_phi,), (v,))
             return hvp_val
+        #def hvp_func(v, batch_size=32768, num_samples=x_samp.size(0)):
+        #    total_hvp = torch.zeros_like(v)
+        #    for i in range(0, num_samples, batch_size):
+        #        batch_x = x_samp[i : min(i + batch_size, num_samples)]
+                
+                # Define a grad function for *this batch only*
+        #        def batch_grad_fn(p):
+        #            return torch.func.grad(
+        #                lambda pp: self.surrogate_objective(pp, batch_x)
+        #            )(p)
+                
+                # Compute JVP on the small batch_grad_fn
+        #        _, batch_hvp = torch.func.jvp(batch_grad_fn, (current_phi,), (v,))
+                
+        #        # Accumulate the weighted HVP
+        #        total_hvp += batch_hvp.detach() * (batch_x.shape[0] / num_samples)
+        #    return total_hvp
 
         p = self._solve_trust_region_subproblem(surrogate_grad, hvp_func, self.trust_radius)
         if not p.any(): print("Trust-region step is zero, no improvement possible with current model.")
@@ -518,7 +516,7 @@ class LCSO(OptimizerClass):
 
 
         proposed_phi = (current_phi + p).clamp(0.0, 1.0)
-        p = proposed_phi - current_phi
+        #p = proposed_phi - current_phi
         @torch.no_grad()
         def get_rho():
             current_loss_true = self.history[1][-1]
@@ -545,7 +543,7 @@ class LCSO(OptimizerClass):
 
         if rho < 0.25:
             # Poor model fit. Shrink radius. Step is not taken unless rho is positive.
-            self.trust_radius = max(self.trust_radius * 0.25, 0.0001)
+            self.trust_radius = max(self.trust_radius * 0.25, 0.001)
             print(f"Step has poor agreement (rho={rho}). Shrinking trust radius to {self.trust_radius:.3f}")
         elif rho > 0.75 and torch.linalg.norm(p).item() >= 0.8*self.trust_radius:
             self.trust_radius = min(1.25 * self.trust_radius, np.sqrt(self.true_model.dim))
@@ -554,15 +552,15 @@ class LCSO(OptimizerClass):
         if rho > 0.1:
             with torch.no_grad():
                 self._current_phi.data  = proposed_phi
-                self.local_results = [[self.local_results[0][-1]], [self.local_results[1][-1]]]
-                self.update_history(self.current_phi.detach(), proposed_loss.detach())
+                self.update_history(self.current_phi.detach(), proposed_loss.detach()) 
+            if self.local_file_storage is not None: self._clean_file(keep_last=True)
             print("Step accepted.")
         else:
-            self.local_results = [[self.local_results[0][0]], [self.local_results[1][0]]]
             print("Step rejected. Proposed loss:", proposed_loss.item(), "Current loss:", self.history[1][-1].item())
         if debug:
             return self.history[0][-1].detach().clone(), self.history[1][-1].detach().clone(), cos_step
         return self.history[0][-1].detach().clone(), self.history[1][-1].detach().clone()
+
 
     def _solve_trust_region_subproblem(self, g, hvp_func, trust_radius):
         """
@@ -633,303 +631,6 @@ class LCSO(OptimizerClass):
         l.backward()
         self.phi_optimizer.step()
         return self._current_phi
-    
-
-class LCSO_sampled(LCSO):
-    def __init__(self,true_model,
-                 surrogate_model:torch.nn.Module,
-                 bounds:tuple,
-                 samples_phi:int,
-                 epsilon:float = 0.2,
-                 n_subsamples:int = 100_000,
-                 n_epochs:int = 5,
-                 initial_phi:torch.tensor = None,
-                 history:tuple = (),
-                 WandB:dict = {'name': 'LGSOptimization'},
-                 device = torch.device('cpu'),
-                 outputs_dir = 'outputs',
-                 resume:bool = False,
-                 second_order:bool = False,
-                 weight_hits:bool = False,
-                 initial_lambda_constraints:float = 1e2,
-                 initial_lr:float = 1e-3,
-                 local_file_storage:str = 'local_results.h5'
-                 ):
-        self.n_subsamples = n_subsamples
-        super().__init__(true_model,
-                 surrogate_model,
-                 bounds = bounds,
-                 samples_phi = samples_phi,
-                 epsilon = epsilon,
-                 initial_phi = initial_phi,
-                 history = history,
-                 WandB = WandB,
-                 device = device,
-                 outputs_dir = outputs_dir,
-                 resume = resume,
-                 second_order = second_order,
-                 weight_hits = weight_hits,
-                 initial_lambda_constraints = initial_lambda_constraints,
-                 initial_lr = initial_lr,
-                 local_file_storage = local_file_storage)
-        self.fit_surrogate_model()
-        self.local_results = [[],[]]
-        self.n_epochs = n_epochs
-        #self.model.n_epochs  = 3
-        #self.model.step_lr = 2
-
-    @torch.no_grad()
-    def simulate_and_update(self, phi, update_history:bool = True, file = None):
-        t1 = time()
-        x = self.true_model.sample_x()
-        x = torch.as_tensor(x, device=self.device, dtype=torch.get_default_dtype())
-        condition = torch.cat([phi.repeat(x.size(0), 1), x], dim=-1).to(self.device)
-        phi = denormalize_vector(phi, self.bounds).detach().cpu()
-        y = self.true_model(phi,x).view(-1,1)
-        if file is not None:
-            capacity = self.true_model.n_samples * (self.samples_phi+1+max(self.samples_phi//5, 2))
-            print('Writing local results to file:', self.local_file_storage)
-            t1 = time()
-            if 'condition' not in file:
-                print('Initializing datasets in HDF5 file with size', capacity)
-                file.attrs['capacity'] = capacity
-                file.attrs['write_pos'] = 0
-                file.create_dataset('condition', shape=(capacity, condition.shape[1]), 
-                                    compression=None,maxshape=(capacity, condition.shape[1]), 
-                                    chunks=(self.model.batch_size, condition.shape[1]),fillvalue=None)
-                file.create_dataset('y', shape=(capacity, y.shape[1]),
-                                    compression=None, maxshape=(capacity, y.shape[1]), 
-                                    chunks=(self.model.batch_size, y.shape[1]),fillvalue=None)
-
-            write_pos = file.attrs.get('write_pos', 0)
-            capacity = file.attrs.get('capacity', capacity)
-            end_pos = write_pos + condition.shape[0]
-            if end_pos > capacity:
-                print('EXCEEDING CAPACITY, RESIZING DATASETS...')
-                new_cap = max(end_pos, int(file['condition'].shape[0] * 3 // 2))
-                file['condition'].resize((new_cap, condition.shape[1]))
-                file['y'].resize((new_cap, y.shape[1]))
-                file.attrs['capacity'] = int(new_cap)
-
-            file['condition'][write_pos:end_pos] = condition.cpu().numpy()
-            file['y'][write_pos:end_pos] = y.cpu().numpy()
-            file.attrs['write_pos'] = end_pos
-
-            print('Done writing local results to file in {:.2f} seconds.'.format(time() - t1))
-            self.local_results[0] = condition
-            self.local_results[1] = y
-        elif self.local_file_storage is not None:
-            self.local_results[0] = condition
-            self.local_results[1] = y
-        else:
-            self.local_results[0].append(condition)
-            self.local_results[1].append(y)
-        loss = self.n_hits(y, self.true_model.get_weights(x)).reshape(1)
-        if update_history:
-            self.update_history(phi, loss.detach())
-        return loss
-    def _get_local_data(self):
-        phis = self.sample_phi()
-        phis = torch.cat([phis,self._current_phi.view(1,-1)], dim=0)
-        if self.local_file_storage is not None:
-            file = h5py.File(self.local_file_storage, 'a', libver='latest')
-            len_data = file.attrs.get('write_pos', 0)#file['condition'].shape[0] if 'condition' in file else 0
-        else: 
-            file = None
-            len_data = len(self.local_results[0]) 
-        if False and len_data >= self.true_model.n_samples*self.samples_phi:
-            if len_data >= self.true_model.n_samples*(self.samples_phi + max(self.samples_phi//5, 2)):
-                print("Already have enough data stored locally, no new simulations needed.")
-                return
-            n = max(self.samples_phi//5, 2)
-            print("Already have enough data stored locally, simulation only {} samples.".format(n))
-            phis = phis[:n]
-        for phi in phis:
-            self.simulate_and_update(phi, update_history=False, file=file)
-        if file is not None:
-            file.close()
-    def _train_local_surrogate(self):
-        self.model.step_lr = 3
-        n_samples = self.true_model.n_samples
-        self.true_model.n_samples = self.n_subsamples
-        for i in range(self.n_epochs):
-            print('Epoch {}/{} for surrogate fitting.'.format(i+1, self.n_epochs))
-            if i >= self.n_epochs*0.7:
-                self.model.step_lr = 1
-            self._get_local_data()
-            print('Simulation finished. Fitting surrogate model...')
-            print('Number of local training samples:', len(self.local_results[0]))
-            self.fit_surrogate_model()
-            if self.local_file_storage is not None: self._clean_file(keep_last=False)
-            else: self.local_results = [[],[]]
-        print('Iteration {} : Finished simulations for local samples.'.format(self._i))
-        self.true_model.n_samples = n_samples
-    def optimization_iteration(self):
-        """
-        1) Sample locally around current_phi
-        2) Evaluate true_model
-        3) Fit local surrogate
-        4) Update current_phi by minimizing surrogate
-        5) Return (phi, loss)
-        """
-        self._train_local_surrogate()
-        
-        self.phi_optimizer.zero_grad()
-        loss_sur = self.get_model_pred(self._current_phi)
-        constraints = self.true_model.get_constraints(self.current_phi).to(loss_sur.device)
-        constraints = -self.lambda_constraints * torch.log(constraints + 1e-4).sum()
-        loss_sur = loss_sur + constraints
-        loss_sur.backward()
-        self.phi_optimizer.step()
-        with torch.no_grad():
-            self._current_phi.data = self._current_phi.data.clamp(0.0,1.0)#(self.bounds[0], self.bounds[1])
-        with torch.no_grad():
-            if self.local_file_storage is not None:
-                self._clean_file(keep_last=False)
-                with h5py.File(self.local_file_storage, 'a', libver='latest', swmr=True) as file:
-                    self.simulate_and_update(self._current_phi, update_history=True, file=file)
-            else:
-                self.local_results = [[],[]]
-                self.simulate_and_update(self._current_phi, update_history=True)
-
-        return self.history[0][-1], self.history[1][-1]
-
-    def optimization_iteration_second_order(self, debug = False):
-        """
-        Performs ONE optimization step using a trust-region method,
-        implemented entirely in PyTorch.
-        """
-
-        self._train_local_surrogate()
-
-        current_phi = self._current_phi.detach().clone().requires_grad_(True)
-
-        constraints_current = self.true_model.get_constraints(denormalize_vector(current_phi, self.bounds))
-        constraint_jac = torch.func.jacrev(
-            lambda phi: self.true_model.get_constraints(denormalize_vector(phi, self.bounds))
-        )(current_phi)
-
-        def grad_fn(phi):
-            return torch.func.grad(self.get_model_pred)(phi)
-        surrogate_grad = grad_fn(current_phi)
-        def hvp_func(v):
-            _, hvp_val = torch.func.jvp(grad_fn, (current_phi,), (v,))
-            return hvp_val
-
-        p = self._solve_trust_region_subproblem(surrogate_grad, hvp_func, self.trust_radius)
-        if not p.any(): print("Trust-region step is zero, no improvement possible with current model.")
-        with torch.no_grad(): 
-            cos_step = (torch.dot(surrogate_grad, p) / (torch.linalg.norm(surrogate_grad) * torch.linalg.norm(p) + 1e-10)).item()
-
-
-        proposed_phi = (current_phi + p).clamp(0.0, 1.0)
-        p = proposed_phi - current_phi
-        @torch.no_grad()
-        def get_rho():
-            current_loss_true = self.history[1][-1]
-            merit_current = self._compute_merit_function(current_phi, current_loss_true)
-
-            proposed_loss_true = self.simulate_and_update(proposed_phi, update_history=False)
-            merit_proposed = self._compute_merit_function(proposed_phi, proposed_loss_true)
-            actual_reduction = merit_current - merit_proposed
-
-            predicted_objective_reduction = -(torch.dot(surrogate_grad, p) + 0.5 * torch.dot(p, hvp_func(p)))
-            predicted_penalty_value = self.lambda_constraints * torch.sum(torch.relu(-(constraints_current + constraint_jac @ p)))
-            current_penalty_value = self.lambda_constraints * torch.sum(torch.relu(-constraints_current))
-            predicted_penalty_reduction = current_penalty_value - predicted_penalty_value
-            pred_merit_reduction = predicted_objective_reduction + predicted_penalty_reduction
-
-            if pred_merit_reduction.item() <= 1e-10: 
-                 return -1.0 if actual_reduction < 0 else 1.0, proposed_loss_true
-
-            rho = actual_reduction / pred_merit_reduction
-            return rho.item(), proposed_loss_true
-        
-        rho, proposed_loss = get_rho()
-        self.rhos.append(rho)
-
-        if rho < 0.25:
-            # Poor model fit. Shrink radius. Step is not taken unless rho is positive.
-            self.trust_radius = max(self.trust_radius * 0.25, 0.0001)
-            print(f"Step has poor agreement (rho={rho}). Shrinking trust radius to {self.trust_radius:.3f}")
-        elif rho > 0.75 and torch.linalg.norm(p).item() >= 0.8*self.trust_radius:
-            self.trust_radius = min(1.25 * self.trust_radius, np.sqrt(self.true_model.dim))
-            print(f"Excellent step (rho={rho}). Expanding trust radius to {self.trust_radius:.3f}")
-
-        if rho > 0.1:
-            with torch.no_grad():
-                self._current_phi.data  = proposed_phi
-                self.local_results = [[self.local_results[0][-1]], [self.local_results[1][-1]]]
-                self.update_history(self.current_phi.detach(), proposed_loss.detach())
-            print("Step accepted.")
-        else:
-            self.local_results = [[self.local_results[0][0]], [self.local_results[1][0]]]
-            print("Step rejected. Proposed loss:", proposed_loss.item(), "Current loss:", self.history[1][-1].item())
-        if debug:
-            return self.history[0][-1].detach().clone(), self.history[1][-1].detach().clone(), cos_step
-        return self.history[0][-1].detach().clone(), self.history[1][-1].detach().clone()
-
-
-    def _solve_trust_region_subproblem(self, g, hvp_func, trust_radius):
-        """
-        Solves the trust-region subproblem using the Steihaug CG method.
-        """
-        p = torch.zeros_like(g)
-        r = g.clone()
-        d = -r.clone()
-        current_phi = self._current_phi.detach().clone()    
-
-        if torch.linalg.norm(r) < 1e-10:
-            return p
-
-        for _ in range(len(g)): # Max CG iterations
-            Bd = hvp_func(d)
-            d_dot_Bd = torch.dot(d, Bd)
-
-            # Safety Check 1: Negative Curvature Detected
-            if d_dot_Bd <= 0:
-                # Find intersection with trust-region boundary and exit
-                p_dot_d = torch.dot(p, d)
-                d_dot_d = torch.dot(d, d)
-                p_dot_p = torch.dot(p, p)
-                rad = torch.sqrt(p_dot_d**2 + d_dot_d * (trust_radius**2 - p_dot_p))
-                tau = (rad - p_dot_d) / d_dot_d
-                return p + tau * d
-
-            alpha = torch.dot(r, r) / d_dot_Bd
-
-            d_masked = d.clone()
-            d_masked[d.abs() < 1e-8] = 1e-8 
-            t_lower = (0.0 - (current_phi + p)) / d_masked
-            t_upper = (1.0 - (current_phi + p)) / d_masked
-            t = torch.where(d > 0, t_upper, t_lower)
-            t[t <= 0] = float('inf') 
-            alpha_bound, _ = torch.min(t, dim=0)
-            alpha = min(alpha, alpha_bound.item())
-
-            p_new = p + alpha * d
-
-            # Safety Check 2: Step Exceeds Trust Radius
-            if torch.linalg.norm(p_new) >= trust_radius:
-                # Find intersection with trust-region boundary and exit
-                p_dot_d = torch.dot(p, d)
-                d_dot_d = torch.dot(d, d)
-                p_dot_p = torch.dot(p, p)
-                rad = torch.sqrt(p_dot_d**2 + d_dot_d * (trust_radius**2 - p_dot_p))
-                tau = (rad - p_dot_d) / d_dot_d
-                return p + tau * d
-
-            p = p_new
-            r_new = r + alpha * Bd
-            
-            if torch.linalg.norm(r_new) < 1e-10:
-                break
-
-            beta = torch.dot(r_new, r_new) / torch.dot(r, r)
-            r = r_new
-            d = -r + beta * d
-            
-        return p
     
 
 class AnalyticalOptimizer(OptimizerClass):
@@ -1154,6 +855,8 @@ class AnalyticalOptimizer(OptimizerClass):
             d = -r + beta * d
             
         return p
+
+
     
 class BayesianOptimizer(OptimizerClass):
     
@@ -1608,221 +1311,7 @@ class PowellOptimizer(OptimizerClass):
 
         return False # Continue optimization
     
-class CMAESOptimizer(OptimizerClass):
-    def __init__(self, 
-                 true_model, 
-                 bounds: tuple,
-                 initial_phi: torch.tensor = None,
-                 device = torch.device('cuda'),
-                 pop_size: int = None, # Lambda
-                 sigma_init: float = 0.3, # Initial step size
-                 history: tuple = (),
-                 WandB: dict = {'name': 'CMA-ES'},
-                 outputs_dir = 'outputs',
-                 resume: bool = False):
-        
-        super().__init__(true_model,
-                         None,
-                         bounds,
-                         device=device,
-                         history=history,
-                         WandB=WandB,
-                         outputs_dir=outputs_dir,
-                         resume=resume)
-
-        if len(history)==0:
-            if resume: 
-                with open(join(outputs_dir,'history.pkl'), "rb") as f:
-                    self.history = load(f)
-                    self.history = tuple(tensor.to(torch.get_default_dtype()) for tensor in self.history)
-                self._i = len(self.history[0])
-            else: 
-                self.history = (initial_phi.cpu().view(-1,initial_phi.size(0)),
-                true_model(initial_phi).cpu().view(-1,1))
-                self._i = 0
-
-        self.N = self.bounds.shape[1] 
-
-        if initial_phi is not None:
-            self.xmean = initial_phi.to(self.device).view(-1)
-        else:
-            self.xmean = (self.bounds[0] + (self.bounds[1] - self.bounds[0]) * torch.rand(self.N)).to(self.device)
-        self.sigma = sigma_init
-        
-        # --- 2. Strategy Parameter Setting (Standard CMA-ES defaults) ---
-        # Population size (lambda)
-        if pop_size is None:
-            self.lam = 4 + int(3 * np.log(self.N))
-        else:
-            self.lam = pop_size
-            
-        # Number of parents (mu) - usually half of lambda
-        self.mu = int(self.lam / 2)
-        
-        # Weights for recombination
-        weights = torch.log(torch.tensor(self.mu + 0.5, device=self.device)) - \
-                  torch.log(torch.arange(1, self.mu + 1, device=self.device).float())
-        self.weights = weights / weights.sum() # Normalize
-        self.mueff = 1.0 / (self.weights ** 2).sum() # Variance effective selection mass
-        
-        # Time constants for adaptation
-        # Step-size control (cs) and damping (ds)
-        self.cs = (self.mueff + 2) / (self.N + self.mueff + 5)
-        self.ds = 1 + 2 * max(0, torch.sqrt((self.mueff - 1) / (self.N + 1)) - 1) + self.cs
-        
-        # Covariance matrix adaptation (cc, c1, cmu)
-        self.cc = (4 + self.mueff / self.N) / (self.N + 4 + 2 * self.mueff / self.N)
-        self.c1 = 2 / ((self.N + 1.3)**2 + self.mueff)
-        self.cmu = min(1 - self.c1, 2 * (self.mueff - 2 + 1 / self.mueff) / ((self.N + 2)**2 + self.mueff))
-        
-        # Dynamic State Variables
-        self.pc = torch.zeros(self.N, device=self.device) # Evolution path for C
-        self.ps = torch.zeros(self.N, device=self.device) # Evolution path for sigma
-        self.B = torch.eye(self.N, device=self.device)    # Coordinate system
-        self.D = torch.ones(self.N, device=self.device)   # Diagonal variances
-        self.C = torch.eye(self.N, device=self.device)    # Covariance matrix
-        
-        # Expectation of ||N(0,I)||
-        self.chiN = np.sqrt(self.N) * (1 - 1 / (4 * self.N) + 1 / (21 * self.N**2))
-        
-        # Handling Resume Logic (Basic)
-        # Note: Reconstructing full CMA state from just 'history' is difficult without saving specific CMA params.
-        # This assumes a fresh start or that you handle state serialization externally.
-        if len(self.history) > 0 and not resume:
-             print("Warning: CMA-ES initialized with history but acts on internal state. History is used for logging only.")
-
-    def fit_surrogate_model(self, **kwargs):
-        # CMA-ES is model-free (unless using a surrogate-assisted version). 
-        # We pass this to adhere to the parent class structure.
-        pass
-
-    def optimization_iteration(self):
-        """
-        Performs one full generation of CMA-ES:
-        1. Sampling (Ask)
-        2. Evaluation (Objective Function)
-        3. Update (Tell)
-        """
-        
-        # --- 1. Sampling (Ask) ---
-        # Eigendecomposition of C to get B and D: C = B * D^2 * B.T
-        # We do this every iteration for stability in PyTorch, though it can be lazy.
-        # Make sure C is symmetric
-        self.C = (self.C + self.C.T) / 2
-        L, E = torch.linalg.eigh(self.C)
-        L = torch.clamp(L, min=1e-16)
-        self.D = torch.sqrt(L)
-        self.B = E
-
-        # Generate standard normal samples z ~ N(0, I)
-        z = torch.randn(self.lam, self.N, device=self.device)
-        
-        # Transform to mutation vectors: y = B * D * z
-        # shape: (lam, N)
-        y_mutation = (z * self.D) @ self.B.T
-        
-        # Offspring: x = m + sigma * y
-        offspring_raw = self.xmean + self.sigma * y_mutation
-        
-        # --- 2. Boundary Handling & Evaluation ---
-        # CMA-ES generates samples in unbounded space. 
-        # We clamp them for the physics model (evaluation) but use raw for updates 
-        # to avoid biasing the distribution covariance towards the edges artificially.
-        
-        lower = self.bounds[0].to(self.device)
-        upper = self.bounds[1].to(self.device)
-        
-        offspring_clamped = torch.max(torch.min(offspring_raw, upper), lower)
-        
-        # Evaluate entire population
-        # Assuming true_model can handle batch inputs. If not, loop.
-        # Using existing framework logic:
-        scores = []
-        # The parent framework seems to handle single inputs mostly, 
-        # so we loop to be safe unless true_model is vectorized.
-        for i in range(self.lam):
-            val = self.true_model(offspring_clamped[i])
-            scores.append(val)
-            
-        scores_t = torch.tensor(scores, device=self.device).view(-1, 1)
-        
-        # Update history for logging
-        self.update_history(offspring_clamped, scores_t)
-        
-        # --- 3. Update (Tell) ---
-        # Sort by fitness and compute weighted mean into xmean
-        sorted_indices = torch.argsort(scores_t.flatten())
-        
-        # Select top mu
-        best_indices = sorted_indices[:self.mu]
-        best_z = z[best_indices]
-        best_y = y_mutation[best_indices]
-        
-        # New mean
-        # x_new = x_old + sigma * (weights * y_best).sum()
-        y_w = torch.matmul(self.weights, best_y)
-        z_w = torch.matmul(self.weights, best_z)
-        
-        # Update Mean
-        self.xmean = self.xmean + self.sigma * y_w
-        
-        # Update Evolution Path for Sigma (Cumulative Step-size Adaptation - CSA)
-        # ps = (1-cs)*ps + sqrt(cs*(2-cs)*mueff) * B * z_w
-        # Note: B * z_w puts it back into the coordinate system independent of D
-        inv_sqrt_C = torch.matmul(self.B, torch.diag(1/self.D)).matmul(self.B.T)
-        
-        # Actual CSA update
-        # We need C^(-1/2) * y_w which simplifies to B * z_w because y_w = B*D*z_w
-        term2 = torch.sqrt(self.cs * (2 - self.cs) * self.mueff) * torch.matmul(self.B, z_w)
-        self.ps = (1 - self.cs) * self.ps + term2
-        
-        # Update Evolution Path for Covariance (pc)
-        # hsigma indicator (stalls update if step size is too large)
-        norm_ps = torch.norm(self.ps)
-        hsig = (norm_ps / torch.sqrt(1 - (1 - self.cs)**(2 * (self.n_iterations()+1)))) / self.chiN < (1.4 + 2 / (self.N + 1))
-        hsig_float = 1.0 if hsig else 0.0
-        
-        term2_pc = hsig_float * torch.sqrt(self.cc * (2 - self.cc) * self.mueff) * y_w
-        self.pc = (1 - self.cc) * self.pc + term2_pc
-        
-        # Update Covariance Matrix C
-        # Rank-1 update (using pc) + Rank-mu update (using weighted variations)
-        
-        # Rank-1
-        artmp = (1 / self.sigma) * (offspring_raw[best_indices] - (self.xmean - self.sigma * y_w))
-        # The above artmp is essentially best_y. Using best_y directly:
-        
-        delta_hsig = (1 - hsig_float) * self.cc * (2 - self.cc)
-        
-        rank1 = torch.outer(self.pc, self.pc)
-        
-        # Rank-mu
-        # Weighted covariance of selected steps
-        rank_mu = torch.zeros_like(self.C)
-        for i in range(self.mu):
-            rank_mu += self.weights[i] * torch.outer(best_y[i], best_y[i])
-            
-        self.C = (1 - self.c1 - self.cmu * self.weights.sum()) * self.C \
-                 + self.c1 * (rank1 + delta_hsig * self.C) \
-                 + self.cmu * rank_mu
-                 
-        # Update Step Size (Sigma)
-        self.sigma = self.sigma * torch.exp((self.cs / self.ds) * (norm_ps / self.chiN - 1))
-        
-        # --- 4. Return Best of Generation ---
-        # The run_optimization loop expects a single phi, y for logging.
-        # We return the best found in this generation.
-        best_idx = sorted_indices[0]
-        best_phi = offspring_clamped[best_idx]
-        best_loss = scores_t[best_idx]
-        
-        return best_phi, best_loss
-
-    def clean_training_data(self):
-        # Inherit parent behavior or return raw history
-        return self.history
-
-
+    
 if __name__ == '__main__':
     from problems import stochastic_RosenbrockProblem
     from models import GANModel,GP_RBF

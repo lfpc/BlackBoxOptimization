@@ -69,6 +69,7 @@ elif args.problem == 'Rosenbrock':
                                     x_bounds = (-3.,3.),
                                     reduction = 'none')
     initial_phi = torch.tensor([[-1.2, 1.8]*(dim//2)]).flatten()
+    
 elif args.problem == 'HelicalValley':
     dim = 10
     x_dim = 2
@@ -77,6 +78,7 @@ elif args.problem == 'HelicalValley':
                                     x_bounds = (-5,5),
                                     reduction = 'none')
     initial_phi = torch.tensor([[-1.2, 1.8]*(dim//2)]).flatten()
+
 elif args.problem == 'MuonShield':
     dim = 42
     x_dim = 8
@@ -90,13 +92,6 @@ elif args.problem == 'MuonShield':
     CONFIG['n_samples'] = n_samples
     CONFIG['reduction'] = 'none'
     CONFIG['cost_as_constraint'] = False
-    CONFIG["sensitive_plane"] = [
-    {
-      "dz": 0.02,
-      "dx": 4,
-      "dy": 6,
-      "position": 82
-    }]
     problem = ShipMuonShieldCuda(**CONFIG)
     initial_phi = problem.initial_phi
 
@@ -104,7 +99,7 @@ samples_phi = args.samples_phi
 print(f"Using problem {args.problem} with dim {dim} and x_dim {x_dim}, samples_phi = {samples_phi}")
 
 bounds = problem.GetBounds(device=torch.device('cpu'))
-#diff_bounds = (bounds[1] - bounds[0])
+diff_bounds = (bounds[1] - bounds[0])
 surrogate_model = BinaryClassifierModel(phi_dim=dim,
                             x_dim = x_dim,
                             n_epochs = args.n_epochs,
