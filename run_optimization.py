@@ -101,7 +101,8 @@ elif args.optimization == 'RL':
     RL_dict["tolerance"]=2.0#TO_DO: Identify a proper value
     RL_dict["step_scale"]=0.05#TO_DO: Identify a proper value
     """
-    RL_dict["training_steps"]=20000*7#TO_DO: Identify a proper value
+    RL_dict["training_steps"]=2000#20000*7#TO_DO: Identify a proper value
+    RL_dict["fix_additional_params"]=True
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **RL_dict}, 'name': args.name}
 elif args.optimization == 'CMAES':
     CMAES_dict={}
@@ -265,6 +266,7 @@ if __name__ == "__main__":
         RL(problem_fn=problem_fn,
             warm_baseline=problem_fn.DEFAULT_PHI,
             training_steps=RL_dict["training_steps"],
+            fix_additional_params=RL_dict["fix_additional_params"],
             ###phi_bounds=phi_bounds,
             ###max_steps=RL_dict["max_steps"],
             ###tolerance=RL_dict["tolerance"],

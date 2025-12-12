@@ -1,6 +1,8 @@
 import os
 import botorch
 import torch
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
 import torch.multiprocessing as mp
 from tqdm import tqdm
 from scipy.stats.qmc import LatinHypercube
@@ -1229,11 +1231,12 @@ class GA():
             dump(self.the_population.population, f)
 #"""
 class RL_muons_env_new(gym.Env):#TO_DO: Check if I am dealing with the device correctly everywhere in the RL approach
-    def __init__(self, problem_fn):
+    def __init__(self, problem_fn, fix_additional_params):
         super().__init__()
         self.problem_fn=problem_fn
         self.n_magnets=problem_fn.n_magnets
         self.n_params=problem_fn.n_params
+        self.fix_additional_params=fix_additional_params
 
         self.low_bounds,self.high_bounds=self.GetBounds()#TO_DO: Check if I need to set the device here
         self.low_bounds=self.low_bounds.detach().cpu().numpy().ravel()
@@ -1268,7 +1271,10 @@ class RL_muons_env_new(gym.Env):#TO_DO: Check if I am dealing with the device co
         if terminated:
             phi=torch.tensor(self.obs, dtype=torch.float32).reshape(self.n_magnets,self.n_params)
             phi=self.enforce_constraints(phi).flatten()
-            reward = -torch.log(1.0+self.problem_fn(phi))#Consider reward=-log(1+loss) to deal with huge losses
+            reward = -torch.log(1.0+self.problem_fn(phi))/10#Consider reward=-log(1+loss)/10 to deal with huge losses
+            print(f"Reward: {reward}")
+            print("Final obs:")
+            print(phi)
         truncated = False
         info = {}
         return self.obs, reward, terminated, truncated, info
@@ -1303,6 +1309,30 @@ class RL_muons_env_new(gym.Env):#TO_DO: Check if I am dealing with the device co
             values_9 = ((piet[1:,3] * piet[1:,9] + piet[1:,7] + piet[1:,3] - new_phi[1:,13] - new_phi[1:,7] - new_phi[1:,3]) / new_phi[1:,3])
             new_phi[rows, 8] = values_8
             new_phi[rows, 9] = values_9
+        if self.fix_additional_params:
+            baseline=self.problem_fn.DEFAULT_PHI.clone()
+            new_phi[0,:]=baseline[0,:]
+            new_phi[1,0]=baseline[1,0]
+            new_phi[1,9]=baseline[1,9]
+            new_phi[1,12]=baseline[1,12]
+            new_phi[1,13]=baseline[1,13]
+            new_phi[1,14]=baseline[1,14]
+            new_phi[2,0]=baseline[2,0]
+            new_phi[2,5]=baseline[2,5]
+            new_phi[2,14]=baseline[2,14]
+            new_phi[3,0]=baseline[3,0]
+            new_phi[3,12]=baseline[3,12]
+            new_phi[3,13]=baseline[3,13]
+            new_phi[3,14]=baseline[3,14]
+            new_phi[4,0]=baseline[4,0]
+            new_phi[4,12]=baseline[4,12]
+            new_phi[4,13]=baseline[4,13]
+            new_phi[4,14]=baseline[4,14]
+            new_phi[5,0]=baseline[5,0]
+            new_phi[6,0]=baseline[6,0]
+            new_phi[6,12]=baseline[6,12]
+            new_phi[6,13]=baseline[6,13]
+            new_phi[6,14]=baseline[6,14]
         return new_phi
 
     def GetBounds(self,device = torch.device('cpu')):#TO_DO: I copied this function from problems.py, find a better way to extract the bounds as this would cause problems if the original function is modified
@@ -1519,6 +1549,8 @@ class TrainingStatsCallback(BaseCallback):
                     self.total_steps_history.append(self.total_steps)
         #Periodic deterministic evaluation:
         if self.num_timesteps - self.last_eval_step >= self.eval_freq:
+            print("Periodic std check:")
+            print(self.model.policy.log_std)
             obs, _ = self.eval_env.reset()
             done, truncated = False, False
             while not (done or truncated):
@@ -1546,11 +1578,11 @@ def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10):
     return np.mean(rewards)
 
 def generate_imitation_trajectories(env, warm_baseline, n_episodes=10):
-    trajs = []
+    obs_list, act_list, reward_list = [], [], []
     for _ in range(n_episodes):
-        obs_list, act_list = [], []
         obs, _ = env.reset()
         done = False
+        ep_rewards=[]
         while not done:
             start = env.current_magnet * env.n_params
             end   = (env.current_magnet + 1) * env.n_params
@@ -1562,17 +1594,11 @@ def generate_imitation_trajectories(env, warm_baseline, n_episodes=10):
             obs_list.append(obs.copy())
             act_list.append(action.copy())
             obs, reward, done, truncated, info = env.step(action)
+            ep_rewards.append(reward)
+        total_return = sum(ep_rewards)
+        reward_list.extend([torch.tensor([total_return], dtype=torch.float32)] * len(ep_rewards))
         print(f"Warm baseline reward: {reward}")
-        obs_list.append(obs.copy())
-        trajs.append(
-            Trajectory(
-                obs=np.array(obs_list, dtype=np.float32),
-                acts=np.array(act_list, dtype=np.float32),
-                infos=[{}] * len(act_list),
-                terminal=True,
-            )
-        )
-    return trajs
+    return obs_list, act_list, reward_list
 
 class CustomPolicy(ActorCriticPolicy):
     def __init__(self, observation_space, action_space, lr_schedule, **kwargs):
@@ -1589,11 +1615,12 @@ class CustomPolicy(ActorCriticPolicy):
         )
 
 class RL():
-    def __init__(self,problem_fn,warm_baseline,training_steps,device,devices,WandB):
+    def __init__(self,problem_fn,warm_baseline,training_steps,fix_additional_params,device,devices,WandB):
     #def __init__(self,problem_fn,phi_bounds,max_steps,tolerance,step_scale,device,devices,WandB):
         self.problem_fn=problem_fn
         self.warm_baseline=warm_baseline
         self.training_steps=training_steps
+        self.fix_additional_params=fix_additional_params
         """
         self.phi_bounds=phi_bounds
         self.max_steps=max_steps
@@ -1609,52 +1636,139 @@ class RL():
             net_arch=[dict(pi=[128, 128], vf=[128, 128])],
             activation_fn=torch.nn.ReLU
         )
-
-        BC_env = RL_muons_env_new(self.problem_fn)
+        #I will apply Actor-Critic Behavioral Cloning, which adapts standard BC to also train the value head to predict expert returns
+        BC_env = RL_muons_env_new(self.problem_fn,self.fix_additional_params)
         lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
         bc_policy=CustomPolicy(BC_env.observation_space, BC_env.action_space, lr_schedule, **policy_kwargs)
-        trajectories = generate_imitation_trajectories(BC_env, self.warm_baseline, n_episodes=10)
-        bc_trainer = bc.BC(
-            observation_space=BC_env.observation_space,
-            action_space=BC_env.action_space,
-            demonstrations=trajectories,
-            rng=np.random.default_rng(42),
-            policy=bc_policy
-        )
-        bc_trainer.train(n_epochs=300)
-        #Evaluate the BC policy:
-        bc_reward = evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=10)
-        print("BC reward:", bc_reward)
+        #Fix std:
+        with torch.no_grad():
+            bc_policy.log_std[:] = -4.0
+        obs_list, act_list, reward_list = generate_imitation_trajectories(BC_env, self.warm_baseline, n_episodes=3)
+        print("std before BC:")
+        print(bc_policy.log_std)
 
-        train_env = RL_muons_env_new(self.problem_fn)
-        eval_env = RL_muons_env_new(self.problem_fn)
+        lambda_action = 1.0
+        lambda_value  = 0.01#1.0
+        bc_lr         = 1e-3
+        bc_epochs     = 1000
+        batch_size    = 32
+
+        #Convert trajectories into training tensors:
+        obs_tensor, act_tensor, ret_tensor = [], [], []
+        for i in range(len(act_list)):
+            obs_tensor.append(torch.tensor(obs_list[i], dtype=torch.float32).unsqueeze(0))   
+            act_tensor.append(torch.tensor(act_list[i], dtype=torch.float32).unsqueeze(0))
+            ret_tensor.append(torch.tensor(reward_list[i], dtype=torch.float32).unsqueeze(0))
+        obs_tensor = torch.cat(obs_tensor, dim=0)
+        act_tensor = torch.cat(act_tensor, dim=0)
+        ret_tensor = torch.cat(ret_tensor, dim=0)
+
+        dataset = TensorDataset(obs_tensor, act_tensor, ret_tensor)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+        optimizer = torch.optim.Adam(bc_policy.parameters(), lr=bc_lr)
+        mse_loss = nn.MSELoss()
+
+        bc_reward_iters=[]
+        check_period=bc_epochs//10
+
+        # Actor-Critic Behavioral Cloning:
+        action_losses = []
+        value_losses  = []
+        total_losses  = []
+        for epoch in range(bc_epochs):
+            epoch_action_loss = 0.0
+            epoch_value_loss  = 0.0
+            epoch_total_loss  = 0.0
+            n_batches = 0
+            for batch_obs, batch_act, batch_ret in loader:
+                optimizer.zero_grad()
+                pred_actions, value_pred, _ = bc_policy.forward(batch_obs, deterministic=True)
+                action_loss = mse_loss(pred_actions, batch_act)
+                value_loss = mse_loss(value_pred.squeeze(-1), batch_ret)
+                loss = lambda_action * action_loss + lambda_value * value_loss
+                loss.backward()
+                optimizer.step()
+                epoch_action_loss += lambda_action*action_loss.item()
+                epoch_value_loss  += lambda_value*value_loss.item()
+                epoch_total_loss  += loss.item()
+                n_batches += 1
+            action_losses.append(epoch_action_loss / n_batches)
+            value_losses.append(epoch_value_loss / n_batches)
+            total_losses.append(epoch_total_loss / n_batches)
+            if (epoch+1)%check_period==0:
+                with torch.no_grad():
+                    bc_reward_iter = evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=1)
+                    print(f"Epoch {epoch+1}/{bc_epochs} deterministic reward: {bc_reward_iter}")
+                    bc_reward_iters.append(bc_reward_iter)
+
+        #BC plots:
+        x_vals = np.arange(1, bc_epochs + 1)
+        fig, ax = plt.subplots(figsize=(8,5))
+        ax.plot(x_vals, action_losses, color='tab:blue', label="Action loss", linewidth=2)
+        ax.plot(x_vals, value_losses,  color='tab:orange', label="Value loss", linewidth=2)
+        ax.plot(x_vals, total_losses,  color='tab:green', label="Total loss", linewidth=2)
+        ax.set_xlabel("Epochs")
+        ax.set_ylabel("Loss")
+        ax.set_title("Imitation Learning Loss per Epoch")
+        ax.grid(True)
+        ax.legend()
+        plt.tight_layout()
+        plt.savefig(f"outputs/{self.WandB['name']}/BC_losses.png")
+        plt.close(fig)
+
+        fig=plt.figure()
+        x_vals = 100 * np.linspace(1/len(bc_reward_iters), 1, len(bc_reward_iters))
+        plt.plot(x_vals,bc_reward_iters,marker='o')
+        plt.xlabel("Behavioral Cloning %")
+        plt.ylabel("Deterministic evaluation loss")
+        plt.title("Periodic deterministic evaluations on BC")
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/BC_deterministic_loss.png")
+        plt.close(fig)
+
+        #Evaluate the BC policy:
+        bc_reward = evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=1)
+        print("BC deterministic reward:", bc_reward)
+        bc_reward = evaluate_policy(bc_policy, BC_env, deterministic=False, n_eval_episodes=1)
+        print("BC non-deterministic reward:", bc_reward)
+        print("std after BC:")
+        print(bc_policy.log_std)
+
+
+        #PPO training:
+        train_env = RL_muons_env_new(self.problem_fn,self.fix_additional_params)
+        eval_env = RL_muons_env_new(self.problem_fn,self.fix_additional_params)
 
         eval_freq = max(1, int(0.05 * self.training_steps))
         callback = TrainingStatsCallback(eval_env=eval_env, eval_freq=eval_freq, verbose=1)
 
-
         model = PPO(
             policy=CustomPolicy,#"MlpPolicy",
             env=train_env,
-            learning_rate=1e-4,
+            learning_rate=1e-5,#1e-4,
             n_steps=256,
             batch_size=128,
             n_epochs=5,
-            gamma=0.99,
+            gamma=1.0,
             verbose=1,
             policy_kwargs=policy_kwargs,#SB3 will pass policy_kwargs to CustomPolicy via **kwargs
             device=self.device   
         )
 
-        model.policy.load_state_dict(bc_policy.state_dict())#Load the policy that was pretrained using BC
-
+        #Load the policy that was pretrained using BC:
+        bc_policy.eval()
+        model.policy.load_state_dict(bc_policy.state_dict())
+        print("Untrained PPO model std:")
+        print(model.policy.log_std)
         model.learn(total_timesteps=self.training_steps, callback=callback)
-
+        print("Trained PPO model std:")
+        print(model.policy.log_std)
         model.save(f"outputs/{self.WandB['name']}/ppo_model")
 
         print(f"Best evaluation achieved during training: x={callback.best_x}, f(x)={callback.best_reward:.4f}")
 
-        #Plots:
+        #PPO plots:
         fig=plt.figure()
         plt.plot(callback.episode_rewards,marker='o')
         plt.xlabel("Episode")
@@ -1665,7 +1779,8 @@ class RL():
         plt.close(fig)
 
         fig=plt.figure()
-        plt.plot(100*np.linspace(0, 1, len(callback.eval_scores)),callback.eval_scores,marker='o')
+        x_vals = 100 * np.linspace(1/len(callback.eval_scores), 1, len(callback.eval_scores))
+        plt.plot(x_vals,callback.eval_scores,marker='o')
         plt.xlabel("Training %")
         plt.ylabel("Deterministic evaluation loss")
         plt.title("Periodic deterministic evaluations")
