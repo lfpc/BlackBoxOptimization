@@ -36,7 +36,7 @@ dev = get_freest_gpu()
 parser = argparse.ArgumentParser()
 parser.add_argument('--second_order', action='store_true', help='Use second order optimization')
 parser.add_argument('--lr', type=float, default=0.1, help='Initial learning rate for phi optimization')
-parser.add_argument('--problem', type=str, choices=['ThreeHump', 'Rosenbrock', 'HelicalValley', 'MuonShield'], default='ThreeHump', help='Optimization problem to use')
+parser.add_argument('--problem', type=str, choices=['ThreeHump', 'Rosenbrock', 'HelicalValley', 'MuonShield'], default='Rosenbrock', help='Optimization problem to use')
 parser.add_argument('--batch_size', type=int, default=32768, help='Batch size for training the surrogate model')
 parser.add_argument('--samples_phi', type=int, default=5, help='Number of samples for phi in each iteration')
 parser.add_argument('--n_samples', type=int, default=5_000_000, help='Number of samples per phi')
@@ -52,7 +52,7 @@ epsilon = args.epsilon
 n_samples = args.n_samples
 initial_lambda_constraints = 1e-3
 initial_lr = args.lr
-weight_hits = True
+weight_hits = args.problem == 'MuonShield'
 outputs_dir = '/home/hep/lprate/projects/BlackBoxOptimization/outputs/test_lcso'
 
 if args.problem == 'ThreeHump':
@@ -65,11 +65,12 @@ if args.problem == 'ThreeHump':
     initial_phi = torch.tensor([-1.2, 1.0])
 elif args.problem == 'Rosenbrock':
     dim = args.dims
-    x_dim = 7
-    problem = Rosenbrock_stochastic_hits(dim = dim, n_samples = n_samples, 
-                                    phi_bounds = ((-2.0, 2.0)), 
-                                    x_bounds = (-3.,3.),
-                                    reduction = 'none')
+    x_dim = 2
+    problem = Rosenbrock_stochastic_hits(dim = dim, 
+                                         n_samples = n_samples, 
+                                        phi_bounds = ((-2.0, 2.0)), 
+                                        x_bounds = (-3.,3.),
+                                        reduction = 'none')
     initial_phi = torch.tensor([[-1.2, 1.8]*(dim//2)]).flatten()
 elif args.problem == 'HelicalValley':
     dim = 10
@@ -145,11 +146,11 @@ plt.title('Surrogate Model Training Loss')
 plt.grid(True)
 plt.savefig('figs/surrogate_training_loss_lcso.png')
 
-def get_probs(conditions_subset):
+def get_probs(conditions):
     pred_probs_list, real_probs_list = [], []
     with torch.no_grad():
-        for i in range(0, len(conditions_subset), args.batch_size):
-            c = conditions_subset[i:i+args.batch_size].reshape(-1, dim+x_dim)
+        for i in range(0, len(conditions), args.batch_size):
+            c = conditions[i:i+args.batch_size]#.reshape(-1, dim+x_dim)
             p = surrogate_model._predict_proba_cond(c).detach().cpu()
             pred_probs_list.append(p)
             phi = denormalize_vector(c[:, :dim], bounds)
@@ -186,7 +187,7 @@ optimizer.local_results = local_results
 for phi in test_phis:
     optimizer.simulate_and_update(phi, update_history=True)
 
-conditions = torch.stack(optimizer.local_results[0], dim=0).flatten()
+conditions = torch.stack(optimizer.local_results[0], dim=0).reshape(-1, dim + x_dim)
 hits = torch.stack(optimizer.local_results[1], dim=0)
 pred_probs, real_probs = get_probs(conditions)
 pred_probs = pred_probs.reshape(hits.shape)
@@ -256,7 +257,7 @@ def surrogate_objective(phi, batch_size=50000):
     n_hits = 0
     phi = normalize_vector(phi, bounds)
     for x in x_samp.split(batch_size):
-        n_hits += optimizer.n_hits(surrogate_model.predict_proba(phi,x).to(phi.device), x)
+        n_hits += optimizer.n_hits(surrogate_model.predict_proba(phi,x).to(phi.device), x[:,-1])
     return n_hits
 def surrogate_hessian_batched(phi, batch_size=20000):
     print("Computing surrogate Hessian in batches...")
@@ -265,7 +266,7 @@ def surrogate_hessian_batched(phi, batch_size=20000):
     for x_batch in x_samp.split(batch_size):
         def f_batch(phi_local):
             phi_n = normalize_vector(phi_local, bounds)
-            return optimizer.n_hits(surrogate_model.predict_proba(phi_n, x_batch).to(phi.device), x_batch)
+            return optimizer.n_hits(surrogate_model.predict_proba(phi_n, x_batch).to(phi.device), x_batch[:,-1])
         # Get Hessian for the current batch (small enough to fit in memory)
         H_batch = torch.func.hessian(f_batch)(phi)
         H += H_batch.detach()

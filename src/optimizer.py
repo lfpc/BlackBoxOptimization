@@ -41,7 +41,7 @@ class OptimizerClass():
         else: self._i =  0
         print('STARTING FROM i = ', self._i)
         self.model = surrogate_model
-        self.bounds = bounds.cpu()
+        self.bounds = bounds.to(self.device)
         self.wandb = WandB
         self.outputs_dir = outputs_dir
     def loss(self,x = None, y = None):
@@ -1615,7 +1615,7 @@ class CMAESOptimizer(OptimizerClass):
                  initial_phi: torch.tensor = None,
                  device = torch.device('cuda'),
                  pop_size: int = None, # Lambda
-                 sigma_init: float = 0.3, # Initial step size
+                 sigma_init: float = 0.1, # Initial step size
                  history: tuple = (),
                  WandB: dict = {'name': 'CMA-ES'},
                  outputs_dir = 'outputs',
@@ -1647,6 +1647,7 @@ class CMAESOptimizer(OptimizerClass):
             self.xmean = initial_phi.to(self.device).view(-1)
         else:
             self.xmean = (self.bounds[0] + (self.bounds[1] - self.bounds[0]) * torch.rand(self.N)).to(self.device)
+        self.xmean = normalize_vector(self.xmean, self.bounds).to(self.device).view(-1)
         self.sigma = sigma_init
         
         # --- 2. Strategy Parameter Setting (Standard CMA-ES defaults) ---
@@ -1682,12 +1683,8 @@ class CMAESOptimizer(OptimizerClass):
         self.D = torch.ones(self.N, device=self.device)   # Diagonal variances
         self.C = torch.eye(self.N, device=self.device)    # Covariance matrix
         
-        # Expectation of ||N(0,I)||
         self.chiN = np.sqrt(self.N) * (1 - 1 / (4 * self.N) + 1 / (21 * self.N**2))
-        
-        # Handling Resume Logic (Basic)
-        # Note: Reconstructing full CMA state from just 'history' is difficult without saving specific CMA params.
-        # This assumes a fresh start or that you handle state serialization externally.
+    
         if len(self.history) > 0 and not resume:
              print("Warning: CMA-ES initialized with history but acts on internal state. History is used for logging only.")
 
@@ -1703,11 +1700,8 @@ class CMAESOptimizer(OptimizerClass):
         2. Evaluation (Objective Function)
         3. Update (Tell)
         """
-        
-        # --- 1. Sampling (Ask) ---
+    
         # Eigendecomposition of C to get B and D: C = B * D^2 * B.T
-        # We do this every iteration for stability in PyTorch, though it can be lazy.
-        # Make sure C is symmetric
         self.C = (self.C + self.C.T) / 2
         L, E = torch.linalg.eigh(self.C)
         L = torch.clamp(L, min=1e-16)
@@ -1722,41 +1716,29 @@ class CMAESOptimizer(OptimizerClass):
         y_mutation = (z * self.D) @ self.B.T
         
         # Offspring: x = m + sigma * y
-        offspring_raw = self.xmean + self.sigma * y_mutation
+        offspring_norm = self.xmean + self.sigma * y_mutation
+        offspring_norm = offspring_norm.clamp(0.0,1.0)
+        offspring = denormalize_vector(offspring_norm, self.bounds).to(self.device)
         
-        # --- 2. Boundary Handling & Evaluation ---
-        # CMA-ES generates samples in unbounded space. 
-        # We clamp them for the physics model (evaluation) but use raw for updates 
-        # to avoid biasing the distribution covariance towards the edges artificially.
-        
-        lower = self.bounds[0].to(self.device)
-        upper = self.bounds[1].to(self.device)
-        
-        offspring_clamped = torch.max(torch.min(offspring_raw, upper), lower)
-        
-        # Evaluate entire population
-        # Assuming true_model can handle batch inputs. If not, loop.
-        # Using existing framework logic:
         scores = []
-        # The parent framework seems to handle single inputs mostly, 
-        # so we loop to be safe unless true_model is vectorized.
         for i in range(self.lam):
-            val = self.true_model(offspring_clamped[i])
+            val = self.true_model(offspring[i])
             scores.append(val)
             
-        scores_t = torch.tensor(scores, device=self.device).view(-1, 1)
+        scores = torch.tensor(scores, device=self.device).view(-1, 1)
         
         # Update history for logging
-        self.update_history(offspring_clamped, scores_t)
+        self.update_history(offspring, scores)
         
         # --- 3. Update (Tell) ---
         # Sort by fitness and compute weighted mean into xmean
-        sorted_indices = torch.argsort(scores_t.flatten())
+        sorted_indices = torch.argsort(scores.flatten())
         
         # Select top mu
         best_indices = sorted_indices[:self.mu]
-        best_z = z[best_indices]
-        best_y = y_mutation[best_indices]
+        best_x = offspring_norm[best_indices]  # normalized selected solutions
+        best_y = (best_x - self.xmean) / (self.sigma + 1e-16)  # normalized steps actually taken
+        best_z = (best_y @ self.B) / (self.D + 1e-16)
         
         # New mean
         # x_new = x_old + sigma * (weights * y_best).sum()
@@ -1765,11 +1747,6 @@ class CMAESOptimizer(OptimizerClass):
         
         # Update Mean
         self.xmean = self.xmean + self.sigma * y_w
-        
-        # Update Evolution Path for Sigma (Cumulative Step-size Adaptation - CSA)
-        # ps = (1-cs)*ps + sqrt(cs*(2-cs)*mueff) * B * z_w
-        # Note: B * z_w puts it back into the coordinate system independent of D
-        inv_sqrt_C = torch.matmul(self.B, torch.diag(1/self.D)).matmul(self.B.T)
         
         # Actual CSA update
         # We need C^(-1/2) * y_w which simplifies to B * z_w because y_w = B*D*z_w
@@ -1786,11 +1763,6 @@ class CMAESOptimizer(OptimizerClass):
         self.pc = (1 - self.cc) * self.pc + term2_pc
         
         # Update Covariance Matrix C
-        # Rank-1 update (using pc) + Rank-mu update (using weighted variations)
-        
-        # Rank-1
-        artmp = (1 / self.sigma) * (offspring_raw[best_indices] - (self.xmean - self.sigma * y_w))
-        # The above artmp is essentially best_y. Using best_y directly:
         
         delta_hsig = (1 - hsig_float) * self.cc * (2 - self.cc)
         
@@ -1809,12 +1781,9 @@ class CMAESOptimizer(OptimizerClass):
         # Update Step Size (Sigma)
         self.sigma = self.sigma * torch.exp((self.cs / self.ds) * (norm_ps / self.chiN - 1))
         
-        # --- 4. Return Best of Generation ---
-        # The run_optimization loop expects a single phi, y for logging.
-        # We return the best found in this generation.
         best_idx = sorted_indices[0]
-        best_phi = offspring_clamped[best_idx]
-        best_loss = scores_t[best_idx]
+        best_phi = offspring[best_idx]
+        best_loss = scores[best_idx]
         
         return best_phi, best_loss
 
