@@ -1558,7 +1558,7 @@ class TrainingStatsCallback(BaseCallback):
                 obs, reward, done, truncated, info = self.eval_env.step(action)
             self.eval_scores.append(reward.item())
             self.last_eval_step = self.num_timesteps
-            print(f"Steps played: {self.num_timesteps}")
+            print(f"Steps played: {self.num_timesteps}, deterministic evaluation reward: {reward.item()}")
         return True
 
 def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10):
@@ -1642,7 +1642,7 @@ class RL():
         bc_policy=CustomPolicy(BC_env.observation_space, BC_env.action_space, lr_schedule, **policy_kwargs)
         #Fix std:
         with torch.no_grad():
-            bc_policy.log_std[:] = -4.0
+            bc_policy.log_std[:] = -3.0
         obs_list, act_list, reward_list = generate_imitation_trajectories(BC_env, self.warm_baseline, n_episodes=3)
         print("std before BC:")
         print(bc_policy.log_std)
@@ -1746,7 +1746,7 @@ class RL():
         model = PPO(
             policy=CustomPolicy,#"MlpPolicy",
             env=train_env,
-            learning_rate=1e-5,#1e-4,
+            learning_rate=1e-5,#1e-4,#Seems like a larger value makes training worse
             n_steps=256,
             batch_size=128,
             n_epochs=5,
