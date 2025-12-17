@@ -1648,7 +1648,7 @@ class RL():
         print(bc_policy.log_std)
 
         lambda_action = 1.0
-        lambda_value  = 0.01#1.0
+        lambda_value  = 0.01#TO_DO: Check if I should use lambda_value=1 or lambda_value=0.01
         bc_lr         = 1e-3
         bc_epochs     = 1000
         batch_size    = 32
@@ -2507,7 +2507,270 @@ class PowellOptimizer(OptimizerClass):
 
         return False # Continue optimization
     
+def generate_toy_imitation_trajectories(env, warm_baseline, n_episodes=10):
+    obs_list, act_list, reward_list = [], [], []
+    for _ in range(n_episodes):
+        obs, _ = env.reset()
+        done = False
+        ep_rewards=[]
+        while not done:
+            action = warm_baseline.copy()
+            action = action.astype(np.float32)
+            obs_list.append(obs.copy())
+            act_list.append(action.copy())
+            obs, reward, done, truncated, info = env.step(action)
+            ep_rewards.append(reward)
+        total_return = sum(ep_rewards)
+        reward_list.extend([torch.tensor([total_return], dtype=torch.float32)] * len(ep_rewards))
+        print(f"Warm baseline reward: {reward}")
+    return obs_list, act_list, reward_list
+
+class Rastrigin7DSingleStepEnv(gym.Env):
+    def __init__(self):
+        super().__init__()
+        self.dim = 7
+        self.low = -5.12
+        self.high = 5.12
+        # Dummy observation (stateless problem)
+        self.observation_space = gym.spaces.Box(
+            low=0.0,
+            high=0.0,
+            shape=(1,),
+            dtype=np.float32
+        )
+        self.action_space = gym.spaces.Box(
+            low=self.low,
+            high=self.high,
+            shape=(self.dim,),
+            dtype=np.float32
+        )
+        self.done = False
+        self.c= np.array([-1.4, 3.5, 2.3, 1.7, 4.1, 2.3, -2.5])#Shift
+
+    def rastrigin(self, x):
+        return 10 * self.dim + np.sum(x**2 - 10 * np.cos(2 * np.pi * x))
+
+    def rastrigin_shifted(self, x, c):
+        x = np.asarray(x)
+        c = np.asarray(c)
+        return 10 * len(x) + np.sum((x - c)**2 - 10 * np.cos(2 * np.pi * (x - c)))
+
+    def constraint_violation(self, x):
+        violation = 0.0
+        # Box constraints (technically redundant, but kept for safety)
+        violation += np.sum(np.maximum(0.0, self.low - x))
+        violation += np.sum(np.maximum(0.0, x - self.high))
+        # Linear constraint: sum(x) <= 10
+        violation += max(0.0, np.sum(x) - 10.0)
+        return violation
+
+    def step(self, action):
+        assert not self.done, "Episode already terminated"
+        x = np.asarray(action, dtype=float)
+        obj=self.rastrigin_shifted(x, self.c)#obj = self.rastrigin(x)
+        violation = self.constraint_violation(x)
+        penalty_weight = 100.0
+        reward = -(obj + penalty_weight * violation)
+        self.done = True
+        info = {
+            "x": x,
+            "objective": obj,
+            "violation": violation
+        }
+        # Observation is irrelevant; return dummy
+        return np.zeros(1, dtype=np.float32), reward, True, False, info
+   
+    def reset(self, *, seed=None):
+        if seed is not None:
+            np.random.seed(seed)
+        self.done = False
+        return np.zeros(1, dtype=np.float32),{}
+
+    def render(self, mode="human"):
+        pass
     
+class toy_RL():
+    def __init__(self,device,WandB):
+        self.device=device
+        self.WandB=WandB
+        self.training_steps=200000
+        self.use_warm_baseline=True
+
+    def run_optimization(self):
+        policy_kwargs = dict(
+            net_arch=[dict(pi=[128, 128], vf=[128, 128])],
+            activation_fn=torch.nn.ReLU
+        )
+        if self.use_warm_baseline:
+            BC_env = Rastrigin7DSingleStepEnv()
+            #Warm baseline close to final solution:
+            scale=0.5
+            self.warm_baseline=BC_env.c+np.array([-0.18511472,-0.00619498,-0.14750585,0.17160661,-0.60160435,-0.24393126, -0.54970125])#+ np.random.normal(loc=0.0, scale=scale, size=BC_env.dim)
+
+            lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
+            bc_policy=CustomPolicy(BC_env.observation_space, BC_env.action_space, lr_schedule, **policy_kwargs)
+            #Fix std:
+            with torch.no_grad():
+                bc_policy.log_std[:] = -3.0
+            obs_list, act_list, reward_list = generate_toy_imitation_trajectories(BC_env, self.warm_baseline, n_episodes=1)
+            print("std before BC:")
+            print(bc_policy.log_std)
+
+            lambda_action = 1.0
+            lambda_value  = 0.01#For single step environment lambda_value=0.01 and lambda_value=1.0 give similar results
+            bc_lr         = 1e-3
+            bc_epochs     = 10000
+            batch_size    = 32
+
+            #Convert trajectories into training tensors:
+            obs_tensor, act_tensor, ret_tensor = [], [], []
+            for i in range(len(act_list)):
+                obs_tensor.append(torch.tensor(obs_list[i], dtype=torch.float32).unsqueeze(0))   
+                act_tensor.append(torch.tensor(act_list[i], dtype=torch.float32).unsqueeze(0))
+                ret_tensor.append(torch.tensor(reward_list[i], dtype=torch.float32).unsqueeze(0))
+            obs_tensor = torch.cat(obs_tensor, dim=0)
+            act_tensor = torch.cat(act_tensor, dim=0)
+            ret_tensor = torch.cat(ret_tensor, dim=0)
+
+            dataset = TensorDataset(obs_tensor, act_tensor, ret_tensor)
+            loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+            optimizer = torch.optim.Adam(bc_policy.parameters(), lr=bc_lr)
+            mse_loss = nn.MSELoss()
+
+            bc_reward_iters=[]
+            check_period=bc_epochs//10
+
+            # Actor-Critic Behavioral Cloning:
+            action_losses = []
+            value_losses  = []
+            total_losses  = []
+            for epoch in range(bc_epochs):
+                epoch_action_loss = 0.0
+                epoch_value_loss  = 0.0
+                epoch_total_loss  = 0.0
+                n_batches = 0
+                for batch_obs, batch_act, batch_ret in loader:
+                    optimizer.zero_grad()
+                    pred_actions, value_pred, _ = bc_policy.forward(batch_obs, deterministic=True)
+                    action_loss = mse_loss(pred_actions, batch_act)
+                    value_loss = mse_loss(value_pred.squeeze(-1), batch_ret)
+                    loss = lambda_action * action_loss + lambda_value * value_loss
+                    loss.backward()
+                    optimizer.step()
+                    epoch_action_loss += lambda_action*action_loss.item()
+                    epoch_value_loss  += lambda_value*value_loss.item()
+                    epoch_total_loss  += loss.item()
+                    n_batches += 1
+                action_losses.append(epoch_action_loss / n_batches)
+                value_losses.append(epoch_value_loss / n_batches)
+                total_losses.append(epoch_total_loss / n_batches)
+                if (epoch+1)%check_period==0:
+                    with torch.no_grad():
+                        bc_reward_iter = evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=1)
+                        print(f"Epoch {epoch+1}/{bc_epochs} deterministic reward: {bc_reward_iter}")
+                        bc_reward_iters.append(bc_reward_iter)
+
+            #BC plots:
+            x_vals = np.arange(1, bc_epochs + 1)
+            fig, ax = plt.subplots(figsize=(8,5))
+            ax.plot(x_vals, action_losses, color='tab:blue', label="Action loss", linewidth=2)
+            ax.plot(x_vals, value_losses,  color='tab:orange', label="Value loss", linewidth=2)
+            ax.plot(x_vals, total_losses,  color='tab:green', label="Total loss", linewidth=2)
+            ax.set_xlabel("Epochs")
+            ax.set_ylabel("Loss")
+            ax.set_title("Imitation Learning Loss per Epoch")
+            ax.grid(True)
+            ax.legend()
+            plt.tight_layout()
+            plt.savefig(f"outputs/{self.WandB['name']}/BC_losses.png")
+            plt.close(fig)
+
+            fig=plt.figure()
+            x_vals = 100 * np.linspace(1/len(bc_reward_iters), 1, len(bc_reward_iters))
+            plt.plot(x_vals,bc_reward_iters,marker='o')
+            plt.axhline(y=reward_list[-1],linestyle='--',color='black',label='Warm baseline loss')
+            plt.xlabel(f"Behavioral Cloning % ({bc_epochs} epochs)")
+            plt.ylabel("Deterministic evaluation loss")
+            plt.title("Periodic deterministic evaluations on BC")
+            plt.grid(True)
+            plt.legend()
+            plt.savefig(f"outputs/{self.WandB['name']}/BC_deterministic_loss.png")
+            plt.close(fig)
+
+            #Evaluate the BC policy:
+            bc_reward = evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=1)
+            print("BC deterministic reward:", bc_reward)
+            bc_reward = evaluate_policy(bc_policy, BC_env, deterministic=False, n_eval_episodes=1)
+            print("BC non-deterministic reward:", bc_reward)
+            print("std after BC:")
+            print(bc_policy.log_std)
+
+        #PPO training:
+        train_env = Rastrigin7DSingleStepEnv()
+        eval_env = Rastrigin7DSingleStepEnv()
+
+        eval_freq = max(1, int(0.05 * self.training_steps))
+        callback = TrainingStatsCallback(eval_env=eval_env, eval_freq=eval_freq, verbose=1)
+
+        model = PPO(
+            policy=CustomPolicy,#"MlpPolicy",
+            env=train_env,
+            learning_rate=1e-5,
+            n_steps=256,
+            batch_size=128,
+            n_epochs=5,
+            gamma=1.0,
+            verbose=1,
+            policy_kwargs=policy_kwargs,#SB3 will pass policy_kwargs to CustomPolicy via **kwargs
+            device=self.device   
+        )
+
+        if self.use_warm_baseline:
+            #Load the policy that was pretrained using BC:
+            bc_policy.eval()
+            model.policy.load_state_dict(bc_policy.state_dict())
+        print("Untrained PPO model std:")
+        print(model.policy.log_std)
+        
+        model.learn(total_timesteps=self.training_steps, callback=callback)
+        print("Trained PPO model std:")
+        print(model.policy.log_std)
+        model.save(f"outputs/{self.WandB['name']}/ppo_model")
+
+        print(f"Best evaluation achieved during training: x={callback.best_x}, f(x)={callback.best_reward:.4f}")
+
+        #PPO plots:
+        fig=plt.figure()
+        plt.plot(callback.episode_rewards,marker='o')
+        plt.xlabel("Episode")
+        plt.ylabel("Loss")
+        plt.title("Loss per training episode")
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/training_loss.png")
+        plt.close(fig)
+
+        fig=plt.figure()
+        x_vals = 100 * np.linspace(1/len(callback.eval_scores), 1, len(callback.eval_scores))
+        plt.plot(x_vals,callback.eval_scores,marker='o')
+        plt.xlabel(f"Training % ({self.training_steps} steps)")
+        plt.ylabel("Deterministic evaluation loss")
+        plt.title("Periodic deterministic evaluations")
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/deterministic_loss.png")
+        plt.close(fig)
+
+        fig=plt.figure()
+        plt.plot(callback.total_steps_history,callback.best_reward_history,marker='o')
+        plt.xlabel("Training steps")
+        plt.ylabel("Best training loss")
+        plt.title("Best training evaluation")
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/best_training_loss.png")
+        plt.close(fig)
+
+        return callback.best_x,callback.best_reward
+
 if __name__ == '__main__':
     mp.set_start_method("spawn", force=True)
     from problems import stochastic_RosenbrockProblem

@@ -1,6 +1,6 @@
 import torch
 from botorch import acquisition, settings
-from src.optimizer import BayesianOptimizer,LGSO,TurboOptimizer,LCSO,GA,CMAES,CEM,RL
+from src.optimizer import BayesianOptimizer,LGSO,TurboOptimizer,LCSO,GA,CMAES,CEM,RL,toy_RL
 from src import problems
 from src.models import GP_RBF, GP_BOCK, GP_IBNN
 from utils.acquisition_functions import Custom_LogEI
@@ -101,9 +101,12 @@ elif args.optimization == 'RL':
     RL_dict["tolerance"]=2.0#TO_DO: Identify a proper value
     RL_dict["step_scale"]=0.05#TO_DO: Identify a proper value
     """
-    RL_dict["training_steps"]=2000#20000*7#TO_DO: Identify a proper value
+    RL_dict["training_steps"]=2*2000#2*2000#20000*7#TO_DO: Identify a proper value
     RL_dict["fix_additional_params"]=True
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **RL_dict}, 'name': args.name}
+elif args.optimization == 'toyRL':
+    toyRL_dict={}
+    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **toyRL_dict}, 'name': args.name}
 elif args.optimization == 'CMAES':
     CMAES_dict={}
     CMAES_dict["initial_step_size"]=0.00001#0.3#TO_DO: Identify a proper value
@@ -134,7 +137,7 @@ def get_freest_gpu():
     max_idx = mem_free.index(max(mem_free))
     return torch.device(f'cuda:{max_idx}')
 if torch.cuda.is_available() and args.cuda: 
-    if args.optimization == 'GA' or args.optimization == 'RL' or args.optimization == 'CMAES' or args.optimization == 'CEM':
+    if args.optimization == 'GA' or args.optimization == 'RL' or args.optimization == 'toyRL' or args.optimization == 'CMAES' or args.optimization == 'CEM':
         dev=torch.device('cuda')
     else:
         dev = get_freest_gpu()
@@ -259,6 +262,11 @@ if __name__ == "__main__":
             device=dev,
             devices=devices,
             WandB=WANDB).run_optimization()
+        sys.exit()
+    elif args.optimization == 'toyRL':#Reinforcement Learning
+        num_gpus = torch.cuda.device_count()
+        devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
+        toy_RL(device=dev,WandB=WANDB).run_optimization()
         sys.exit()
     elif args.optimization == 'RL':#Reinforcement Learning
         num_gpus = torch.cuda.device_count()

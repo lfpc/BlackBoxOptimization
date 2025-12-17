@@ -7,9 +7,9 @@ PYTHON_SCRIPT_DIR="$PROJECT_DIR/BlackBoxOptimization"
 
 nvidia-smi
 
-read -p "Select optimization method (GA/RL/CMAES/CEM/bayesian): " OPT_METHOD
-if [[ "$OPT_METHOD" != "GA" && "$OPT_METHOD" != "RL" && "$OPT_METHOD" != "CMAES" && "$OPT_METHOD" != "CEM" && "$OPT_METHOD" != "bayesian" ]]; then
-    echo "Error: Invalid choice. Must be 'GA', 'RL', 'CMAES', 'CEM' or 'bayesian'."
+read -p "Select optimization method (GA/RL/toyRL/CMAES/CEM/bayesian): " OPT_METHOD
+if [[ "$OPT_METHOD" != "GA" && "$OPT_METHOD" != "RL" && "$OPT_METHOD" != "toyRL" && "$OPT_METHOD" != "CMAES" && "$OPT_METHOD" != "CEM" && "$OPT_METHOD" != "bayesian" ]]; then
+    echo "Error: Invalid choice. Must be 'GA', 'RL', 'toyRL', 'CMAES', 'CEM' or 'bayesian'."
     exit 1
 fi
 
