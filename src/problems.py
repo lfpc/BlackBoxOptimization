@@ -715,6 +715,14 @@ class ShipMuonShield():
         [10, 90.0, 1.0, 77.12, 56.0, 56.0, 5.27, 5.0, 140.93, 0.88, 1.0, 77.12, 30.0, 30.0, -1.9],
         [10, 238.82, 30.03, 40.0, 56.0, 56.0, 5.0, 5.01, 4.83, 3.37, 30.03, 40.0, 0.0, 0.0, -1.9]
     ],
+    'stellatryon_v3': [
+                        [0,  115.5,  50.00, 50.00, 119.00, 119.00, 2.00, 2.00, 1.00, 1.00, 50.00, 50.00, 0.00, 0.00, 1.90], 
+                        [20, 250, 67.10, 79.92, 27.00, 43.00, 8.00, 8.00, 1.38, 1.06, 67.10, 79.92, 0.00, 0.00, 1.90], 
+                        [10, 250, 53.12, 49.56, 43.00, 56.00, 8.00, 8.00, 2.11, 2.40, 53.12, 49.56, 0.00, 0.00, 1.90], 
+                        [10, 250, 53.12, 49.56, 43.00, 56.00, 8.00, 8.00, 2.11, 2.40, 53.12, 49.56, 0.00, 0.00, 1.90], 
+                        [10, 232.53, 2.73, 3.68, 56.00, 56.00, 8.00, 8.00, 60.44, 45.63, 2.73, 3.68, 0.50, 0.50, 0], 
+                        [10, 233.82, 30.03, 40.00, 56.00, 56.00, 8.00, 8.00, 4.83, 3.37, 30.03, 40.00, 0.00, 0.00, -1.4]
+    ],
     "warm_baseline": [
                 [0.,120.5, 50.00,  50.00, 119.00, 119.00,   2.00,   2.00, 1.00,1.0,50.00,  50.00,0.0, 0.00, 1.9],
                   [10, 250, 72.00, 51.00, 29.00, 46.00, 10.00, 7.00, 1.00,1.0,72.00, 51.00,0.0, 0.00, 1.9],
@@ -770,7 +778,14 @@ class ShipMuonShield():
             make_index(4, [1,2,4,3,6,7] + [12,14]) +
             make_index(5, [1,2,4,3,6,7] + [14])
         ),
-        "all_7":sum((make_index(i, list(range(12)) + [12,14]) for i in range(7)), [])
+        "all_7":sum((make_index(i, list(range(12)) + [12,14]) for i in range(7)), []),
+        "stellatryon": (
+            make_index(1, [1,2,4,8,9]) +
+            make_index(2, [1,2,4,8,9]) +
+            make_index(3, [1,2,4,8,9]) +
+            make_index(4, [1]) + # SET EQUAL TO M3
+            make_index(5, [1,2,4,8,9] + [14])
+        ),
     }
 
 
@@ -841,8 +856,10 @@ class ShipMuonShield():
         self.parallel = parallel
         self.cost_as_constraint = cost_as_constraint    
 
+        key = None
         if initial_phi is not None:
             self.DEFAULT_PHI = torch.as_tensor(initial_phi).view(-1,self.n_params)
+            
         if isinstance(dimensions_phi,list):
             self.params_idx = torch.tensor(dimensions_phi)
         else:
@@ -853,6 +870,7 @@ class ShipMuonShield():
                     break
             else: 
                 self.params_idx = torch.tensor(sum((make_index(i, list(range(self.n_params))) for i in range(len(self.DEFAULT_PHI))), []))
+        self.key = key
         self.initial_phi = apply_index(self.DEFAULT_PHI, self.params_idx).flatten()
         self.dimensions_phi = self.dim = len(self.initial_phi)
         
@@ -1165,13 +1183,27 @@ class ShipMuonShield():
                 bounds_high[inverted_polarity, 9] = 1.0 / yoke_bounds[0]
 
         if self.use_diluted:
-            bounds_low[0,6] = 2.0
-            bounds_low[0,7] = 2.0
-            bounds_low[0,1] = 120.5
-            bounds_low[1,1] = 485.5
-            bounds_low[2,1] = 285
-            bounds_low[3:,1] = 30
-            bounds_high[:,1] = 500
+            if self.key and not self.key.startswith("stella"):
+                bounds_low[0,6] = 2.0
+                bounds_low[0,7] = 2.0
+                bounds_low[0,1] = 120.5
+                bounds_low[1,1] = 485.5
+                bounds_low[2,1] = 285
+                bounds_low[3:,1] = 30
+                bounds_high[:,1] = 500
+            else:
+                ###### MODIFIED BY GUGLIELMO ###################
+                # Z LEN All magnets
+                bounds_low[1:3,1] = 200 #cm
+                bounds_high[1:,1] = 300 #cm
+                #M4
+                bounds_low[-2,1] = 160 #cm
+                bounds_low[-1,-1] = 0 # T or NI
+                #M5
+                bounds_low[-1,1] = 336/2 #cm
+                bounds_high[-1,1] = 950/2 #cm
+                bounds_low[-1,-1] = -1.4 if self.use_B_goal else -70e3/1.9*1.4 # T or NI
+                bounds_high[-1,-1] = 0 if self.use_B_goal else 0 # T or NI
         
         if self.SND:
             bounds_low[-2,1] = 90
@@ -1267,31 +1299,50 @@ class ShipMuonShield():
                 )
             if self.use_diluted:
                 rows = torch.arange(1, new_phi.size(0), device=new_phi.device)
-                # new_phi[1:,10] = new_phi[1:, 2]
-                new_phi = new_phi.index_put(
-                    (rows, torch.tensor([10])),
-                    new_phi[1:, 2]
-                )
-                # new_phi[1:,11] = new_phi[1:, 3]
-                new_phi = new_phi.index_put(
-                    (rows, torch.tensor([11])),
-                    new_phi[1:, 3]
-                )
                 
-                # new_phi[1:,8] = ...
-                piet = torch.tensor(self.params['Piet_solution'], dtype = new_phi.dtype, device=new_phi.device)
-                values_8 = (piet[1:,2] * piet[1:,8] + piet[1:,6] + piet[1:,2] - new_phi[1:,12] - new_phi[1:,6] - new_phi[1:,2]) / new_phi[1:,2]
-                new_phi = new_phi.index_put(
-                    (rows, torch.tensor([8])),
-                    values_8
-                )
-                
-                # new_phi[1:,9] = ...
-                values_9 = (piet[1:,3] * piet[1:,9] + piet[1:,7] + piet[1:,3] - new_phi[1:,13] - new_phi[1:,7] - new_phi[1:,3]) / new_phi[1:,3]
-                new_phi = new_phi.index_put(
-                    (rows, torch.tensor([9])),
-                    values_9
-                )   
+                if self.key and not self.key.startswith("stella"):
+                    # new_phi[1:,10] = new_phi[1:, 2]
+                    new_phi = new_phi.index_put(
+                        (rows, torch.tensor([10])),
+                        new_phi[1:, 2]
+                    )
+                    # new_phi[1:,11] = new_phi[1:, 3]
+                    new_phi = new_phi.index_put(
+                        (rows, torch.tensor([11])),
+                        new_phi[1:, 3]
+                    )
+                    
+                    # new_phi[1:,8] = ...
+                    piet = torch.tensor(self.params['Piet_solution'], dtype = new_phi.dtype, device=new_phi.device)
+                    values_8 = (piet[1:,2] * piet[1:,8] + piet[1:,6] + piet[1:,2] - new_phi[1:,12] - new_phi[1:,6] - new_phi[1:,2]) / new_phi[1:,2]
+                    new_phi = new_phi.index_put(
+                        (rows, torch.tensor([8])),
+                        values_8
+                    )
+                    
+                    # new_phi[1:,9] = ...
+                    values_9 = (piet[1:,3] * piet[1:,9] + piet[1:,7] + piet[1:,3] - new_phi[1:,13] - new_phi[1:,7] - new_phi[1:,3]) / new_phi[1:,3]
+                    new_phi = new_phi.index_put(
+                        (rows, torch.tensor([9])),
+                        values_9
+                    )   
+                else:
+                    # X_yoke 1 = X_yoke2 => ∆Xcore,1 · (1 + Ryoke/core,1) = ∆Xcore,2 · (1 + Ryoke/core,2) => ∆Xcore,2 = ∆Xcore,1 · (1 + Ryoke/core,1)/ (1 + Ryoke/core,2)
+                    values_3 = new_phi[rows, 2] * (1 + new_phi[rows, 8]) / (1 + new_phi[rows, 9])
+                    new_phi.index_put_((rows, torch.tensor([3])), values_3)
+                    
+                    
+                    # ∆Yyoke,1 = ∆Yyoke,2 = 110% · max(∆Xcore,1, ∆Xcore,2)
+                    row_max = torch.max(new_phi[rows, 2], new_phi[rows, 3]) * 1.1
+
+                    new_phi.index_put_((rows, torch.tensor([10])), row_max)
+                    new_phi.index_put_((rows, torch.tensor([11])), row_max)
+                    
+                    # Yyoke,1 = Yyoke,2 ⇒ ∆Ycore,1 + ∆Yyoke,1 = ∆Ycore,2 + ∆Yyoke,2 → ∆Ycore,1 = ∆Ycore,2.
+                    new_phi.index_put_((rows, torch.tensor([5])), new_phi[rows, 4])
+                    
+                    #M4 constraint:
+                    new_phi[-2,2:14] = new_phi[-3, 2:14]
                 
         else:
             new_phi = phi
@@ -1329,8 +1380,14 @@ class ShipMuonShield():
         constraints = constraints + fn_pen(phi[:,3]+phi[:,9]*phi[:,3]+phi[:,7]+phi[:,13] -x_min)
         constraints = constraints + fn_pen(phi[:,5]+phi[:,11]+Ymgap - y_min)
         if self.use_diluted:
-            constraints = constraints + fn_pen((1-phi[:,8])) 
-            constraints = constraints + fn_pen((1-phi[:,9]))
+            if self.key and not self.key.startswith("stella"):
+                constraints = constraints + fn_pen((1-phi[:,8])) 
+                constraints = constraints + fn_pen((1-phi[:,9]))
+            else:
+                # ∆Xcore,i · (1 + Ryoke/core,i) - ∆Xcore,i+1 · (1 + Ryoke/core,i+1) < 0. (here number are the magnets)
+                t1 = phi[:-1, 2] * (1 + phi[:-1, 8])
+                t2 = phi[1:,  2] * (1 + phi[1:,  8])
+                constraints[1:] +=  + fn_pen(t1  - t2 )
         if self.cost_as_constraint:
             M = self.get_total_cost(phi)
             constraints = constraints + fn_pen(M - self.W0)
