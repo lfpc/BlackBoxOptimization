@@ -310,7 +310,71 @@ class ThreeHump():
             
         return y
 
+class G02Problem():
+    def __init__(self, dim: int = 20, phi_bounds=((-0.0, 10.0)), noise: float = 0, constrained = True) -> None:
+        self.dim = dim
+        # Create bounds dynamically based on dimension
+        self._phi_bounds = ([phi_bounds[0]] * self.dim, [phi_bounds[1]] * self.dim)
+        self.noise = noise
+        self.constrained = constrained
 
+    def GetBounds(self, device='cpu') -> torch.Tensor:
+        """Returns the bounds for the PHI parameters."""
+        return torch.tensor(self._phi_bounds, device=device)
+
+    def loss(self, phi):
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        L = torch.cos(phi).pow(4).sum(-1) + 2*torch.cos(phi).pow(2).prod(-1)
+        L = L.abs() / phi.pow(2).mul(torch.arange(1, self.dim+1, device=phi.device).unsqueeze(0)).sum(-1).sqrt()
+        return -L
+    def gradient(self, phi, analytic: bool = False):
+        """
+        Calculates the gradient of the loss function with respect to phi.
+        """
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        
+        if analytic:
+            return 0
+        
+        if not phi.requires_grad:
+            phi.requires_grad_(True)
+        
+        loss_val = self.loss(phi)
+        if loss_val.dim() > 0 and len(loss_val) > 1:
+            loss_val = loss_val.sum()
+        grad = torch.autograd.grad(loss_val, phi)[0]
+        return grad
+    
+    def hessian(self, phi, analytic: bool = False):
+        """
+        Calculates the Hessian matrix of the loss function with respect to phi.
+        """
+        if analytic:
+            if phi.dim() == 1:
+                phi = phi.unsqueeze(0)
+            hessian_matrix = []
+            return hessian_matrix
+
+        if not phi.requires_grad:
+            phi.requires_grad_(True)
+        return torch.autograd.functional.hessian(self.loss, phi)
+
+    def get_constraints(self, phi):
+        if not self.constrained: return torch.tensor(0.0, device=phi.device)
+        constraints = torch.zeros((phi.shape[0],1), device=phi.device)
+        constraints = constraints + (0.75 - phi.prod(-1))
+        constraints = constraints + (phi.sum(-1) - 7.5*self.dim)
+
+        return constraints
+
+    def __call__(self, phi: torch.tensor, x: torch.tensor = None):
+        y = self.loss(phi)
+        y = y.view(-1, 1)
+        if self.noise and x is not None:
+            y += x
+        return y
 
 class ThreeHump_stochastic_hits(ThreeHump):
     """

@@ -83,7 +83,7 @@ elif args.problem == 'HelicalValley':
 elif args.problem == 'MuonShield':
     dim = 24
     x_dim = 8
-    config_file = "/home/hep/lprate/projects/BlackBoxOptimization/outputs/config_tests.json"
+    config_file = "/home/hep/lprate/projects/BlackBoxOptimization/outputs/config.json"
     with open(config_file, 'r') as f:
         CONFIG = json.load(f)
     CONFIG.pop("data_treatment", None)
