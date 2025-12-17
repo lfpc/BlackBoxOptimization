@@ -5,7 +5,7 @@ import sys
 import os
 import pickle
 sys.path.append(os.path.abspath(os.path.join('..', 'src')))
-from optimizer import LCSO
+from optimizer import LCSO_sampled
 from problems import ThreeHump_stochastic_hits, Rosenbrock_stochastic_hits, HelicalValley_stochastic_hits, ShipMuonShieldCuda
 from models import BinaryClassifierModel
 import torch
@@ -35,10 +35,11 @@ def get_freest_gpu():
 parser = argparse.ArgumentParser()
 parser.add_argument('--name', type=str, default=None, help='WandB run name')
 parser.add_argument('--second_order', action='store_true', help='Use second order optimization')
-parser.add_argument('--n_epochs_classifier', type=int, default=15, help='Number of epochs for classifier training per iteration')
+parser.add_argument('--n_epochs', type=int, default=10, help='Number of epochs for classifier training per iteration')
 parser.add_argument('--analytical', action='store_true', help='Use analytical gradients')
 parser.add_argument('--n_iters', type=int, default=30, help='Number of optimization iterations')
-parser.add_argument('--n_samples', type=int, default=100_000, help='Number of samples per phi')
+parser.add_argument('--subsamples', type=int, default=100_000, help='Number of subsamples per iteration')
+parser.add_argument('--n_samples', type=int, default=20_000_000, help='Number of samples per phi')
 parser.add_argument('--lr', type=float, default=1.0, help='Initial learning rate for phi optimization')
 parser.add_argument('--problem', type=str, choices=['ThreeHump', 'Rosenbrock', 'HelicalValley', 'MuonShield'], default='Rosenbrock', help='Optimization problem to use')
 parser.add_argument('--samples_phi', type=int, default=5, help='Number of samples for phi in each iteration')
@@ -54,7 +55,7 @@ epsilon = args.epsilon
 n_samples = args.n_samples
 initial_lambda_constraints = 1e-3
 initial_lr = args.lr
-weight_hits = False
+weight_hits = True
 
 if args.name is None:
     name = 'SecondOrder_' if args.second_order else 'FirstOrder_'
@@ -122,7 +123,6 @@ bounds = problem.GetBounds(device=torch.device('cpu'))
 
 classifier = BinaryClassifierModel(phi_dim=dim,
                             x_dim = x_dim,
-                            n_epochs = args.n_epochs_classifier,
                             batch_size = args.batch_size,
                             lr = 1e-2,
                             device = dev,
@@ -130,11 +130,13 @@ classifier = BinaryClassifierModel(phi_dim=dim,
                             data_from_file = args.local_file_storage
                             )
 
-optimizer = LCSO(
+optimizer = LCSO_sampled(
     true_model=problem,
     surrogate_model=classifier,
     bounds=bounds,
     samples_phi=samples_phi,
+    n_subsamples = args.subsamples,
+    n_epochs = args.n_epochs,
     epsilon=epsilon,
     initial_phi=initial_phi,
     initial_lambda_constraints=initial_lambda_constraints,  # Initial lambda for constraints
@@ -142,6 +144,7 @@ optimizer = LCSO(
     weight_hits=weight_hits,
     device='cpu',
     outputs_dir=outputs_dir,
+    second_order=args.second_order,
     local_file_storage = '/scratch/lprate/local_rosenbrock.h5' if args.local_file_storage else None,
     resume=False)
 
@@ -149,7 +152,7 @@ optimizer = LCSO(
 n_iters = args.n_iters
 train_losses = []
 
-objective_losses = [optimizer.loss(*optimizer.history).item()*n_samples]
+objective_losses = [optimizer.loss(*optimizer.history).item()*1e5]
 print(f"Initial Objective loss = {objective_losses[0]}")
 
 wandb.login()
@@ -177,9 +180,9 @@ with wandb.init(reinit = True,**WANDB) as wb:
         else:
             phi, obj_loss = optimizer.optimization_iteration()
             cos_step = -1.0
-        obj_loss *= n_samples
+        obj_loss *= 1e5
         print("Optimized phi:", phi)
-        predicted_loss = optimizer.get_model_pred(phi,normalize = True).item()*n_samples
+        predicted_loss = optimizer.get_model_pred(phi,normalize = True).item()*1e5
 
         with torch.no_grad(): contraints = problem.get_constraints(phi)
         assert torch.all(phi >= bounds[0].to(phi.device)) and torch.all(phi <= bounds[1].to(phi.device)), f"current_phi is out of bounds after optimization step, {phi} not in {bounds}"

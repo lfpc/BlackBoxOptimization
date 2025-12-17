@@ -55,19 +55,32 @@ else:
         os.makedirs(OUTPUTS_DIR)
     with open(args.config_file, 'r') as src, open(config_file, 'w') as dst:
         CONFIG = json.load(src)
-        if run_in_background:
-            CONFIG['W0'] = float(12E6)
-            CONFIG['L0'] = float(29.7)
-            CONFIG['dimensions_phi'] = int(63)
-            default_phi_name = str('warm_baseline')
-        else:
-            CONFIG['W0'] = float(input("Enter Reference Cost (W0) [default: 12E6]: ") or 12E6)
-            CONFIG['L0'] = float(input("Enter Maximum Length (L0) [default: 29.7]: ") or 29.7)
-            CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 63]: ") or 63)
-            default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or 'warm_baseline')
-        print('default_phi_name', default_phi_name)
-        if default_phi_name == '': CONFIG['initial_phi'] = problems.ShipMuonShield.DEFAULT_PHI.tolist()
-        else: CONFIG['initial_phi'] = problems.ShipMuonShield.params[default_phi_name]
+        if 'W0' not in CONFIG:
+            if run_in_background:
+                CONFIG['W0'] = float(13E6)
+            else:
+                CONFIG['W0'] = float(input("Enter Reference Cost (W0) [default: 13E6]: ") or 13E6)
+        if 'L0' not in CONFIG:
+            if run_in_background:
+                CONFIG['L0'] = float(29.7)
+            else:
+                CONFIG['L0'] = float(input("Enter Maximum Length (L0) [default: 29.7]: ") or 29.7)
+        if 'dimensions_phi' not in CONFIG:
+            if run_in_background:
+                CONFIG['dimensions_phi'] = int(63)
+            else:
+                CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 63]: ") or 63)
+        if 'initial_phi' not in CONFIG:
+            if run_in_background:
+                default_phi_name = str('warm_baseline')
+            else:
+                default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or '')
+            print('default_phi_name', default_phi_name)
+            if default_phi_name == '': initial_phi = problems.ShipMuonShield.DEFAULT_PHI.tolist()
+            else: initial_phi = problems.ShipMuonShield.params[default_phi_name]
+        else: 
+            initial_phi = CONFIG['initial_phi']
+        CONFIG['initial_phi'] = initial_phi
         if args.multi_fidelity is not None:
             if args.multi_fidelity > 0:
                 CONFIG['n_samples'] = args.multi_fidelity
@@ -191,7 +204,15 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_bounds, m
                                       WandB = WANDB,
                                       acquisition_params = {'q':q,'num_restarts': 30, 'raw_samples':5000},
                                       resume = args.resume)
-
+    elif args.optimization == 'cma-es':
+        from src.optimizer import CMAESOptimizer
+        optimizer = CMAESOptimizer(problem_fn,
+                                   phi_bounds,
+                                   initial_phi = initial_phi,
+                                   device = dev, 
+                                   outputs_dir=OUTPUTS_DIR,
+                                   WandB = WANDB,
+                                   resume=args.resume)
     elif args.optimization == 'lgso':
         optimizer = LGSO(problem_fn,
                          model,
@@ -238,6 +259,7 @@ if __name__ == "__main__":
     if args.model == 'gp_rbf': model = GP_RBF(phi_bounds,device = dev)
     elif args.model == 'bock': model = GP_BOCK(phi_bounds,device = dev)
     elif args.model == 'ibnn': model = GP_IBNN(phi_bounds,device = dev)
+    else: model = None
     model_scheduler = {args.model_switch:GP_IBNN
                        }
 
