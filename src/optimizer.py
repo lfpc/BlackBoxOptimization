@@ -2935,12 +2935,17 @@ class Rastrigin7DSingleStepEnv(gym.Env):
     def render(self, mode="human"):
         pass
     
+def linear_schedule(initial_value: float, final_value: float):
+    def func(progress_remaining: float) -> float:
+        return progress_remaining * initial_value + (1.0-progress_remaining) * final_value
+    return func
+
 class toy_RL():
     def __init__(self,device,WandB):
         self.device=device
         self.WandB=WandB
         self.training_steps=200000
-        self.use_warm_baseline=True
+        self.use_warm_baseline=True#False#True
 
     def run_optimization(self):
         policy_kwargs = dict(
@@ -3062,7 +3067,8 @@ class toy_RL():
         model = PPO(
             policy=CustomPolicy,#"MlpPolicy",
             env=train_env,
-            learning_rate=1e-5,
+            learning_rate=6e-5,#linear_schedule(1e-4, 1e-5),#1e-5,
+            #ent_coef=1.0,#0.01,
             n_steps=256,
             batch_size=128,
             n_epochs=5,
@@ -3076,6 +3082,11 @@ class toy_RL():
             #Load the policy that was pretrained using BC:
             bc_policy.eval()
             model.policy.load_state_dict(bc_policy.state_dict())
+        print("Untrained PPO model std:")
+        print(model.policy.log_std)
+        #Reduce std of the policy head:
+        with torch.no_grad():
+            model.policy.log_std[:] = -3.0
         print("Untrained PPO model std:")
         print(model.policy.log_std)
         
