@@ -2860,7 +2860,13 @@ def generate_toy_imitation_trajectories(env, warm_baseline, n_episodes=10):
         done = False
         ep_rewards=[]
         while not done:
-            action = warm_baseline.copy()
+            if type(env)==Rastrigin7DSingleStepEnv:
+                action = warm_baseline.copy()
+            elif type(env)==Rastrigin7DMultipleStepEnv:
+                action = warm_baseline.copy()[env.steps]
+            else:
+                print("Unknown env!")
+                sys.exit()
             action = action.astype(np.float32)
             obs_list.append(obs.copy())
             act_list.append(action.copy())
@@ -2871,6 +2877,72 @@ def generate_toy_imitation_trajectories(env, warm_baseline, n_episodes=10):
         print(f"Warm baseline reward: {reward}")
     return obs_list, act_list, reward_list
 
+class Rastrigin7DMultipleStepEnv(gym.Env):
+    def __init__(self):
+        super().__init__()
+        self.dim = 7
+        self.low = -5.12
+        self.high = 5.12
+        self.low_bounds=np.array([self.low for _ in range(self.dim)])
+        self.high_bounds=np.array([self.high for _ in range(self.dim)])
+        # Dummy observation (stateless problem)
+        self.observation_space = gym.spaces.Box(
+            low=self.low_bounds,
+            high=self.high_bounds,
+            shape=(self.dim,),
+            dtype=np.float32
+        )
+        self.action_space = gym.spaces.Box(
+            low=self.low,
+            high=self.high,
+            shape=(1,),
+            dtype=np.float32
+        )
+        self.done = False#TO_DO: Check if can be removed
+        self.c= np.array([-1.4, 3.5, 2.3, 1.7, 4.1, 2.3, -2.5])#Shift
+
+    def rastrigin(self, x):
+        return 10 * self.dim + np.sum(x**2 - 10 * np.cos(2 * np.pi * x))
+
+    def rastrigin_shifted(self, x, c):
+        x = np.asarray(x)
+        c = np.asarray(c)
+        return 10 * len(x) + np.sum((x - c)**2 - 10 * np.cos(2 * np.pi * (x - c)))
+
+    def constraint_violation(self, x):
+        violation = 0.0
+        # Box constraints (technically redundant, but kept for safety)
+        violation += np.sum(np.maximum(0.0, self.low - x))
+        violation += np.sum(np.maximum(0.0, x - self.high))
+        # Linear constraint: sum(x) <= 10
+        violation += max(0.0, np.sum(x) - 10.0)
+        return violation
+
+    def step(self, action):
+        self.obs[self.steps]=action
+        self.steps+=1
+        reward=0.0
+        done=False
+        if self.steps==self.dim:
+            obj=self.rastrigin_shifted(self.obs, self.c)#obj = self.rastrigin(x)
+            violation = self.constraint_violation(self.obs)
+            penalty_weight = 100.0
+            reward = -(obj + penalty_weight * violation)
+            done = True
+        info = {}
+        return self.obs, reward, done, False, info
+   
+    def reset(self, *, seed=None):
+        if seed is not None:
+            np.random.seed(seed)
+        self.done = False#TO_DO: Check if can be removed
+        self.obs = np.zeros(self.observation_space.shape, dtype=np.float32)
+        self.steps=0
+        return self.obs,{}
+
+    def render(self, mode="human"):
+        pass
+    
 class Rastrigin7DSingleStepEnv(gym.Env):
     def __init__(self):
         super().__init__()
@@ -2945,6 +3017,9 @@ class toy_RL():
         self.device=device
         self.WandB=WandB
         self.training_steps=200000
+        self.env_type="Rastrigin7DSingleStepEnv"#"Rastrigin7DMultipleStepEnv"
+        if self.env_type=="Rastrigin7DMultipleStepEnv":
+            self.training_steps*=7
         self.use_warm_baseline=True#False#True
 
     def run_optimization(self):
@@ -2953,7 +3028,10 @@ class toy_RL():
             activation_fn=torch.nn.ReLU
         )
         if self.use_warm_baseline:
-            BC_env = Rastrigin7DSingleStepEnv()
+            if self.env_type=="Rastrigin7DSingleStepEnv":
+                BC_env = Rastrigin7DSingleStepEnv()
+            else:
+                BC_env = Rastrigin7DMultipleStepEnv()
             #Warm baseline close to final solution:
             scale=0.5
             self.warm_baseline=BC_env.c+np.array([-0.18511472,-0.00619498,-0.14750585,0.17160661,-0.60160435,-0.24393126, -0.54970125])#+ np.random.normal(loc=0.0, scale=scale, size=BC_env.dim)
@@ -2984,7 +3062,7 @@ class toy_RL():
             ret_tensor = torch.cat(ret_tensor, dim=0)
 
             dataset = TensorDataset(obs_tensor, act_tensor, ret_tensor)
-            loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+            loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)#TO_DO: Check if there is a bug because for Rastrigin7DMultipleStepEnv I think I need to use shuffle=False
 
             optimizer = torch.optim.Adam(bc_policy.parameters(), lr=bc_lr)
             mse_loss = nn.MSELoss()
@@ -3058,8 +3136,12 @@ class toy_RL():
             print(bc_policy.log_std)
 
         #PPO training:
-        train_env = Rastrigin7DSingleStepEnv()
-        eval_env = Rastrigin7DSingleStepEnv()
+        if self.env_type=="Rastrigin7DSingleStepEnv":
+            train_env = Rastrigin7DSingleStepEnv()
+            eval_env = Rastrigin7DSingleStepEnv()
+        else:
+            train_env = Rastrigin7DMultipleStepEnv()
+            eval_env = Rastrigin7DMultipleStepEnv()
 
         eval_freq = max(1, int(0.05 * self.training_steps))
         callback = TrainingStatsCallback(eval_env=eval_env, eval_freq=eval_freq, verbose=1)
