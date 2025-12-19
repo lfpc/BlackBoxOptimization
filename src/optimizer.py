@@ -2964,6 +2964,7 @@ class Rastrigin7DSingleStepEnv(gym.Env):
         )
         self.done = False
         self.c= np.array([-1.4, 3.5, 2.3, 1.7, 4.1, 2.3, -2.5])#Shift
+        self.add_noise=True#False
 
     def rastrigin(self, x):
         return 10 * self.dim + np.sum(x**2 - 10 * np.cos(2 * np.pi * x))
@@ -2982,6 +2983,11 @@ class Rastrigin7DSingleStepEnv(gym.Env):
         violation += max(0.0, np.sum(x) - 10.0)
         return violation
 
+    def noise(self, x, scale):
+        #Amplitude proportional to the last dimension
+        amplitude = scale * x[-1]
+        return np.random.randn() * amplitude
+
     def step(self, action):
         assert not self.done, "Episode already terminated"
         x = np.asarray(action, dtype=float)
@@ -2989,6 +2995,9 @@ class Rastrigin7DSingleStepEnv(gym.Env):
         violation = self.constraint_violation(x)
         penalty_weight = 100.0
         reward = -(obj + penalty_weight * violation)
+        if self.add_noise:
+            scale=0.1
+            reward+=self.noise(x, scale)
         self.done = True
         info = {
             "x": x,
