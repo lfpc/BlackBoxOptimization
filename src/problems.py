@@ -546,6 +546,8 @@ class HelicalValleyProblem:
         if self.noise and x is not None:
             y += x
         return y
+    def get_weights(self,x):
+        return torch.ones(x.shape[0], device=x.device)
 
 
 class HelicalValley_stochastic_hits(HelicalValleyProblem):

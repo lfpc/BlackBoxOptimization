@@ -326,6 +326,7 @@ class LCSO(OptimizerClass):
     def get_model_pred(self, phi, normalize:bool = False):
         n_hits = 0.0
         x = torch.as_tensor(self.true_model.sample_x(phi),device=self.device, dtype=torch.get_default_dtype())
+        print("x size:", x.size())
         if normalize:
             phi = normalize_vector(phi, self.bounds)
         for i in range(0, x.size(0), self.model.batch_size):
@@ -645,7 +646,7 @@ class LCSO_sampled(LCSO):
                  n_epochs:int = 5,
                  initial_phi:torch.tensor = None,
                  history:tuple = (),
-                 WandB:dict = {'name': 'LGSOptimization'},
+                 WandB:dict = {'name': 'LCSOptimization'},
                  device = torch.device('cpu'),
                  outputs_dir = 'outputs',
                  resume:bool = False,
@@ -762,6 +763,7 @@ class LCSO_sampled(LCSO):
             self.fit_surrogate_model()
             if self.local_file_storage is not None: self._clean_file(keep_last=False)
             else: self.local_results = [[],[]]
+        torch.cuda.empty_cache()
         print('Iteration {} : Finished simulations for local samples.'.format(self._i))
         self.true_model.n_samples = n_samples
     def optimization_iteration(self):
@@ -815,7 +817,7 @@ class LCSO_sampled(LCSO):
         def hvp_func(v):
             _, hvp_val = torch.func.jvp(grad_fn, (current_phi,), (v,))
             return hvp_val
-
+        print("DEVICES:", current_phi.device, surrogate_grad.device, self.history[0].device)
         p = self._solve_trust_region_subproblem(surrogate_grad, hvp_func, self.trust_radius)
         if not p.any(): print("Trust-region step is zero, no improvement possible with current model.")
         with torch.no_grad(): 
@@ -1197,6 +1199,7 @@ class BayesianOptimizer(OptimizerClass):
         self._iter_reduce_bounds = reduce_bounds
         self.multi_fidelity = multi_fidelity
         self.trust_radius = 1.0
+        self.bounds = self.bounds.cpu()
         if resume: 
             for i in model_scheduler:
                 if self._i > i and i>0:
