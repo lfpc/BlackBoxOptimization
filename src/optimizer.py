@@ -1878,9 +1878,12 @@ class TrainingStatsCallback(BaseCallback):
         self.best_reward = -float('inf')
         self.best_x = None
         self.eval_scores = []
+        self.eval_noises = []
+        self.eval_xs = []
 
         self.total_steps=0
         self.best_reward_history=[]
+        self.best_reward_subtracting_noise_history=[]
         self.total_steps_history=[]
 
     def _on_step(self) -> bool:
@@ -1896,6 +1899,7 @@ class TrainingStatsCallback(BaseCallback):
                     self.best_reward = episode_reward
                     self.best_x = info["terminal_observation"].copy()
                     self.best_reward_history.append(self.best_reward)
+                    self.best_reward_subtracting_noise_history.append(episode_reward-info["added_noise"])
                     self.total_steps_history.append(self.total_steps)
         #Periodic deterministic evaluation:
         if self.num_timesteps - self.last_eval_step >= self.eval_freq:
@@ -1907,12 +1911,17 @@ class TrainingStatsCallback(BaseCallback):
                 action, _ = self.model.predict(obs, deterministic=True)
                 obs, reward, done, truncated, info = self.eval_env.step(action)
             self.eval_scores.append(reward.item())
+            if "added_noise" in info.keys():
+                self.eval_noises.append(info["added_noise"])
+            self.eval_xs.append(info["x"])
             self.last_eval_step = self.num_timesteps
-            print(f"Steps played: {self.num_timesteps}, deterministic evaluation reward: {reward.item()}")
+            print(f"Steps played: {self.num_timesteps}, deterministic evaluation reward: {reward.item()}, deterministic reward subtracting noise: {reward.item()-info['added_noise']}, obtained solution: {info['x']}, correct solution: {self.eval_env.c}")
         return True
 
 def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10):
     rewards = []
+    noises = []
+    xs=[]
     for _ in range(n_eval_episodes):
         obs, _ = env.reset()
         done = False
@@ -1922,10 +1931,16 @@ def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10):
                 action, _ = policy.predict(obs, deterministic=deterministic)
             else:
                 action = policy(obs)   # raw PyTorch model case
-            obs, r, done, truncated, _ = env.step(action)
+            obs, r, done, truncated, info = env.step(action)
             total_r += float(r)
         rewards.append(total_r)
-    return np.mean(rewards)
+        if "added_noise" in info.keys():
+            noises.append(info["added_noise"])
+        xs.append(info["x"].copy())
+    if len(noises)>0:
+        return np.mean(rewards),np.mean(noises),np.mean(xs,axis=0)
+    else:
+        return np.mean(rewards),None,np.mean(xs,axis=0)
 
 def generate_imitation_trajectories(env, warm_baseline, n_episodes=10):
     obs_list, act_list, reward_list = [], [], []
@@ -2995,15 +3010,17 @@ class Rastrigin7DSingleStepEnv(gym.Env):
         violation = self.constraint_violation(x)
         penalty_weight = 100.0
         reward = -(obj + penalty_weight * violation)
-        if self.add_noise:
-            scale=0.1
-            reward+=self.noise(x, scale)
-        self.done = True
         info = {
             "x": x,
             "objective": obj,
             "violation": violation
         }
+        if self.add_noise:
+            scale=0.1
+            added_noise=self.noise(x, scale)
+            reward+=added_noise
+            info["added_noise"]=added_noise
+        self.done = True
         # Observation is irrelevant; return dummy
         return np.zeros(1, dtype=np.float32), reward, True, False, info
    
@@ -3077,6 +3094,8 @@ class toy_RL():
             mse_loss = nn.MSELoss()
 
             bc_reward_iters=[]
+            bc_noise_iters=[]
+            bc_x_iters=[]
             check_period=bc_epochs//10
 
             # Actor-Critic Behavioral Cloning:
@@ -3105,9 +3124,15 @@ class toy_RL():
                 total_losses.append(epoch_total_loss / n_batches)
                 if (epoch+1)%check_period==0:
                     with torch.no_grad():
-                        bc_reward_iter = evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=1)
-                        print(f"Epoch {epoch+1}/{bc_epochs} deterministic reward: {bc_reward_iter}")
+                        bc_reward_iter, bc_noise_iter, bc_x_iter= evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=1)
+                        if bc_noise_iter is not None:
+                            print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, deterministic reward subtracting noise: {bc_reward_iter-bc_noise_iter}, obtained solution: {bc_x_iter}, correct solution: {BC_env.c}")
+                            bc_noise_iters.append(bc_noise_iter)
+                        else:
+                            print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, obtained solution: {bc_x_iter}, correct solution: {BC_env.c}")
                         bc_reward_iters.append(bc_reward_iter)
+                        bc_x_iters.append(bc_x_iter)
+                        
 
             #BC plots:
             x_vals = np.arange(1, bc_epochs + 1)
@@ -3126,20 +3151,33 @@ class toy_RL():
 
             fig=plt.figure()
             x_vals = 100 * np.linspace(1/len(bc_reward_iters), 1, len(bc_reward_iters))
-            plt.plot(x_vals,bc_reward_iters,marker='o')
+            plt.plot(x_vals,bc_reward_iters,marker='o',label="Deterministic loss")
+            if len(bc_noise_iters)>0:
+                bc_reward_iters_subtracting_noise=[bc_reward_iters[i]-bc_noise_iters[i] for i in range(len(bc_reward_iters))]
+                plt.plot(x_vals,bc_reward_iters_subtracting_noise,marker='o',label="Deterministic loss subtracting noise")
             plt.axhline(y=reward_list[-1],linestyle='--',color='black',label='Warm baseline loss')
             plt.xlabel(f"Behavioral Cloning % ({bc_epochs} epochs)")
-            plt.ylabel("Deterministic evaluation loss")
+            plt.ylabel("Loss")
             plt.title("Periodic deterministic evaluations on BC")
             plt.grid(True)
             plt.legend()
             plt.savefig(f"outputs/{self.WandB['name']}/BC_deterministic_loss.png")
             plt.close(fig)
 
+            fig=plt.figure()
+            distances=[np.linalg.norm(BC_env.c - bc_x_iters[i]) for i in range(len(bc_x_iters))]
+            plt.plot(distances,marker='o')
+            plt.xlabel(f"Behavioral Cloning % ({bc_epochs} epochs)")
+            plt.ylabel("Distance")
+            plt.title("Euclidean distance from deterministic solution to correct solution")
+            plt.grid(True)
+            plt.savefig(f"outputs/{self.WandB['name']}/BC_distance.png")
+            plt.close(fig)
+
             #Evaluate the BC policy:
-            bc_reward = evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=1)
+            bc_reward, bc_noise, _ = evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=1)
             print("BC deterministic reward:", bc_reward)
-            bc_reward = evaluate_policy(bc_policy, BC_env, deterministic=False, n_eval_episodes=1)
+            bc_reward, bc_noise, _ = evaluate_policy(bc_policy, BC_env, deterministic=False, n_eval_episodes=1)
             print("BC non-deterministic reward:", bc_reward)
             print("std after BC:")
             print(bc_policy.log_std)
@@ -3200,21 +3238,37 @@ class toy_RL():
 
         fig=plt.figure()
         x_vals = 100 * np.linspace(1/len(callback.eval_scores), 1, len(callback.eval_scores))
-        plt.plot(x_vals,callback.eval_scores,marker='o')
+        plt.plot(x_vals,callback.eval_scores,marker='o',label='Deterministic loss')
+        if len(callback.eval_noises)>0:
+            scores_subtracting_noise=[callback.eval_scores[i]-callback.eval_noises[i] for i in range(len(callback.eval_scores))]
+            plt.plot(x_vals,scores_subtracting_noise,marker='o',label='Deterministic loss subtracting noise')
         plt.xlabel(f"Training % ({self.training_steps} steps)")
-        plt.ylabel("Deterministic evaluation loss")
+        plt.ylabel("Loss")
         plt.title("Periodic deterministic evaluations")
+        plt.legend()
         plt.grid(True)
         plt.savefig(f"outputs/{self.WandB['name']}/deterministic_loss.png")
         plt.close(fig)
 
         fig=plt.figure()
-        plt.plot(callback.total_steps_history,callback.best_reward_history,marker='o')
+        plt.plot(callback.total_steps_history,callback.best_reward_history,marker='o',label="Best training loss")
+        plt.plot(callback.total_steps_history,callback.best_reward_subtracting_noise_history,marker='o',label="Best training loss subtracting noise")
         plt.xlabel("Training steps")
-        plt.ylabel("Best training loss")
+        plt.ylabel("Loss")
         plt.title("Best training evaluation")
+        plt.legend()
         plt.grid(True)
         plt.savefig(f"outputs/{self.WandB['name']}/best_training_loss.png")
+        plt.close(fig)
+
+        fig=plt.figure()
+        distances=[np.linalg.norm(eval_env.c - callback.eval_xs[i]) for i in range(len(callback.eval_xs))]
+        plt.plot(distances,marker='o')
+        plt.xlabel(f"Training % ({self.training_steps} steps)")
+        plt.ylabel("Distance")
+        plt.title("Euclidean distance from deterministic solution to correct solution")
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/distance.png")
         plt.close(fig)
 
         return callback.best_x,callback.best_reward
