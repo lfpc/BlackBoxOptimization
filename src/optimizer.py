@@ -109,126 +109,6 @@ class OptimizerClass():
         return phi,loss
 
     
-class LGSO(OptimizerClass):
-    def __init__(self,true_model,
-                 surrogate_model:torch.nn.Module,
-                 bounds:tuple,
-                 samples_phi:int,
-                 epsilon:float = 0.2,
-                 initial_phi:torch.tensor = None,
-                 history:tuple = (),
-                 WandB:dict = {'name': 'LGSOptimization'},
-                 device = torch.device('cuda'),
-                 outputs_dir = 'outputs',
-                 resume:bool = False
-                 ):
-        super().__init__(true_model,
-                 surrogate_model,
-                 bounds = bounds,
-                 device = device,
-                 history = history,
-                 WandB = WandB,
-                 outputs_dir = outputs_dir,
-                 resume = resume)
-        if resume: 
-            with open(join(outputs_dir,'history.pkl'), "rb") as f:
-                self.history = load(f)
-        else: self.simulate_and_update(initial_phi)
-            
-            
-        initial_phi = initial_phi if not resume else history[0][-1]
-        self._current_phi = torch.nn.Parameter(initial_phi.detach().clone().to(device))
-        assert torch.all(self._current_phi >= self.bounds[0].to(self.device)) and torch.all(self._current_phi <= self.bounds[1].to(self.device)), "current_phi is out of bounds"
-        self.epsilon = epsilon
-        self.lhs_sampler = LatinHypercube(d=initial_phi.size(-1))
-        self.samples_phi = samples_phi
-        self.phi_optimizer = torch.optim.SGD([self._current_phi],lr=0.01)
-
-    def sample_phi(self):
-        """Draw samples in a hypercube of side 2*epsilon around current_phi."""
-        H = self.lhs_sampler.random(self.samples_phi)
-        with torch.no_grad():
-            perturb = (2*torch.from_numpy(H).to(dtype=torch.get_default_dtype()) - 1.0) * self.epsilon
-            phis = (self._current_phi.unsqueeze(0).cpu() + perturb).clamp(self.bounds[0], self.bounds[1])
-        return phis
-    def loss(self,phi,y,x = None):
-        return self.true_model.calc_loss(*y.T)
-    def clean_training_data(self):
-        dist = (self.history[0]-self._current_phi.cpu()).abs()#(self.history[0]-phi).norm(2,-1)
-        is_local = dist.le(self.epsilon).all(-1)
-        return self.history[0][is_local], self.history[1][is_local], self.history[2][is_local]
-    def simulate_and_update(self, phi):
-        x = torch.as_tensor(self.true_model.sample_x(phi),device='cpu', dtype=torch.get_default_dtype())
-        y = self.true_model.simulate(phi.detach().cpu(),x, return_nan = True).T
-        self.update_history(phi,y,x)
-        with torch.no_grad():
-            print('real Y:', y)
-            print('number of non-zeros', y.ne(0).all(dim=1).sum().item(), 'out of', y.size(0))
-
-    def optimization_iteration(self):
-        """
-        1) Sample locally around current_phi
-        2) Evaluate true_model
-        3) Fit local surrogate
-        4) Update current_phi by minimizing surrogate
-        5) Return (phi, loss)
-        """
-        # 1) local sampling
-        phis = self.sample_phi()
-        # 2) true evaluations
-        x_samp = torch.as_tensor(self.true_model.sample_x(phis))
-        for phi in phis:
-            self.simulate_and_update(phi)
-        self.fit_surrogate_model()
-
-        # 4) move current_phi by gradient descent on surrogate
-        # prepare surrogate inputs
-        #phi_rep = self._current_phi.unsqueeze(0).repeat(x_samp.size(0), 1)
-        x_samp = torch.as_tensor(self.true_model.sample_x(self._current_phi), device=self.device, dtype=torch.get_default_dtype())
-        self.phi_optimizer.zero_grad()
-        y_pred = self.model.generate(self._current_phi, x_samp)
-        loss_sur = self.loss(self._current_phi, y_pred).mean()
-        loss_sur.backward()
-        print("Gradients w.r.t. current_phi:", self._current_phi.grad)
-        print("Loss on surrogate:", loss_sur.item())
-        self.phi_optimizer.step()
-        with torch.no_grad():
-            y_pred2 = self.model.generate(self._current_phi, x_samp)
-            print("Loss on surrogate after step:", self.loss(self._current_phi, y_pred2).item())
-            
-        # clip to bounds
-        with torch.no_grad():
-            self._current_phi.data = self._current_phi.data.clamp(self.bounds[0], self.bounds[1])
-
-        # 5) return new candidate and its true loss
-        x_new = torch.as_tensor(self.true_model.sample_x(self._current_phi), device=self.device)
-        y_new = self.true_model.simulate(self._current_phi.unsqueeze(0).detach(), x_new, return_nan=True).T
-        with torch.no_grad():
-            loss_new = self.loss(self._current_phi.unsqueeze(0), y_new)
-        return self._current_phi.clone(), loss_new.flatten().item()
-    def run_optimization(self, save_optimal_phi: bool = True, save_history: bool = False, **convergence_params):
-        super().run_optimization(save_optimal_phi, save_history, **convergence_params)
-        x = self.true_model.sample_x(self._current_phi)
-        y = self.true_model.simulate(self._current_phi,x)
-        self.update_history(self._current_phi,y,x)
-        return self.get_optimal()
-    def get_new_phi(self):
-        self.phi_optimizer.zero_grad()
-        x = torch.as_tensor(self.true_model.sample_x(self._current_phi), device=self.device, dtype=torch.get_default_dtype())
-        phi = self._current_phi.repeat(x.size(0), 1)
-        l = self.loss(phi,self.model(phi,x))
-        l.backward()
-        self.phi_optimizer.step()
-        return self._current_phi
-    def update_history(self,phi,y,x):
-        phi,y,x = phi.cpu(),y.cpu(),x.cpu()
-        phi = phi.view(-1,phi.size(-1))
-        phi = phi.repeat(y.size(0), 1)
-        if len(self.history) ==0: 
-            self.history = phi,y.view(-1,y.size(-1)),x.view(-1,x.size(-1))
-        else:
-            phi,y,x = phi, y.reshape(-1,self.history[1].shape[1]).to(phi.device),x.reshape(-1,self.history[2].shape[1]).to(phi.device)
-            self.history = (torch.cat([self.history[0], phi]),torch.cat([self.history[1], y]),torch.cat([self.history[2], x]))
 
 class LCSO(OptimizerClass):
     def __init__(self,true_model,
@@ -246,7 +126,8 @@ class LCSO(OptimizerClass):
                  weight_hits:bool = False,
                  initial_lambda_constraints:float = 1e2,
                  initial_lr:float = 1e-3,
-                 local_file_storage:str = 'local_results.h5'
+                 local_file_storage:str = 'local_results.h5',
+                 seed:int = 42
                  ):
         super().__init__(true_model,
                  surrogate_model,
@@ -258,7 +139,7 @@ class LCSO(OptimizerClass):
                  resume = resume)
         
         self.weight_hits = weight_hits
-        self.local_results = [[],[]]
+        self.local_results = [[],[], []]
         within_lower = initial_phi.ge(self.bounds[0])
         within_upper = initial_phi.le(self.bounds[1])
         within_bounds = within_lower.logical_and(within_upper)
@@ -270,7 +151,7 @@ class LCSO(OptimizerClass):
         self._current_phi = torch.nn.Parameter(initial_phi.detach().clone().to(device))
         
         self.epsilon = epsilon
-        self.lhs_sampler = LatinHypercube(d=initial_phi.size(-1), seed=42)
+        self.lhs_sampler = LatinHypercube(d=initial_phi.size(-1), seed=seed)
         self.samples_phi = samples_phi
         self.phi_optimizer = torch.optim.SGD([self._current_phi],lr=initial_lr)
         self.second_order = second_order
@@ -341,7 +222,7 @@ class LCSO(OptimizerClass):
     def clean_training_data(self):
         if self.local_file_storage is not None and os.path.exists(self.local_file_storage):
             return [self.local_file_storage]
-        return torch.cat(self.local_results[0], dim=0), torch.cat(self.local_results[1], dim=0)
+        return torch.cat(self.local_results[0], dim=0), torch.cat(self.local_results[1], dim=0), torch.cat(self.local_results[2], dim=0)
 
     @torch.no_grad()
     def simulate_and_update(self, phi, update_history:bool = True, file = None):
@@ -654,7 +535,8 @@ class LCSO_sampled(LCSO):
                  weight_hits:bool = False,
                  initial_lambda_constraints:float = 1e2,
                  initial_lr:float = 1e-3,
-                 local_file_storage:str = 'local_results.h5'
+                 local_file_storage:str = 'local_results.h5',
+                 seed:int = 42
                  ):
         self.n_subsamples = n_subsamples
         super().__init__(true_model,
@@ -672,9 +554,10 @@ class LCSO_sampled(LCSO):
                  weight_hits = weight_hits,
                  initial_lambda_constraints = initial_lambda_constraints,
                  initial_lr = initial_lr,
-                 local_file_storage = local_file_storage)
-        self.fit_surrogate_model()
-        self.local_results = [[],[]]
+                 local_file_storage = local_file_storage,
+                 seed = seed)
+        #self.fit_surrogate_model()
+        self.local_results = [[],[], []]  # phi, x, y
         self.n_epochs = n_epochs
         #self.model.n_epochs  = 3
         #self.model.step_lr = 2
@@ -682,11 +565,12 @@ class LCSO_sampled(LCSO):
     @torch.no_grad()
     def simulate_and_update(self, phi, update_history:bool = True, file = None):
         t1 = time()
-        x = self.true_model.sample_x()
+        if phi.dim() == 1:
+            phi = phi.view(1,-1)
+        x = self.true_model.sample_x(phi)
         x = torch.as_tensor(x, device=self.device, dtype=torch.get_default_dtype())
-        condition = torch.cat([phi.repeat(x.size(0), 1), x], dim=-1).to(self.device)
-        phi = denormalize_vector(phi, self.bounds).detach().cpu()
-        y = self.true_model(phi,x).view(-1,1)
+        phi_denorm = denormalize_vector(phi, self.bounds).detach().cpu()
+        y = self.true_model(phi_denorm,x)
         if file is not None:
             capacity = self.true_model.n_samples * (self.samples_phi+1+max(self.samples_phi//5, 2))
             print('Writing local results to file:', self.local_file_storage)
@@ -723,15 +607,16 @@ class LCSO_sampled(LCSO):
             self.local_results[0] = condition
             self.local_results[1] = y
         else:
-            self.local_results[0].append(condition)
-            self.local_results[1].append(y)
+            self.local_results[0].append(phi)
+            self.local_results[1].append(x)
+            self.local_results[2].append(y)
         loss = self.n_hits(y, self.true_model.get_weights(x)).reshape(1)
         if update_history:
             self.update_history(phi, loss.detach())
         return loss
     def _get_local_data(self):
         phis = self.sample_phi()
-        phis = torch.cat([phis,self._current_phi.view(1,-1)], dim=0)
+        phis = torch.cat([self._current_phi.view(1,-1),phis], dim=0)
         if self.local_file_storage is not None:
             file = h5py.File(self.local_file_storage, 'a', libver='latest')
             len_data = file.attrs.get('write_pos', 0)#file['condition'].shape[0] if 'condition' in file else 0
@@ -762,7 +647,7 @@ class LCSO_sampled(LCSO):
             print('Number of local training samples:', len(self.local_results[0]))
             self.fit_surrogate_model()
             if self.local_file_storage is not None: self._clean_file(keep_last=False)
-            else: self.local_results = [[],[]]
+            else: continue#self.local_results = [[],[],[]] UNCOMMENT THIS
         torch.cuda.empty_cache()
         print('Iteration {} : Finished simulations for local samples.'.format(self._i))
         self.true_model.n_samples = n_samples
@@ -795,7 +680,6 @@ class LCSO_sampled(LCSO):
                 self.simulate_and_update(self._current_phi, update_history=True)
 
         return self.history[0][-1], self.history[1][-1]
-
     def optimization_iteration_second_order(self, debug = False):
         """
         Performs ONE optimization step using a trust-region method,
@@ -814,9 +698,9 @@ class LCSO_sampled(LCSO):
         def grad_fn(phi):
             return torch.func.grad(self.get_model_pred)(phi)
         surrogate_grad = grad_fn(current_phi)
-        def hvp_func(v):
+        def hvp_func(v, lam = 1e-3):
             _, hvp_val = torch.func.jvp(grad_fn, (current_phi,), (v,))
-            return hvp_val
+            return hvp_val + lam * v # LM damping for stability
         print("DEVICES:", current_phi.device, surrogate_grad.device, self.history[0].device)
         p = self._solve_trust_region_subproblem(surrogate_grad, hvp_func, self.trust_radius)
         if not p.any(): print("Trust-region step is zero, no improvement possible with current model.")
@@ -870,8 +754,6 @@ class LCSO_sampled(LCSO):
         if debug:
             return self.history[0][-1].detach().clone(), self.history[1][-1].detach().clone(), cos_step
         return self.history[0][-1].detach().clone(), self.history[1][-1].detach().clone()
-
-
     def _solve_trust_region_subproblem(self, g, hvp_func, trust_radius):
         """
         Solves the trust-region subproblem using the Steihaug CG method.
@@ -932,7 +814,128 @@ class LCSO_sampled(LCSO):
             d = -r + beta * d
             
         return p
+
     
+class LGSO(OptimizerClass):
+    def __init__(self,true_model,
+                 surrogate_model:torch.nn.Module,
+                 bounds:tuple,
+                 samples_phi:int,
+                 epsilon:float = 0.2,
+                 initial_phi:torch.tensor = None,
+                 history:tuple = (),
+                 WandB:dict = {'name': 'LGSOptimization'},
+                 device = torch.device('cuda'),
+                 outputs_dir = 'outputs',
+                 resume:bool = False
+                 ):
+        super().__init__(true_model,
+                 surrogate_model,
+                 bounds = bounds,
+                 device = device,
+                 history = history,
+                 WandB = WandB,
+                 outputs_dir = outputs_dir,
+                 resume = resume)
+        if resume: 
+            with open(join(outputs_dir,'history.pkl'), "rb") as f:
+                self.history = load(f)
+        else: self.simulate_and_update(initial_phi)
+            
+            
+        initial_phi = initial_phi if not resume else history[0][-1]
+        self._current_phi = torch.nn.Parameter(initial_phi.detach().clone().to(device))
+        assert torch.all(self._current_phi >= self.bounds[0].to(self.device)) and torch.all(self._current_phi <= self.bounds[1].to(self.device)), "current_phi is out of bounds"
+        self.epsilon = epsilon
+        self.lhs_sampler = LatinHypercube(d=initial_phi.size(-1))
+        self.samples_phi = samples_phi
+        self.phi_optimizer = torch.optim.SGD([self._current_phi],lr=0.01)
+
+    def sample_phi(self):
+        """Draw samples in a hypercube of side 2*epsilon around current_phi."""
+        H = self.lhs_sampler.random(self.samples_phi)
+        with torch.no_grad():
+            perturb = (2*torch.from_numpy(H).to(dtype=torch.get_default_dtype()) - 1.0) * self.epsilon
+            phis = (self._current_phi.unsqueeze(0).cpu() + perturb).clamp(self.bounds[0], self.bounds[1])
+        return phis
+    def loss(self,phi,y,x = None):
+        return self.true_model.calc_loss(*y.T)
+    def clean_training_data(self):
+        dist = (self.history[0]-self._current_phi.cpu()).abs()#(self.history[0]-phi).norm(2,-1)
+        is_local = dist.le(self.epsilon).all(-1)
+        return self.history[0][is_local], self.history[1][is_local], self.history[2][is_local]
+    def simulate_and_update(self, phi):
+        x = torch.as_tensor(self.true_model.sample_x(phi),device='cpu', dtype=torch.get_default_dtype())
+        y = self.true_model.simulate(phi.detach().cpu(),x, return_nan = True).T
+        self.update_history(phi,y,x)
+        with torch.no_grad():
+            print('real Y:', y)
+            print('number of non-zeros', y.ne(0).all(dim=1).sum().item(), 'out of', y.size(0))
+
+    def optimization_iteration(self):
+        """
+        1) Sample locally around current_phi
+        2) Evaluate true_model
+        3) Fit local surrogate
+        4) Update current_phi by minimizing surrogate
+        5) Return (phi, loss)
+        """
+        # 1) local sampling
+        phis = self.sample_phi()
+        # 2) true evaluations
+        x_samp = torch.as_tensor(self.true_model.sample_x(phis))
+        for phi in phis:
+            self.simulate_and_update(phi)
+        self.fit_surrogate_model()
+
+        # 4) move current_phi by gradient descent on surrogate
+        # prepare surrogate inputs
+        #phi_rep = self._current_phi.unsqueeze(0).repeat(x_samp.size(0), 1)
+        x_samp = torch.as_tensor(self.true_model.sample_x(self._current_phi), device=self.device, dtype=torch.get_default_dtype())
+        self.phi_optimizer.zero_grad()
+        y_pred = self.model.generate(self._current_phi, x_samp)
+        loss_sur = self.loss(self._current_phi, y_pred).mean()
+        loss_sur.backward()
+        print("Gradients w.r.t. current_phi:", self._current_phi.grad)
+        print("Loss on surrogate:", loss_sur.item())
+        self.phi_optimizer.step()
+        with torch.no_grad():
+            y_pred2 = self.model.generate(self._current_phi, x_samp)
+            print("Loss on surrogate after step:", self.loss(self._current_phi, y_pred2).item())
+            
+        # clip to bounds
+        with torch.no_grad():
+            self._current_phi.data = self._current_phi.data.clamp(self.bounds[0], self.bounds[1])
+
+        # 5) return new candidate and its true loss
+        x_new = torch.as_tensor(self.true_model.sample_x(self._current_phi), device=self.device)
+        y_new = self.true_model.simulate(self._current_phi.unsqueeze(0).detach(), x_new, return_nan=True).T
+        with torch.no_grad():
+            loss_new = self.loss(self._current_phi.unsqueeze(0), y_new)
+        return self._current_phi.clone(), loss_new.flatten().item()
+    def run_optimization(self, save_optimal_phi: bool = True, save_history: bool = False, **convergence_params):
+        super().run_optimization(save_optimal_phi, save_history, **convergence_params)
+        x = self.true_model.sample_x(self._current_phi)
+        y = self.true_model.simulate(self._current_phi,x)
+        self.update_history(self._current_phi,y,x)
+        return self.get_optimal()
+    def get_new_phi(self):
+        self.phi_optimizer.zero_grad()
+        x = torch.as_tensor(self.true_model.sample_x(self._current_phi), device=self.device, dtype=torch.get_default_dtype())
+        phi = self._current_phi.repeat(x.size(0), 1)
+        l = self.loss(phi,self.model(phi,x))
+        l.backward()
+        self.phi_optimizer.step()
+        return self._current_phi
+    def update_history(self,phi,y,x):
+        phi,y,x = phi.cpu(),y.cpu(),x.cpu()
+        phi = phi.view(-1,phi.size(-1))
+        phi = phi.repeat(y.size(0), 1)
+        if len(self.history) ==0: 
+            self.history = phi,y.view(-1,y.size(-1)),x.view(-1,x.size(-1))
+        else:
+            phi,y,x = phi, y.reshape(-1,self.history[1].shape[1]).to(phi.device),x.reshape(-1,self.history[2].shape[1]).to(phi.device)
+            self.history = (torch.cat([self.history[0], phi]),torch.cat([self.history[1], y]),torch.cat([self.history[2], x]))
 
 class AnalyticalOptimizer(OptimizerClass):
     """

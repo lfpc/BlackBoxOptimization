@@ -1,10 +1,10 @@
 import torch
 import botorch
 import gpytorch
-from utils.nets import Generator, Discriminator,GANLosses, Encoder, Decoder, IBNN_ReLU
+from utils.nets import IBNN_ReLU, Classifier, DeepONetClassifier
 from tqdm import trange
 from matplotlib import pyplot as plt
-from utils import HDF5Dataset
+from utils import HDF5Dataset, normalize_vector
 import h5py
 import numpy as np
 import os
@@ -199,42 +199,33 @@ class BinaryClassifierModel:
     def __init__(self,
                 phi_dim: int,
                  x_dim: int,
+                 bounds_phi: torch.tensor,
                  n_epochs: int = 50,
                  batch_size: int = 32,
                 step_lr: int = 20,
                  lr: float = 1e-3,
                  data_from_file: bool = True,
-                 activation: str = 'relu',
+                 model:str = 'mlp',
                  device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
                  wandb = None):
         
         self.device = device
         self.wandb = wandb
 
-        if activation == 'relu':
-            act_layer = torch.nn.ReLU()
-        elif activation in ('silu', 'swish'):
-            act_layer = torch.nn.SiLU()
-        elif activation == 'gelu':
-            act_layer = torch.nn.GELU()
-
-        self.model = torch.nn.Sequential(
-            torch.nn.Linear(phi_dim + x_dim, 128),
-            act_layer,
-            torch.nn.Linear(128, 64),
-            act_layer,
-            torch.nn.Linear(64, 1)  # Output layer for binary classification
-        ).to(self.device)
-
+        if model == 'mlp':
+            self.model = Classifier(phi_dim,x_dim, 128).to(self.device)
+        elif model == 'deeponet':
+            self.model = DeepONetClassifier(phi_dim,x_dim, layers = [[256,128,128],[128,128]], layer_norm=False, p=128).to(self.device)
         self.n_epochs = n_epochs
         self.gen_epoch = 0
         self.batch_size = batch_size
         self._lr = lr
+        self.bounds_phi = bounds_phi.to(self.device)
         self.step_lr = step_lr
-        # Use BCEWithLogitsLoss for better numerical stability. It combines Sigmoid and BCELoss.
-        self.loss_fn = torch.nn.BCEWithLogitsLoss() 
         self.last_train_loss = []
         self.data_from_file = data_from_file
+        self.loss_fn = torch.nn.BCEWithLogitsLoss()
+
     def load_weights(self, path: str, strict: bool = True):
         """
         Load model weights from a .pt/.pth file into the classifier.
@@ -336,55 +327,45 @@ class BinaryClassifierModel:
         print("--- Binary Classifier Training Finished ---")
         return self
 
-    def _fit_from_data(self, condition, y, **kwargs):
+    def _fit_from_data(self, phi, x, y, **kwargs):
         """
         Trains the classifier model.
         """
-        self.model.train() # Set the wrapped model to training mode
-        
-        # Ensure y is the correct shape [batch_size, 1] and type for the loss function
-        y = y.view(-1, 1).float() 
+        self.model.train() 
+        phi = phi.to(self.device)
+    
+        num_samples_x = x.size(1)
+        num_samples_phi = phi.size(0)
+        indices = torch.arange(num_samples_x) 
 
-        num_samples = y.size(0)
-        indices = torch.arange(num_samples)
-        
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self._lr)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self.step_lr, gamma=0.1)
         pbar = trange(self.n_epochs, position=0, leave=True, desc='Classifier Training on ' + str(self.device))
 
         for epoch in pbar:
             average_loss = 0.0
-            # Shuffle indices for each epoch
-            shuffled_indices = indices[torch.randperm(num_samples)]
+            shuffled_indices = indices[torch.randperm(num_samples_x)]
             
-            for start in range(0, num_samples, self.batch_size):
-                end = min(start + self.batch_size, num_samples)
+            for start in range(0, num_samples_x, self.batch_size//num_samples_phi):
+                end = min(start + self.batch_size//num_samples_phi, num_samples_x)
                 batch_idx = shuffled_indices[start:end]
-                
-                y_batch = y[batch_idx].to(self.device)
-                condition_batch = condition[batch_idx].to(self.device)
+                y_batch = y[:, batch_idx].float().to(self.device)
+                x_batch = x[:, batch_idx].to(self.device)
                 optimizer.zero_grad()
                 
-                # Get model prediction (logits)
-                y_pred_logits = self.model(condition_batch)
-                
-                # Calculate loss
+                y_pred_logits = self.model(phi, x_batch)
                 loss = self.loss_fn(y_pred_logits, y_batch)
-                
                 assert not torch.isnan(loss), "Loss is NaN, check your model and data."
                 
                 loss.backward()
                 optimizer.step()
-                
                 average_loss += loss.item() * (end - start)
-            
             self.gen_epoch += 1
-            average_loss /= num_samples
+            average_loss /= num_samples_x
             if self.wandb is not None:
                 self.wandb.log({'classifier_train_loss': average_loss}, step=self.gen_epoch, commit=False)
             self.last_train_loss.append(average_loss)
             scheduler.step()
-            
             pbar.set_description(f"Epoch {epoch+1}, Loss: {average_loss:.4f}")
             pbar.set_postfix(loss=f"{average_loss:.4f}", lr=f"{optimizer.param_groups[0]['lr']:.6f}")
         return self
@@ -399,10 +380,13 @@ class BinaryClassifierModel:
         """
         Predicts the probability of Y=1 for each given `phi` and `x`.
         """
-        self.model.eval()
-        condition = torch.cat([phi.repeat(x.size(0), 1), x], dim=-1)
-        return self._predict_proba_cond(condition)
-
+        #self.model.eval()
+        #condition = torch.cat([phi.repeat(x.size(0), 1), x], dim=-1)
+        #return self._predict_proba_cond(condition)
+        phi = self.normalize_params(phi)
+        return torch.sigmoid(self.model(phi.to(self.device), x.to(self.device)))
+    def normalize_params(self, params):
+        return normalize_vector(params, self.bounds_phi)
 
 if __name__ == '__main__':
     from problems import stochastic_RosenbrockProblem,RosenbrockProblem,stochastic_ThreeHump
