@@ -3016,7 +3016,7 @@ class Rastrigin7DSingleStepEnv(gym.Env):
             "violation": violation
         }
         if self.add_noise:
-            scale=0.1
+            scale=1.0#0.1
             added_noise=self.noise(x, scale)
             reward+=added_noise
             info["added_noise"]=added_noise
