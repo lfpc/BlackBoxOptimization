@@ -30,9 +30,9 @@ from imitation.data.types import Trajectory
 from imitation.algorithms import bc
 from imitation.util import logger as imit_logger
 
-#import d3rlpy
-#from d3rlpy.models import IQNQFunctionFactory
-#from d3rlpy.metrics import EnvironmentEvaluator
+import d3rlpy
+from d3rlpy.models import IQNQFunctionFactory
+from d3rlpy.metrics import EnvironmentEvaluator
 import h5py
 import cma
 
@@ -1918,6 +1918,38 @@ class TrainingStatsCallback(BaseCallback):
             print(f"Steps played: {self.num_timesteps}, deterministic evaluation reward: {reward.item()}, deterministic reward subtracting noise: {reward.item()-info['added_noise']}, obtained solution: {info['x']}, correct solution: {self.eval_env.c}")
         return True
 
+class myd3rlpyCallback():
+    def __init__(self, train_env, eval_env, policy):
+        self.train_env = train_env
+        self.eval_env = eval_env
+        self.policy=policy
+        self.eval_scores=[]
+        self.eval_noises=[]
+        self.eval_xs = []
+
+    def periodic_check(self, steps_played):
+        obs, _ = self.eval_env.reset()
+        done, truncated = False, False
+        while not (done or truncated):
+            obs_batch = np.expand_dims(obs, axis=0)
+            action_batch = self.policy.predict(obs_batch)
+            action = action_batch[0]
+            obs, reward, done, truncated, info = self.eval_env.step(action)
+        self.eval_scores.append(reward.item())
+        if "added_noise" in info.keys():
+            self.eval_noises.append(info["added_noise"])
+        self.eval_xs.append(info["x"])
+        print(f"Steps played: {steps_played}, deterministic evaluation reward: {reward.item()}, deterministic reward subtracting noise: {reward.item()-info['added_noise']}, obtained solution: {info['x']}, correct solution: {self.eval_env.c}")
+
+    def extract_training_stats(self):
+        self.total_steps=self.train_env.total_steps
+        self.best_reward=self.train_env.best_reward
+        self.episode_rewards=self.train_env.episode_rewards.copy()
+        self.best_x=self.train_env.best_x.copy()
+        self.best_reward_history=self.train_env.best_reward_history.copy()
+        self.best_reward_subtracting_noise_history=self.train_env.best_reward_subtracting_noise_history.copy()
+        self.total_steps_history=self.train_env.total_steps_history.copy()
+
 def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10):
     rewards = []
     noises = []
@@ -1927,7 +1959,11 @@ def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10):
         done = False
         total_r = 0
         while not done:
-            if hasattr(policy, "predict"):
+            if hasattr(policy, "fit_online"):#It means it is from d3rlpy
+                obs_batch = np.expand_dims(obs, axis=0)
+                action_batch = policy.predict(obs_batch)
+                action = action_batch[0]
+            elif hasattr(policy, "predict"):
                 action, _ = policy.predict(obs, deterministic=deterministic)
             else:
                 action = policy(obs)   # raw PyTorch model case
@@ -2981,6 +3017,15 @@ class Rastrigin7DSingleStepEnv(gym.Env):
         self.c= np.array([-1.4, 3.5, 2.3, 1.7, 4.1, 2.3, -2.5])#Shift
         self.add_noise=True#False
 
+        self.total_steps=0
+        self.best_reward = -float('inf')
+        self.episode_rewards = []
+        self.best_x = None
+        self.best_reward_history=[]
+        self.best_reward_subtracting_noise_history=[]
+        self.total_steps_history=[]
+
+
     def rastrigin(self, x):
         return 10 * self.dim + np.sum(x**2 - 10 * np.cos(2 * np.pi * x))
 
@@ -3022,6 +3067,15 @@ class Rastrigin7DSingleStepEnv(gym.Env):
             info["added_noise"]=added_noise
         self.done = True
         # Observation is irrelevant; return dummy
+        self.total_steps+=1
+        if self.done:
+            self.episode_rewards.append(reward)
+            if reward > self.best_reward:
+                self.best_reward = reward
+                self.best_x = info["x"].copy()
+                self.best_reward_history.append(self.best_reward)
+                self.best_reward_subtracting_noise_history.append(self.best_reward-info["added_noise"])
+                self.total_steps_history.append(self.total_steps)
         return np.zeros(1, dtype=np.float32), reward, True, False, info
    
     def reset(self, *, seed=None):
@@ -3040,6 +3094,10 @@ def linear_schedule(initial_value: float, final_value: float):
 
 class toy_RL():
     def __init__(self,device,WandB):
+        self.algorithm="SAC"#"PPO"
+        if self.algorithm!="SAC" and self.algorithm!="PPO":
+            print("Unknown algorithm!")
+            sys.exit()
         self.device=device
         self.WandB=WandB
         self.training_steps=200000
@@ -3049,89 +3107,91 @@ class toy_RL():
         self.use_warm_baseline=True#False#True
 
     def run_optimization(self):
-        policy_kwargs = dict(
-            net_arch=[dict(pi=[128, 128], vf=[128, 128])],
-            activation_fn=torch.nn.ReLU
-        )
+        if self.algorithm=="PPO":
+            policy_kwargs = dict(
+                net_arch=[dict(pi=[128, 128], vf=[128, 128])],
+                activation_fn=torch.nn.ReLU
+            )
         if self.use_warm_baseline:
-            if self.env_type=="Rastrigin7DSingleStepEnv":
-                BC_env = Rastrigin7DSingleStepEnv()
-            else:
-                BC_env = Rastrigin7DMultipleStepEnv()
-            #Warm baseline close to final solution:
-            scale=0.5
-            self.warm_baseline=BC_env.c+np.array([-0.18511472,-0.00619498,-0.14750585,0.17160661,-0.60160435,-0.24393126, -0.54970125])#+ np.random.normal(loc=0.0, scale=scale, size=BC_env.dim)
+            if self.algorithm=="PPO":
+                if self.env_type=="Rastrigin7DSingleStepEnv":
+                    BC_env = Rastrigin7DSingleStepEnv()
+                else:
+                    BC_env = Rastrigin7DMultipleStepEnv()
+                #Warm baseline close to final solution:
+                scale=0.5
+                self.warm_baseline=BC_env.c+np.array([-0.18511472,-0.00619498,-0.14750585,0.17160661,-0.60160435,-0.24393126, -0.54970125])#+ np.random.normal(loc=0.0, scale=scale, size=BC_env.dim)
 
-            lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
-            bc_policy=CustomPolicy(BC_env.observation_space, BC_env.action_space, lr_schedule, **policy_kwargs)
-            #Fix std:
-            with torch.no_grad():
-                bc_policy.log_std[:] = -3.0
-            obs_list, act_list, reward_list = generate_toy_imitation_trajectories(BC_env, self.warm_baseline, n_episodes=1)
-            print("std before BC:")
-            print(bc_policy.log_std)
+                lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
+                bc_policy=CustomPolicy(BC_env.observation_space, BC_env.action_space, lr_schedule, **policy_kwargs)
+                #Fix std:
+                with torch.no_grad():
+                    bc_policy.log_std[:] = -3.0
+                obs_list, act_list, reward_list = generate_toy_imitation_trajectories(BC_env, self.warm_baseline, n_episodes=1)
+                print("std before BC:")
+                print(bc_policy.log_std)
 
-            lambda_action = 1.0
-            lambda_value  = 0.01#For single step environment lambda_value=0.01 and lambda_value=1.0 give similar results
-            bc_lr         = 1e-3
-            bc_epochs     = 10000
-            batch_size    = 32
+                lambda_action = 1.0
+                lambda_value  = 0.01#For single step environment lambda_value=0.01 and lambda_value=1.0 give similar results
+                bc_lr         = 1e-3
+                bc_epochs     = 10000
+                batch_size    = 32
 
-            #Convert trajectories into training tensors:
-            obs_tensor, act_tensor, ret_tensor = [], [], []
-            for i in range(len(act_list)):
-                obs_tensor.append(torch.tensor(obs_list[i], dtype=torch.float32).unsqueeze(0))   
-                act_tensor.append(torch.tensor(act_list[i], dtype=torch.float32).unsqueeze(0))
-                ret_tensor.append(torch.tensor(reward_list[i], dtype=torch.float32).unsqueeze(0))
-            obs_tensor = torch.cat(obs_tensor, dim=0)
-            act_tensor = torch.cat(act_tensor, dim=0)
-            ret_tensor = torch.cat(ret_tensor, dim=0)
+                #Convert trajectories into training tensors:
+                obs_tensor, act_tensor, ret_tensor = [], [], []
+                for i in range(len(act_list)):
+                    obs_tensor.append(torch.tensor(obs_list[i], dtype=torch.float32).unsqueeze(0))   
+                    act_tensor.append(torch.tensor(act_list[i], dtype=torch.float32).unsqueeze(0))
+                    ret_tensor.append(torch.tensor(reward_list[i], dtype=torch.float32).unsqueeze(0))
+                obs_tensor = torch.cat(obs_tensor, dim=0)
+                act_tensor = torch.cat(act_tensor, dim=0)
+                ret_tensor = torch.cat(ret_tensor, dim=0)
 
-            dataset = TensorDataset(obs_tensor, act_tensor, ret_tensor)
-            loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)#TO_DO: Check if there is a bug because for Rastrigin7DMultipleStepEnv I think I need to use shuffle=False
+                dataset = TensorDataset(obs_tensor, act_tensor, ret_tensor)
+                loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)#TO_DO: Check if there is a bug because for Rastrigin7DMultipleStepEnv I think I need to use shuffle=False
 
-            optimizer = torch.optim.Adam(bc_policy.parameters(), lr=bc_lr)
-            mse_loss = nn.MSELoss()
+                optimizer = torch.optim.Adam(bc_policy.parameters(), lr=bc_lr)
+                mse_loss = nn.MSELoss()
 
-            bc_reward_iters=[]
-            bc_noise_iters=[]
-            bc_x_iters=[]
-            check_period=bc_epochs//10
+                bc_reward_iters=[]
+                bc_noise_iters=[]
+                bc_x_iters=[]
+                check_period=bc_epochs//10
 
-            # Actor-Critic Behavioral Cloning:
-            action_losses = []
-            value_losses  = []
-            total_losses  = []
-            for epoch in range(bc_epochs):
-                epoch_action_loss = 0.0
-                epoch_value_loss  = 0.0
-                epoch_total_loss  = 0.0
-                n_batches = 0
-                for batch_obs, batch_act, batch_ret in loader:
-                    optimizer.zero_grad()
-                    pred_actions, value_pred, _ = bc_policy.forward(batch_obs, deterministic=True)
-                    action_loss = mse_loss(pred_actions, batch_act)
-                    value_loss = mse_loss(value_pred.squeeze(-1), batch_ret)
-                    loss = lambda_action * action_loss + lambda_value * value_loss
-                    loss.backward()
-                    optimizer.step()
-                    epoch_action_loss += lambda_action*action_loss.item()
-                    epoch_value_loss  += lambda_value*value_loss.item()
-                    epoch_total_loss  += loss.item()
-                    n_batches += 1
-                action_losses.append(epoch_action_loss / n_batches)
-                value_losses.append(epoch_value_loss / n_batches)
-                total_losses.append(epoch_total_loss / n_batches)
-                if (epoch+1)%check_period==0:
-                    with torch.no_grad():
-                        bc_reward_iter, bc_noise_iter, bc_x_iter= evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=1)
-                        if bc_noise_iter is not None:
-                            print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, deterministic reward subtracting noise: {bc_reward_iter-bc_noise_iter}, obtained solution: {bc_x_iter}, correct solution: {BC_env.c}")
-                            bc_noise_iters.append(bc_noise_iter)
-                        else:
-                            print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, obtained solution: {bc_x_iter}, correct solution: {BC_env.c}")
-                        bc_reward_iters.append(bc_reward_iter)
-                        bc_x_iters.append(bc_x_iter)
+                # Actor-Critic Behavioral Cloning:
+                action_losses = []
+                value_losses  = []
+                total_losses  = []
+                for epoch in range(bc_epochs):
+                    epoch_action_loss = 0.0
+                    epoch_value_loss  = 0.0
+                    epoch_total_loss  = 0.0
+                    n_batches = 0
+                    for batch_obs, batch_act, batch_ret in loader:
+                        optimizer.zero_grad()
+                        pred_actions, value_pred, _ = bc_policy.forward(batch_obs, deterministic=True)
+                        action_loss = mse_loss(pred_actions, batch_act)
+                        value_loss = mse_loss(value_pred.squeeze(-1), batch_ret)
+                        loss = lambda_action * action_loss + lambda_value * value_loss
+                        loss.backward()
+                        optimizer.step()
+                        epoch_action_loss += lambda_action*action_loss.item()
+                        epoch_value_loss  += lambda_value*value_loss.item()
+                        epoch_total_loss  += loss.item()
+                        n_batches += 1
+                    action_losses.append(epoch_action_loss / n_batches)
+                    value_losses.append(epoch_value_loss / n_batches)
+                    total_losses.append(epoch_total_loss / n_batches)
+                    if (epoch+1)%check_period==0:
+                        with torch.no_grad():
+                            bc_reward_iter, bc_noise_iter, bc_x_iter= evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=1)
+                            if bc_noise_iter is not None:
+                                print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, deterministic reward subtracting noise: {bc_reward_iter-bc_noise_iter}, obtained solution: {bc_x_iter}, correct solution: {BC_env.c}")
+                                bc_noise_iters.append(bc_noise_iter)
+                            else:
+                                print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, obtained solution: {bc_x_iter}, correct solution: {BC_env.c}")
+                            bc_reward_iters.append(bc_reward_iter)
+                            bc_x_iters.append(bc_x_iter)
                         
 
             #BC plots:
@@ -3182,7 +3242,6 @@ class toy_RL():
             print("std after BC:")
             print(bc_policy.log_std)
 
-        #PPO training:
         if self.env_type=="Rastrigin7DSingleStepEnv":
             train_env = Rastrigin7DSingleStepEnv()
             eval_env = Rastrigin7DSingleStepEnv()
@@ -3191,47 +3250,84 @@ class toy_RL():
             eval_env = Rastrigin7DMultipleStepEnv()
 
         eval_freq = max(1, int(0.05 * self.training_steps))
-        callback = TrainingStatsCallback(eval_env=eval_env, eval_freq=eval_freq, verbose=1)
 
-        model = PPO(
-            policy=CustomPolicy,#"MlpPolicy",
-            env=train_env,
-            learning_rate=6e-5,#linear_schedule(1e-4, 1e-5),#1e-5,
-            #ent_coef=1.0,#0.01,
-            n_steps=256,
-            batch_size=128,
-            n_epochs=5,
-            gamma=1.0,
-            verbose=1,
-            policy_kwargs=policy_kwargs,#SB3 will pass policy_kwargs to CustomPolicy via **kwargs
-            device=self.device   
-        )
+        if self.algorithm=="PPO":
+            #PPO training:
+            callback = TrainingStatsCallback(eval_env=eval_env, eval_freq=eval_freq, verbose=1)
 
-        if self.use_warm_baseline:
-            #Load the policy that was pretrained using BC:
-            bc_policy.eval()
-            model.policy.load_state_dict(bc_policy.state_dict())
-        print("Untrained PPO model std:")
-        print(model.policy.log_std)
-        #Reduce std of the policy head:
-        with torch.no_grad():
-            model.policy.log_std[:] = -3.0
-        print("Untrained PPO model std:")
-        print(model.policy.log_std)
-        
-        model.learn(total_timesteps=self.training_steps, callback=callback)
-        print("Trained PPO model std:")
-        print(model.policy.log_std)
-        model.save(f"outputs/{self.WandB['name']}/ppo_model")
+            model = PPO(
+                policy=CustomPolicy,#"MlpPolicy",
+                env=train_env,
+                learning_rate=6e-5,#linear_schedule(1e-4, 1e-5),#1e-5,
+                #ent_coef=1.0,#0.01,
+                n_steps=256,
+                batch_size=128,
+                n_epochs=5,
+                gamma=1.0,
+                verbose=1,
+                policy_kwargs=policy_kwargs,#SB3 will pass policy_kwargs to CustomPolicy via **kwargs
+                device=self.device   
+            )
+
+            if self.use_warm_baseline:
+                #Load the policy that was pretrained using BC:
+                bc_policy.eval()
+                model.policy.load_state_dict(bc_policy.state_dict())
+            print("Untrained PPO model std:")
+            print(model.policy.log_std)
+            #Reduce std of the policy head:
+            with torch.no_grad():
+                model.policy.log_std[:] = -3.0
+            print("Untrained PPO model std:")
+            print(model.policy.log_std)
+            
+            model.learn(total_timesteps=self.training_steps, callback=callback)
+            print("Trained PPO model std:")
+            print(model.policy.log_std)
+            model.save(f"outputs/{self.WandB['name']}/ppo_model")
+        elif self.algorithm=="SAC":
+            #SAC training:
+            #Build IQN Q-function factory:
+            #iqn_q_function = IQNQFunctionFactory(
+            #    n_quantiles=32,         # number of quantile samples for learning
+            #    n_greedy_quantiles=32,  # quantiles used for greedy action evaluation
+            #    embed_size=64           # size of quantile embedding
+            #)
+
+            #Create SAC #with IQN critic:
+            sac = d3rlpy.algos.SACConfig(
+                #q_func_factory=iqn_q_function,   # <-- plug IQN in here
+                batch_size=256,
+                n_critics=2,
+                gamma=0.99,
+                tau=5e-3,
+                #learning_rate=3e-4,
+                initial_temperature=0.1
+            ).create(device=str(self.device))            
+            sac.build_with_env(train_env)
+
+            callback=myd3rlpyCallback(train_env, eval_env, sac)
+
+            #Train online:
+            n_checks=20
+            for training_index in range(n_checks):
+                sac.fit_online(
+                    train_env,
+                    eval_env=eval_env,
+                    n_steps=self.training_steps//n_checks,  
+                )
+                callback.periodic_check(steps_played=(training_index+1)*self.training_steps//n_checks)
+            callback.extract_training_stats()
+
+            sac.save_model(f"outputs/{self.WandB['name']}/iqn_sac_model.d3")
 
         print(f"Best evaluation achieved during training: x={callback.best_x}, f(x)={callback.best_reward:.4f}")
 
-        #PPO plots:
         fig=plt.figure()
         plt.plot(callback.episode_rewards,marker='o')
         plt.xlabel("Episode")
         plt.ylabel("Loss")
-        plt.title("Loss per training episode")
+        plt.title(f"Loss per training episode ({self.algorithm})")
         plt.grid(True)
         plt.savefig(f"outputs/{self.WandB['name']}/training_loss.png")
         plt.close(fig)
@@ -3244,7 +3340,7 @@ class toy_RL():
             plt.plot(x_vals,scores_subtracting_noise,marker='o',label='Deterministic loss subtracting noise')
         plt.xlabel(f"Training % ({self.training_steps} steps)")
         plt.ylabel("Loss")
-        plt.title("Periodic deterministic evaluations")
+        plt.title(f"Periodic deterministic evaluations ({self.algorithm})")
         plt.legend()
         plt.grid(True)
         plt.savefig(f"outputs/{self.WandB['name']}/deterministic_loss.png")
@@ -3255,7 +3351,7 @@ class toy_RL():
         plt.plot(callback.total_steps_history,callback.best_reward_subtracting_noise_history,marker='o',label="Best training loss subtracting noise")
         plt.xlabel("Training steps")
         plt.ylabel("Loss")
-        plt.title("Best training evaluation")
+        plt.title(f"Best training evaluation ({self.algorithm})")
         plt.legend()
         plt.grid(True)
         plt.savefig(f"outputs/{self.WandB['name']}/best_training_loss.png")
@@ -3266,7 +3362,7 @@ class toy_RL():
         plt.plot(distances,marker='o')
         plt.xlabel(f"Training % ({self.training_steps} steps)")
         plt.ylabel("Distance")
-        plt.title("Euclidean distance from deterministic solution to correct solution")
+        plt.title(f"Euclidean distance from deterministic solution to correct solution ({self.algorithm})")
         plt.grid(True)
         plt.savefig(f"outputs/{self.WandB['name']}/distance.png")
         plt.close(fig)
