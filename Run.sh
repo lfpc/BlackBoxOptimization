@@ -44,7 +44,7 @@ LOG_FILE="$RESULTS_DIR/output_${OPT_METHOD}.log"
 #Install locally the python libraries that are missing in the container:
 LOCAL_LIBRARIES_DIR="/home/hep/$USER_NAME/MuonShieldProject/BlackBoxOptimization/local_python_libs"
 mkdir -p "$LOCAL_LIBRARIES_DIR"
-pip install --target "$LOCAL_LIBRARIES_DIR" --no-deps cma cross-entropy-method gymnasium d3rlpy stable_baselines3 cloudpickle imitation # Install locally if missing
+pip install --target "$LOCAL_LIBRARIES_DIR" --no-deps cma cross-entropy-method gymnasium d3rlpy stable_baselines3 cloudpickle imitation gym structlog dataclasses_json marshmallow # Install locally if missing
 
 nohup apptainer exec --nv \
   -B /cvmfs \
