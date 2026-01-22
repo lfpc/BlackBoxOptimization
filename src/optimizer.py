@@ -33,6 +33,8 @@ from imitation.util import logger as imit_logger
 import d3rlpy
 from d3rlpy.models import IQNQFunctionFactory
 from d3rlpy.metrics import EnvironmentEvaluator
+from d3rlpy.dataset.replay_buffer import ReplayBuffer,FIFOBuffer
+from d3rlpy.dataset import Episode
 import h5py
 import cma
 
@@ -3100,34 +3102,40 @@ class toy_RL():
             sys.exit()
         self.device=device
         self.WandB=WandB
-        self.training_steps=200000
+        self.training_steps=200000#
         self.env_type="Rastrigin7DSingleStepEnv"#"Rastrigin7DMultipleStepEnv"
         if self.env_type=="Rastrigin7DMultipleStepEnv":
             self.training_steps*=7
         self.use_warm_baseline=True#False#True
 
     def run_optimization(self):
+        if self.env_type=="Rastrigin7DSingleStepEnv":
+            train_env = Rastrigin7DSingleStepEnv()
+            eval_env = Rastrigin7DSingleStepEnv()
+        else:
+            train_env = Rastrigin7DMultipleStepEnv()
+            eval_env = Rastrigin7DMultipleStepEnv()
         if self.algorithm=="PPO":
             policy_kwargs = dict(
                 net_arch=[dict(pi=[128, 128], vf=[128, 128])],
                 activation_fn=torch.nn.ReLU
             )
         if self.use_warm_baseline:
-            if self.algorithm=="PPO":
-                if self.env_type=="Rastrigin7DSingleStepEnv":
-                    BC_env = Rastrigin7DSingleStepEnv()
-                else:
-                    BC_env = Rastrigin7DMultipleStepEnv()
-                #Warm baseline close to final solution:
-                scale=0.5
-                self.warm_baseline=BC_env.c+np.array([-0.18511472,-0.00619498,-0.14750585,0.17160661,-0.60160435,-0.24393126, -0.54970125])#+ np.random.normal(loc=0.0, scale=scale, size=BC_env.dim)
+            if self.env_type=="Rastrigin7DSingleStepEnv":
+                pretrain_env = Rastrigin7DSingleStepEnv()
+            else:
+                pretrain_env = Rastrigin7DMultipleStepEnv()
+            #Warm baseline close to final solution:
+            #scale=0.5
+            self.warm_baseline=pretrain_env.c+np.array([-0.18511472,-0.00619498,-0.14750585,0.17160661,-0.60160435,-0.24393126, -0.54970125])#+ np.random.normal(loc=0.0, scale=scale, size=pretrain_env.dim)
 
+            if self.algorithm=="PPO":
                 lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
-                bc_policy=CustomPolicy(BC_env.observation_space, BC_env.action_space, lr_schedule, **policy_kwargs)
+                bc_policy=CustomPolicy(pretrain_env.observation_space, pretrain_env.action_space, lr_schedule, **policy_kwargs)
                 #Fix std:
                 with torch.no_grad():
                     bc_policy.log_std[:] = -3.0
-                obs_list, act_list, reward_list = generate_toy_imitation_trajectories(BC_env, self.warm_baseline, n_episodes=1)
+                obs_list, act_list, reward_list = generate_toy_imitation_trajectories(pretrain_env, self.warm_baseline, n_episodes=1)
                 print("std before BC:")
                 print(bc_policy.log_std)
 
@@ -3184,70 +3192,107 @@ class toy_RL():
                     total_losses.append(epoch_total_loss / n_batches)
                     if (epoch+1)%check_period==0:
                         with torch.no_grad():
-                            bc_reward_iter, bc_noise_iter, bc_x_iter= evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=1)
+                            bc_reward_iter, bc_noise_iter, bc_x_iter= evaluate_policy(bc_policy, pretrain_env, deterministic=True, n_eval_episodes=1)
                             if bc_noise_iter is not None:
-                                print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, deterministic reward subtracting noise: {bc_reward_iter-bc_noise_iter}, obtained solution: {bc_x_iter}, correct solution: {BC_env.c}")
+                                print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, deterministic reward subtracting noise: {bc_reward_iter-bc_noise_iter}, obtained solution: {bc_x_iter}, correct solution: {pretrain_env.c}")
                                 bc_noise_iters.append(bc_noise_iter)
                             else:
-                                print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, obtained solution: {bc_x_iter}, correct solution: {BC_env.c}")
+                                print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, obtained solution: {bc_x_iter}, correct solution: {pretrain_env.c}")
                             bc_reward_iters.append(bc_reward_iter)
                             bc_x_iters.append(bc_x_iter)
-                        
+            elif self.algorithm=="SAC":
+                buffer = ReplayBuffer(
+                    buffer=FIFOBuffer(limit=1000000),#maxlen=1000000,#Default maxlen in d3rlpy
+                    env=train_env,
+                )
+                episodes_with_warm_baseline=10
+                for _ in range(episodes_with_warm_baseline):
+                    states = []
+                    actions = []
+                    rewards = []
+                    next_states = []
+                    dones = []
 
-            #BC plots:
-            x_vals = np.arange(1, bc_epochs + 1)
-            fig, ax = plt.subplots(figsize=(8,5))
-            ax.plot(x_vals, action_losses, color='tab:blue', label="Action loss", linewidth=2)
-            ax.plot(x_vals, value_losses,  color='tab:orange', label="Value loss", linewidth=2)
-            ax.plot(x_vals, total_losses,  color='tab:green', label="Total loss", linewidth=2)
-            ax.set_xlabel("Epochs")
-            ax.set_ylabel("Loss")
-            ax.set_title("Imitation Learning Loss per Epoch")
-            ax.grid(True)
-            ax.legend()
-            plt.tight_layout()
-            plt.savefig(f"outputs/{self.WandB['name']}/BC_losses.png")
-            plt.close(fig)
+                    done = False
+                    state, _ = pretrain_env.reset()
+                    while not done:
+                        if type(pretrain_env)==Rastrigin7DSingleStepEnv:
+                            action = self.warm_baseline.copy()
+                        elif type(pretrain_env)==Rastrigin7DMultipleStepEnv:
+                            action = self.warm_baseline.copy()[pretrain_env.steps]
+                        else:
+                            print("Unknown env!")
+                            sys.exit()
+                        next_state, reward, done, _, _ = pretrain_env.step(action)
 
-            fig=plt.figure()
-            x_vals = 100 * np.linspace(1/len(bc_reward_iters), 1, len(bc_reward_iters))
-            plt.plot(x_vals,bc_reward_iters,marker='o',label="Deterministic loss")
-            if len(bc_noise_iters)>0:
-                bc_reward_iters_subtracting_noise=[bc_reward_iters[i]-bc_noise_iters[i] for i in range(len(bc_reward_iters))]
-                plt.plot(x_vals,bc_reward_iters_subtracting_noise,marker='o',label="Deterministic loss subtracting noise")
-            plt.axhline(y=reward_list[-1],linestyle='--',color='black',label='Warm baseline loss')
-            plt.xlabel(f"Behavioral Cloning % ({bc_epochs} epochs)")
-            plt.ylabel("Loss")
-            plt.title("Periodic deterministic evaluations on BC")
-            plt.grid(True)
-            plt.legend()
-            plt.savefig(f"outputs/{self.WandB['name']}/BC_deterministic_loss.png")
-            plt.close(fig)
+                        states.append(state)
+                        reward_list=[reward]
+                        rewards.append(reward_list)
+                        actions.append(action)
+                        next_states.append(next_state)
+                        dones.append(done)
 
-            fig=plt.figure()
-            distances=[np.linalg.norm(BC_env.c - bc_x_iters[i]) for i in range(len(bc_x_iters))]
-            plt.plot(distances,marker='o')
-            plt.xlabel(f"Behavioral Cloning % ({bc_epochs} epochs)")
-            plt.ylabel("Distance")
-            plt.title("Euclidean distance from deterministic solution to correct solution")
-            plt.grid(True)
-            plt.savefig(f"outputs/{self.WandB['name']}/BC_distance.png")
-            plt.close(fig)
+                        state = next_state.copy()
 
-            #Evaluate the BC policy:
-            bc_reward, bc_noise, _ = evaluate_policy(bc_policy, BC_env, deterministic=True, n_eval_episodes=1)
-            print("BC deterministic reward:", bc_reward)
-            bc_reward, bc_noise, _ = evaluate_policy(bc_policy, BC_env, deterministic=False, n_eval_episodes=1)
-            print("BC non-deterministic reward:", bc_reward)
-            print("std after BC:")
-            print(bc_policy.log_std)
+                    states = np.stack(states, axis=0)
+                    actions = np.stack(actions, axis=0)
+                    rewards = np.asarray(rewards, dtype=np.float32)
 
-        if self.env_type=="Rastrigin7DSingleStepEnv":
-            train_env = Rastrigin7DSingleStepEnv()
-            eval_env = Rastrigin7DSingleStepEnv()
-        else:
-            train_env = Rastrigin7DMultipleStepEnv()
-            eval_env = Rastrigin7DMultipleStepEnv()
+                    episode = Episode(states,
+                                    actions,
+                                    rewards,
+                                    dones)
+                    buffer.append_episode(episode)
+  
+            if self.algorithm=="PPO":
+                #BC plots:
+                x_vals = np.arange(1, bc_epochs + 1)
+                fig, ax = plt.subplots(figsize=(8,5))
+                ax.plot(x_vals, action_losses, color='tab:blue', label="Action loss", linewidth=2)
+                ax.plot(x_vals, value_losses,  color='tab:orange', label="Value loss", linewidth=2)
+                ax.plot(x_vals, total_losses,  color='tab:green', label="Total loss", linewidth=2)
+                ax.set_xlabel("Epochs")
+                ax.set_ylabel("Loss")
+                ax.set_title("Imitation Learning Loss per Epoch")
+                ax.grid(True)
+                ax.legend()
+                plt.tight_layout()
+                plt.savefig(f"outputs/{self.WandB['name']}/BC_losses.png")
+                plt.close(fig)
+
+                fig=plt.figure()
+                x_vals = 100 * np.linspace(1/len(bc_reward_iters), 1, len(bc_reward_iters))
+                plt.plot(x_vals,bc_reward_iters,marker='o',label="Deterministic loss")
+                if len(bc_noise_iters)>0:
+                    bc_reward_iters_subtracting_noise=[bc_reward_iters[i]-bc_noise_iters[i] for i in range(len(bc_reward_iters))]
+                    plt.plot(x_vals,bc_reward_iters_subtracting_noise,marker='o',label="Deterministic loss subtracting noise")
+                plt.axhline(y=reward_list[-1],linestyle='--',color='black',label='Warm baseline loss')
+                plt.xlabel(f"Behavioral Cloning % ({bc_epochs} epochs)")
+                plt.ylabel("Loss")
+                plt.title("Periodic deterministic evaluations on BC")
+                plt.grid(True)
+                plt.legend()
+                plt.savefig(f"outputs/{self.WandB['name']}/BC_deterministic_loss.png")
+                plt.close(fig)
+
+                fig=plt.figure()
+                distances=[np.linalg.norm(pretrain_env.c - bc_x_iters[i]) for i in range(len(bc_x_iters))]
+                plt.plot(distances,marker='o')
+                plt.xlabel(f"Behavioral Cloning % ({bc_epochs} epochs)")
+                plt.ylabel("Distance")
+                plt.title("Euclidean distance from deterministic solution to correct solution")
+                plt.grid(True)
+                plt.savefig(f"outputs/{self.WandB['name']}/BC_distance.png")
+                plt.close(fig)
+
+                #Evaluate the BC policy:
+                bc_reward, bc_noise, _ = evaluate_policy(bc_policy, pretrain_env, deterministic=True, n_eval_episodes=1)
+                print("BC deterministic reward:", bc_reward)
+                bc_reward, bc_noise, _ = evaluate_policy(bc_policy, pretrain_env, deterministic=False, n_eval_episodes=1)
+                print("BC non-deterministic reward:", bc_reward)
+                print("std after BC:")
+                print(bc_policy.log_std)
+
 
         eval_freq = max(1, int(0.05 * self.training_steps))
 
@@ -3293,6 +3338,8 @@ class toy_RL():
             #    n_greedy_quantiles=32,  # quantiles used for greedy action evaluation
             #    embed_size=64           # size of quantile embedding
             #)
+            if not self.use_warm_baseline:
+                buffer=None
 
             #Create SAC #with IQN critic:
             sac = d3rlpy.algos.SACConfig(
@@ -3302,7 +3349,7 @@ class toy_RL():
                 gamma=0.99,
                 tau=5e-3,
                 #learning_rate=3e-4,
-                initial_temperature=0.1
+                initial_temperature=0.2#0.1
             ).create(device=str(self.device))            
             sac.build_with_env(train_env)
 
@@ -3315,6 +3362,7 @@ class toy_RL():
                     train_env,
                     eval_env=eval_env,
                     n_steps=self.training_steps//n_checks,  
+                    buffer=buffer,
                 )
                 callback.periodic_check(steps_played=(training_index+1)*self.training_steps//n_checks)
             callback.extract_training_stats()
@@ -3338,6 +3386,8 @@ class toy_RL():
         if len(callback.eval_noises)>0:
             scores_subtracting_noise=[callback.eval_scores[i]-callback.eval_noises[i] for i in range(len(callback.eval_scores))]
             plt.plot(x_vals,scores_subtracting_noise,marker='o',label='Deterministic loss subtracting noise')
+        if self.use_warm_baseline:
+            plt.axhline(y=reward_list[-1],linestyle='--',color='black',label='Warm baseline loss')
         plt.xlabel(f"Training % ({self.training_steps} steps)")
         plt.ylabel("Loss")
         plt.title(f"Periodic deterministic evaluations ({self.algorithm})")
