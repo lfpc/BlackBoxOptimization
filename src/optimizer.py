@@ -2953,6 +2953,15 @@ class Rastrigin7DMultipleStepEnv(gym.Env):
         )
         self.done = False#TO_DO: Check if can be removed
         self.c= np.array([-1.4, 3.5, 2.3, 1.7, 4.1, 2.3, -2.5])#Shift
+        self.add_noise=True#False
+
+        self.total_steps=0
+        self.best_reward = -float('inf')
+        self.episode_rewards = []
+        self.best_x = None
+        self.best_reward_history=[]
+        self.best_reward_subtracting_noise_history=[]
+        self.total_steps_history=[]
 
     def rastrigin(self, x):
         return 10 * self.dim + np.sum(x**2 - 10 * np.cos(2 * np.pi * x))
@@ -2971,18 +2980,41 @@ class Rastrigin7DMultipleStepEnv(gym.Env):
         violation += max(0.0, np.sum(x) - 10.0)
         return violation
 
+    def noise(self, x, scale):
+        #Amplitude proportional to the last dimension
+        amplitude = scale * x[-1]
+        return np.random.randn() * amplitude
+
     def step(self, action):
         self.obs[self.steps]=action
         self.steps+=1
+        self.total_steps+=1
         reward=0.0
         done=False
+        info = {}
         if self.steps==self.dim:
             obj=self.rastrigin_shifted(self.obs, self.c)#obj = self.rastrigin(x)
             violation = self.constraint_violation(self.obs)
             penalty_weight = 100.0
             reward = -(obj + penalty_weight * violation)
             done = True
-        info = {}
+            info = {
+                "x": self.obs,
+                "objective": obj,
+                "violation": violation
+            }
+            if self.add_noise:
+                scale=1.0#0.1
+                added_noise=self.noise(self.obs, scale)
+                reward+=added_noise
+                info["added_noise"]=added_noise
+            self.episode_rewards.append(reward)
+            if reward > self.best_reward:
+                self.best_reward = reward
+                self.best_x = info["x"].copy()
+                self.best_reward_history.append(self.best_reward)
+                self.best_reward_subtracting_noise_history.append(self.best_reward-info["added_noise"])
+                self.total_steps_history.append(self.total_steps)
         return self.obs, reward, done, False, info
    
     def reset(self, *, seed=None):
@@ -3096,16 +3128,16 @@ def linear_schedule(initial_value: float, final_value: float):
 
 class toy_RL():
     def __init__(self,device,WandB):
-        self.algorithm="SAC"#"PPO"
+        self.algorithm="PPO"#"SAC"#"PPO"
         if self.algorithm!="SAC" and self.algorithm!="PPO":
             print("Unknown algorithm!")
             sys.exit()
         self.device=device
         self.WandB=WandB
         self.training_steps=200000#
-        self.env_type="Rastrigin7DSingleStepEnv"#"Rastrigin7DMultipleStepEnv"
+        self.env_type="Rastrigin7DMultipleStepEnv"#"Rastrigin7DSingleStepEnv"#"Rastrigin7DMultipleStepEnv"
         if self.env_type=="Rastrigin7DMultipleStepEnv":
-            self.training_steps*=7
+            self.training_steps=int(self.training_steps*7/100)
         self.use_warm_baseline=True#False#True
 
     def run_optimization(self):
@@ -3144,6 +3176,8 @@ class toy_RL():
                 bc_lr         = 1e-3
                 bc_epochs     = 10000
                 batch_size    = 32
+                if self.env_type=="Rastrigin7DMultipleStepEnv":
+                    bc_epochs=int(bc_epochs/10)
 
                 #Convert trajectories into training tensors:
                 obs_tensor, act_tensor, ret_tensor = [], [], []
@@ -3154,6 +3188,9 @@ class toy_RL():
                 obs_tensor = torch.cat(obs_tensor, dim=0)
                 act_tensor = torch.cat(act_tensor, dim=0)
                 ret_tensor = torch.cat(ret_tensor, dim=0)
+
+                if self.env_type=="Rastrigin7DMultipleStepEnv":
+                    act_tensor=act_tensor.unsqueeze(-1)
 
                 dataset = TensorDataset(obs_tensor, act_tensor, ret_tensor)
                 loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)#TO_DO: Check if there is a bug because for Rastrigin7DMultipleStepEnv I think I need to use shuffle=False
