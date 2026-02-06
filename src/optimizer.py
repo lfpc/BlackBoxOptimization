@@ -3137,7 +3137,7 @@ class toy_RL():
         self.training_steps=200000#
         self.env_type="Rastrigin7DMultipleStepEnv"#"Rastrigin7DSingleStepEnv"#"Rastrigin7DMultipleStepEnv"
         if self.env_type=="Rastrigin7DMultipleStepEnv":
-            self.training_steps=int(self.training_steps*7/100)
+            self.training_steps=int(2*self.training_steps*7/100)
         self.use_warm_baseline=True#False#True
 
     def run_optimization(self):
