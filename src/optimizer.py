@@ -3128,7 +3128,7 @@ def linear_schedule(initial_value: float, final_value: float):
 
 class toy_RL():
     def __init__(self,device,WandB):
-        self.algorithm="PPO"#"SAC"#"PPO"
+        self.algorithm="SAC"#"SAC"#"PPO"
         if self.algorithm!="SAC" and self.algorithm!="PPO":
             print("Unknown algorithm!")
             sys.exit()
@@ -3274,6 +3274,9 @@ class toy_RL():
                     states = np.stack(states, axis=0)
                     actions = np.stack(actions, axis=0)
                     rewards = np.asarray(rewards, dtype=np.float32)
+
+                    if type(pretrain_env)==Rastrigin7DMultipleStepEnv:
+                        actions = np.expand_dims(actions, axis=1)
 
                     episode = Episode(states,
                                     actions,
