@@ -3141,6 +3141,9 @@ class toy_RL():
             self.training_steps=int(2*self.training_steps*7/100)
         self.use_warm_baseline=True#False#True
         self.warm_baseline_strategy="BC"#"BC"#"replay_buffer"
+        if self.algorithm=="PPO" and self.use_warm_baseline and self.warm_baseline_strategy!="BC":
+            print("Invalid configuration!")
+            sys.exit()
 
     def run_optimization(self):
         if self.env_type=="Rastrigin7DSingleStepEnv":
@@ -3284,7 +3287,7 @@ class toy_RL():
                                 print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, obtained solution: {bc_x_iter}, correct solution: {pretrain_env.c}")
                             bc_reward_iters.append(bc_reward_iter)
                             bc_x_iters.append(bc_x_iter)
-            elif self.algorithm=="SAC" and self.warm_baseline_strategy=="replay_buffer"::
+            elif self.algorithm=="SAC" and self.warm_baseline_strategy=="replay_buffer":
                 buffer = ReplayBuffer(
                     buffer=FIFOBuffer(limit=1000000),#maxlen=1000000,#Default maxlen in d3rlpy
                     env=train_env,
