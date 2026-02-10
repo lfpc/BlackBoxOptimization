@@ -36,6 +36,7 @@ from d3rlpy.metrics import EnvironmentEvaluator
 from d3rlpy.dataset.replay_buffer import ReplayBuffer,FIFOBuffer
 from d3rlpy.dataset import Episode
 from d3rlpy.preprocessing import MinMaxActionScaler
+from d3rlpy.models.encoders import VectorEncoderFactory
 import h5py
 import cma
 
@@ -1906,7 +1907,7 @@ class TrainingStatsCallback(BaseCallback):
                     self.total_steps_history.append(self.total_steps)
         #Periodic deterministic evaluation:
         if self.num_timesteps - self.last_eval_step >= self.eval_freq:
-            print("Periodic std check:")
+            print("Periodic log_std check:")
             print(self.model.policy.log_std)
             obs, _ = self.eval_env.reset()
             done, truncated = False, False
@@ -1931,6 +1932,9 @@ class myd3rlpyCallback():
         self.eval_xs = []
 
     def periodic_check(self, steps_played):
+        print("Periodic log_std check (weight and bias):")
+        print(self.policy._impl.policy._logstd.weight)
+        print(self.policy._impl.policy._logstd.bias)
         obs, _ = self.eval_env.reset()
         done, truncated = False, False
         while not (done or truncated):
@@ -3135,7 +3139,10 @@ class toy_RL():
             sys.exit()
         self.device=device
         self.WandB=WandB
-        self.training_steps=200000#
+        if self.algorithm=="PPO":
+            self.training_steps=200000
+        elif self.algorithm=="SAC":
+            self.training_steps=40000
         self.env_type="Rastrigin7DMultipleStepEnv"#"Rastrigin7DSingleStepEnv"#"Rastrigin7DMultipleStepEnv"
         if self.env_type=="Rastrigin7DMultipleStepEnv":
             self.training_steps=int(2*self.training_steps*7/100)
@@ -3167,12 +3174,16 @@ class toy_RL():
             #)
             #Create SAC with IQN critic:
             sac_policy = d3rlpy.algos.SACConfig(
+                #actor_encoder_factory=VectorEncoderFactory([128, 128]),
+                #critic_encoder_factory=VectorEncoderFactory([128, 128]),
                 #q_func_factory=iqn_q_function,   # <-- plug IQN in here
                 batch_size=256,
                 n_critics=2,
                 gamma=1.0,#0.99,
                 tau=5e-3,
-                #learning_rate=3e-4,
+                actor_learning_rate=1e-4,
+                critic_learning_rate=1e-4,
+                temp_learning_rate=1e-4,
                 action_scaler=action_scaler,
                 initial_temperature=0.2#0.1
             ).create(device=str(self.device))            
@@ -3194,13 +3205,17 @@ class toy_RL():
                     #Fix std:
                     with torch.no_grad():
                         bc_policy.log_std[:] = -3.0
-                elif self.algorithm=="SAC":
-                    #TO_DO: Fix log_std=-3
-                    bc_policy = sac_policy
-                obs_list, act_list, reward_list = generate_toy_imitation_trajectories(pretrain_env, self.warm_baseline, n_episodes=1)
-                if self.algorithm=="PPO":
-                    print("std before BC:")
+                    print("log_std before BC:")
                     print(bc_policy.log_std)
+                elif self.algorithm=="SAC":
+                    bc_policy = sac_policy
+                    #with torch.no_grad():
+                    #    sac._impl.policy._logstd.weight.fill_(0.0)
+                    #    bc_policy._impl.policy._logstd.bias.fill_(-3.0)
+                    print("log_std before BC (weight and bias):")
+                    print(bc_policy._impl.policy._logstd.weight)
+                    print(bc_policy._impl.policy._logstd.bias)
+                obs_list, act_list, reward_list = generate_toy_imitation_trajectories(pretrain_env, self.warm_baseline, n_episodes=1)                    
 
                 lambda_action = 1.0
                 lambda_value  = 0.01#For single step environment lambda_value=0.01 and lambda_value=1.0 give similar results
@@ -3382,8 +3397,12 @@ class toy_RL():
                 bc_reward, bc_noise, _ = evaluate_policy(bc_policy, pretrain_env, deterministic=False, n_eval_episodes=1)
                 print("BC non-deterministic reward:", bc_reward)
                 if self.algorithm=="PPO":
-                    print("std after BC:")
+                    print("log_std after BC:")
                     print(bc_policy.log_std)
+                elif self.algorithm=="SAC":
+                    print("log_std after BC (weight and bias):")
+                    print(bc_policy._impl.policy._logstd.weight)
+                    print(bc_policy._impl.policy._logstd.bias)
 
 
         eval_freq = max(1, int(0.05 * self.training_steps))
@@ -3410,16 +3429,16 @@ class toy_RL():
                 #Load the policy that was pretrained using BC:
                 bc_policy.eval()
                 model.policy.load_state_dict(bc_policy.state_dict())
-            print("Untrained PPO model std:")
+            print("Untrained PPO model log_std:")
             print(model.policy.log_std)
             #Reduce std of the policy head:
             with torch.no_grad():
                 model.policy.log_std[:] = -3.0
-            print("Untrained PPO model std:")
+            print("Untrained PPO model log_std:")
             print(model.policy.log_std)
             
             model.learn(total_timesteps=self.training_steps, callback=callback)
-            print("Trained PPO model std:")
+            print("Trained PPO model log_std:")
             print(model.policy.log_std)
             model.save(f"outputs/{self.WandB['name']}/ppo_model")
         elif self.algorithm=="SAC":
@@ -3433,8 +3452,19 @@ class toy_RL():
 
             if self.use_warm_baseline and self.warm_baseline_strategy=="BC":#Freeze actor briefly after BC to stabilize training:
                 sac._impl.policy.requires_grad_(False)
-                sac.fit_online(train_env, n_steps=5_000)
+                sac.fit_online(train_env, n_steps=5_000, buffer=buffer)
                 sac._impl.policy.requires_grad_(True)
+
+            #Reduce std of the policy head:
+            #with torch.no_grad():
+            #    sac._impl.policy._logstd.bias.fill_(-3.0)
+            #    sac._impl.policy._logstd.weight.fill_(0.0)
+            print("Untrained SAC model log_std (weight and bias):")
+            print(sac._impl.policy._logstd.weight)
+            print(sac._impl.policy._logstd.bias)
+
+            #print("Actor hidden units:", sac._config.actor_encoder_factory.hidden_units)
+            #print("Critic hidden units:", sac._config.critic_encoder_factory.hidden_units)
 
             callback=myd3rlpyCallback(train_env, eval_env, sac)
 
@@ -3449,6 +3479,10 @@ class toy_RL():
                 )
                 callback.periodic_check(steps_played=(training_index+1)*self.training_steps//n_checks)
             callback.extract_training_stats()
+
+            print("Trained SAC model log_std (weight and bias):")
+            print(sac._impl.policy._logstd.weight)
+            print(sac._impl.policy._logstd.bias)
 
             sac.save_model(f"outputs/{self.WandB['name']}/iqn_sac_model.d3")
 
