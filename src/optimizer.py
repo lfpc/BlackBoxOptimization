@@ -35,6 +35,7 @@ from d3rlpy.models import IQNQFunctionFactory
 from d3rlpy.metrics import EnvironmentEvaluator
 from d3rlpy.dataset.replay_buffer import ReplayBuffer,FIFOBuffer
 from d3rlpy.dataset import Episode
+from d3rlpy.preprocessing import MinMaxActionScaler
 import h5py
 import cma
 
@@ -3139,6 +3140,7 @@ class toy_RL():
         if self.env_type=="Rastrigin7DMultipleStepEnv":
             self.training_steps=int(2*self.training_steps*7/100)
         self.use_warm_baseline=True#False#True
+        self.warm_baseline_strategy="BC"#"BC"#"replay_buffer"
 
     def run_optimization(self):
         if self.env_type=="Rastrigin7DSingleStepEnv":
@@ -3152,6 +3154,26 @@ class toy_RL():
                 net_arch=[dict(pi=[128, 128], vf=[128, 128])],
                 activation_fn=torch.nn.ReLU
             )
+        if self.algorithm=="SAC":
+            action_scaler = MinMaxActionScaler(minimum=train_env.low, maximum=train_env.high)
+            #Build IQN Q-function factory:
+            #iqn_q_function = IQNQFunctionFactory(
+            #    n_quantiles=32,         # number of quantile samples for learning
+            #    n_greedy_quantiles=32,  # quantiles used for greedy action evaluation
+            #    embed_size=64           # size of quantile embedding
+            #)
+            #Create SAC with IQN critic:
+            sac_policy = d3rlpy.algos.SACConfig(
+                #q_func_factory=iqn_q_function,   # <-- plug IQN in here
+                batch_size=256,
+                n_critics=2,
+                gamma=1.0,#0.99,
+                tau=5e-3,
+                #learning_rate=3e-4,
+                action_scaler=action_scaler,
+                initial_temperature=0.2#0.1
+            ).create(device=str(self.device))            
+            sac_policy.build_with_env(train_env)
         if self.use_warm_baseline:
             if self.env_type=="Rastrigin7DSingleStepEnv":
                 pretrain_env = Rastrigin7DSingleStepEnv()
@@ -3161,21 +3183,30 @@ class toy_RL():
             #scale=0.5
             self.warm_baseline=pretrain_env.c+np.array([-0.18511472,-0.00619498,-0.14750585,0.17160661,-0.60160435,-0.24393126, -0.54970125])#+ np.random.normal(loc=0.0, scale=scale, size=pretrain_env.dim)
 
-            if self.algorithm=="PPO":
-                lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
-                bc_policy=CustomPolicy(pretrain_env.observation_space, pretrain_env.action_space, lr_schedule, **policy_kwargs)
-                #Fix std:
-                with torch.no_grad():
-                    bc_policy.log_std[:] = -3.0
+            if self.warm_baseline_strategy=="BC":
+                if self.algorithm=="PPO":
+                    lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
+                    bc_policy=CustomPolicy(pretrain_env.observation_space, pretrain_env.action_space, lr_schedule, **policy_kwargs)
+                    bc_policy.to(self.device)
+                    #Fix std:
+                    with torch.no_grad():
+                        bc_policy.log_std[:] = -3.0
+                elif self.algorithm=="SAC":
+                    #TO_DO: Fix log_std=-3
+                    bc_policy = sac_policy
                 obs_list, act_list, reward_list = generate_toy_imitation_trajectories(pretrain_env, self.warm_baseline, n_episodes=1)
-                print("std before BC:")
-                print(bc_policy.log_std)
+                if self.algorithm=="PPO":
+                    print("std before BC:")
+                    print(bc_policy.log_std)
 
                 lambda_action = 1.0
                 lambda_value  = 0.01#For single step environment lambda_value=0.01 and lambda_value=1.0 give similar results
                 bc_lr         = 1e-3
                 bc_epochs     = 10000
                 batch_size    = 32
+                if self.algorithm=="SAC":
+                    lambda_value = 0
+                    bc_epochs = 300
                 if self.env_type=="Rastrigin7DMultipleStepEnv":
                     bc_epochs=int(bc_epochs/10)
 
@@ -3188,14 +3219,22 @@ class toy_RL():
                 obs_tensor = torch.cat(obs_tensor, dim=0)
                 act_tensor = torch.cat(act_tensor, dim=0)
                 ret_tensor = torch.cat(ret_tensor, dim=0)
+                obs_tensor = obs_tensor.to(self.device)
+                act_tensor = act_tensor.to(self.device)
+                ret_tensor = ret_tensor.to(self.device)
 
                 if self.env_type=="Rastrigin7DMultipleStepEnv":
                     act_tensor=act_tensor.unsqueeze(-1)
+                if self.algorithm=="SAC":#For d3rlpy SAC I need to scale actions for the BC this way:
+                    act_tensor = 2 * (act_tensor - train_env.low) / (train_env.high - train_env.low) - 1
 
                 dataset = TensorDataset(obs_tensor, act_tensor, ret_tensor)
                 loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)#TO_DO: Check if there is a bug because for Rastrigin7DMultipleStepEnv I think I need to use shuffle=False
 
-                optimizer = torch.optim.Adam(bc_policy.parameters(), lr=bc_lr)
+                if self.algorithm=="PPO":
+                    optimizer = torch.optim.Adam(bc_policy.parameters(), lr=bc_lr)
+                elif self.algorithm=="SAC":
+                    optimizer = torch.optim.Adam(bc_policy._impl.policy.parameters(), lr=bc_lr)
                 mse_loss = nn.MSELoss()
 
                 bc_reward_iters=[]
@@ -3214,18 +3253,26 @@ class toy_RL():
                     n_batches = 0
                     for batch_obs, batch_act, batch_ret in loader:
                         optimizer.zero_grad()
-                        pred_actions, value_pred, _ = bc_policy.forward(batch_obs, deterministic=True)
-                        action_loss = mse_loss(pred_actions, batch_act)
-                        value_loss = mse_loss(value_pred.squeeze(-1), batch_ret)
-                        loss = lambda_action * action_loss + lambda_value * value_loss
+                        if self.algorithm=="PPO":
+                            pred_actions, value_pred, _ = bc_policy.forward(batch_obs, deterministic=True)
+                            action_loss = mse_loss(pred_actions, batch_act)
+                            value_loss = mse_loss(value_pred.squeeze(-1), batch_ret)
+                            loss = lambda_action * action_loss + lambda_value * value_loss
+                        elif self.algorithm=="SAC":
+                            action_out = bc_policy._impl.policy(batch_obs)
+                            pred_actions = action_out.mu
+                            action_loss = mse_loss(pred_actions, batch_act)
+                            loss = action_loss
                         loss.backward()
                         optimizer.step()
                         epoch_action_loss += lambda_action*action_loss.item()
-                        epoch_value_loss  += lambda_value*value_loss.item()
+                        if self.algorithm=="PPO":
+                            epoch_value_loss  += lambda_value*value_loss.item()
                         epoch_total_loss  += loss.item()
                         n_batches += 1
                     action_losses.append(epoch_action_loss / n_batches)
-                    value_losses.append(epoch_value_loss / n_batches)
+                    if self.algorithm=="PPO":
+                        value_losses.append(epoch_value_loss / n_batches)
                     total_losses.append(epoch_total_loss / n_batches)
                     if (epoch+1)%check_period==0:
                         with torch.no_grad():
@@ -3237,7 +3284,7 @@ class toy_RL():
                                 print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, obtained solution: {bc_x_iter}, correct solution: {pretrain_env.c}")
                             bc_reward_iters.append(bc_reward_iter)
                             bc_x_iters.append(bc_x_iter)
-            elif self.algorithm=="SAC":
+            elif self.algorithm=="SAC" and self.warm_baseline_strategy=="replay_buffer"::
                 buffer = ReplayBuffer(
                     buffer=FIFOBuffer(limit=1000000),#maxlen=1000000,#Default maxlen in d3rlpy
                     env=train_env,
@@ -3284,13 +3331,14 @@ class toy_RL():
                                     dones)
                     buffer.append_episode(episode)
   
-            if self.algorithm=="PPO":
+            if self.warm_baseline_strategy=="BC":
                 #BC plots:
                 x_vals = np.arange(1, bc_epochs + 1)
                 fig, ax = plt.subplots(figsize=(8,5))
                 ax.plot(x_vals, action_losses, color='tab:blue', label="Action loss", linewidth=2)
-                ax.plot(x_vals, value_losses,  color='tab:orange', label="Value loss", linewidth=2)
-                ax.plot(x_vals, total_losses,  color='tab:green', label="Total loss", linewidth=2)
+                if self.algorithm=="PPO":
+                    ax.plot(x_vals, value_losses,  color='tab:orange', label="Value loss", linewidth=2)
+                    ax.plot(x_vals, total_losses,  color='tab:green', label="Total loss", linewidth=2)
                 ax.set_xlabel("Epochs")
                 ax.set_ylabel("Loss")
                 ax.set_title("Imitation Learning Loss per Epoch")
@@ -3330,8 +3378,9 @@ class toy_RL():
                 print("BC deterministic reward:", bc_reward)
                 bc_reward, bc_noise, _ = evaluate_policy(bc_policy, pretrain_env, deterministic=False, n_eval_episodes=1)
                 print("BC non-deterministic reward:", bc_reward)
-                print("std after BC:")
-                print(bc_policy.log_std)
+                if self.algorithm=="PPO":
+                    print("std after BC:")
+                    print(bc_policy.log_std)
 
 
         eval_freq = max(1, int(0.05 * self.training_steps))
@@ -3371,27 +3420,18 @@ class toy_RL():
             print(model.policy.log_std)
             model.save(f"outputs/{self.WandB['name']}/ppo_model")
         elif self.algorithm=="SAC":
-            #SAC training:
-            #Build IQN Q-function factory:
-            #iqn_q_function = IQNQFunctionFactory(
-            #    n_quantiles=32,         # number of quantile samples for learning
-            #    n_greedy_quantiles=32,  # quantiles used for greedy action evaluation
-            #    embed_size=64           # size of quantile embedding
-            #)
-            if not self.use_warm_baseline:
+            if not (self.use_warm_baseline and self.warm_baseline_strategy=="replay_buffer"):
                 buffer=None
 
-            #Create SAC #with IQN critic:
-            sac = d3rlpy.algos.SACConfig(
-                #q_func_factory=iqn_q_function,   # <-- plug IQN in here
-                batch_size=256,
-                n_critics=2,
-                gamma=0.99,
-                tau=5e-3,
-                #learning_rate=3e-4,
-                initial_temperature=0.2#0.1
-            ).create(device=str(self.device))            
-            sac.build_with_env(train_env)
+            if self.use_warm_baseline and self.warm_baseline_strategy=="BC":
+                sac=bc_policy
+            else:
+                sac = sac_policy
+
+            if self.use_warm_baseline and self.warm_baseline_strategy=="BC":#Freeze actor briefly after BC to stabilize training:
+                sac._impl.policy.requires_grad_(False)
+                sac.fit_online(train_env, n_steps=5_000)
+                sac._impl.policy.requires_grad_(True)
 
             callback=myd3rlpyCallback(train_env, eval_env, sac)
 
