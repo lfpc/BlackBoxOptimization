@@ -22,10 +22,11 @@ from time import time
 import random
 import csv
 import gymnasium as gym
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO,SAC
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.utils import get_schedule_fn
 from stable_baselines3.common.policies import ActorCriticPolicy
+from stable_baselines3.sac.policies import SACPolicy
 from imitation.data.types import Trajectory
 from imitation.algorithms import bc
 from imitation.util import logger as imit_logger
@@ -1907,8 +1908,9 @@ class TrainingStatsCallback(BaseCallback):
                     self.total_steps_history.append(self.total_steps)
         #Periodic deterministic evaluation:
         if self.num_timesteps - self.last_eval_step >= self.eval_freq:
-            print("Periodic log_std check:")
-            print(self.model.policy.log_std)
+            if isinstance(self.model, PPO):
+                print("Periodic log_std check:")
+                print(self.model.policy.log_std)
             obs, _ = self.eval_env.reset()
             done, truncated = False, False
             while not (done or truncated):
@@ -2959,6 +2961,7 @@ class Rastrigin7DMultipleStepEnv(gym.Env):
         self.done = False#TO_DO: Check if can be removed
         self.c= np.array([-1.4, 3.5, 2.3, 1.7, 4.1, 2.3, -2.5])#Shift
         self.add_noise=True#False
+        self.scale_rewards=True#False
 
         self.total_steps=0
         self.best_reward = -float('inf')
@@ -3002,6 +3005,8 @@ class Rastrigin7DMultipleStepEnv(gym.Env):
             violation = self.constraint_violation(self.obs)
             penalty_weight = 100.0
             reward = -(obj + penalty_weight * violation)
+            if self.scale_rewards:#For PPO scaling rewards is not that needed, but it is important for SAC
+                reward=reward/100
             done = True
             info = {
                 "x": self.obs,
@@ -3011,6 +3016,8 @@ class Rastrigin7DMultipleStepEnv(gym.Env):
             if self.add_noise:
                 scale=1.0#0.1
                 added_noise=self.noise(self.obs, scale)
+                self.scale_rewards:
+                    added_noise=added_noise/100
                 reward+=added_noise
                 info["added_noise"]=added_noise
             self.episode_rewards.append(reward)
@@ -3055,6 +3062,7 @@ class Rastrigin7DSingleStepEnv(gym.Env):
         self.done = False
         self.c= np.array([-1.4, 3.5, 2.3, 1.7, 4.1, 2.3, -2.5])#Shift
         self.add_noise=True#False
+        self.scale_rewards=True#False
 
         self.total_steps=0
         self.best_reward = -float('inf')
@@ -3094,6 +3102,8 @@ class Rastrigin7DSingleStepEnv(gym.Env):
         violation = self.constraint_violation(x)
         penalty_weight = 100.0
         reward = -(obj + penalty_weight * violation)
+        if self.scale_rewards:
+            reward=reward/100
         info = {
             "x": x,
             "objective": obj,
@@ -3102,6 +3112,8 @@ class Rastrigin7DSingleStepEnv(gym.Env):
         if self.add_noise:
             scale=1.0#0.1
             added_noise=self.noise(x, scale)
+            if self.scale_rewards:
+                added_noise=added_noise/100
             reward+=added_noise
             info["added_noise"]=added_noise
         self.done = True
@@ -3133,19 +3145,23 @@ def linear_schedule(initial_value: float, final_value: float):
 
 class toy_RL():
     def __init__(self,device,WandB):
-        self.algorithm="SAC"#"SAC"#"PPO"
-        if self.algorithm!="SAC" and self.algorithm!="PPO":
+        self.algorithm="SB3_SAC"#"SB3_SAC"#"SAC"#"PPO"
+        if self.algorithm!="SAC" and self.algorithm!="PPO" and self.algorithm!="SB3_SAC":
             print("Unknown algorithm!")
             sys.exit()
         self.device=device
         self.WandB=WandB
+        self.env_type="Rastrigin7DMultipleStepEnv"#"Rastrigin7DSingleStepEnv"#"Rastrigin7DMultipleStepEnv"
         if self.algorithm=="PPO":
             self.training_steps=200000
-        elif self.algorithm=="SAC":
+            if self.env_type=="Rastrigin7DMultipleStepEnv":
+                self.training_steps=int(2*self.training_steps*7/100)
+        elif self.algorithm=="SAC":#TO_DO: Did not achieve good results with SAC yet, try with more training steps like in SB3_SAC
             self.training_steps=40000
-        self.env_type="Rastrigin7DMultipleStepEnv"#"Rastrigin7DSingleStepEnv"#"Rastrigin7DMultipleStepEnv"
-        if self.env_type=="Rastrigin7DMultipleStepEnv":
-            self.training_steps=int(2*self.training_steps*7/100)
+            if self.env_type=="Rastrigin7DMultipleStepEnv":
+                self.training_steps=15000
+        elif self.algorithm=="SB3_SAC":
+            self.training_steps=500000
         self.use_warm_baseline=True#False#True
         self.warm_baseline_strategy="BC"#"BC"#"replay_buffer"
         if self.algorithm=="PPO" and self.use_warm_baseline and self.warm_baseline_strategy!="BC":
@@ -3164,6 +3180,11 @@ class toy_RL():
                 net_arch=[dict(pi=[128, 128], vf=[128, 128])],
                 activation_fn=torch.nn.ReLU
             )
+        elif self.algorithm=="SB3_SAC":
+            policy_kwargs = dict(
+                net_arch={"pi":[128,128], "qf":[128,128]},
+                activation_fn=torch.nn.ReLU
+            )
         if self.algorithm=="SAC":
             action_scaler = MinMaxActionScaler(minimum=train_env.low, maximum=train_env.high)
             #Build IQN Q-function factory:
@@ -3179,7 +3200,7 @@ class toy_RL():
                 #q_func_factory=iqn_q_function,   # <-- plug IQN in here
                 batch_size=256,
                 n_critics=2,
-                gamma=1.0,#0.99,
+                gamma=1.0,#0.99,#TO_DO: Is gamma=1 instead of 0.99 the problem?
                 tau=5e-3,
                 actor_learning_rate=1e-4,
                 critic_learning_rate=1e-4,
@@ -3215,18 +3236,29 @@ class toy_RL():
                     print("log_std before BC (weight and bias):")
                     print(bc_policy._impl.policy._logstd.weight)
                     print(bc_policy._impl.policy._logstd.bias)
+                elif self.algorithm=="SB3_SAC":
+                    lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
+                    bc_policy=SACPolicy(pretrain_env.observation_space, pretrain_env.action_space, lr_schedule, **policy_kwargs)
+                    bc_policy.to(self.device)
+                    #with torch.no_grad():#TO_DO: Check if I need to set log_std=-3 everywhere in the SB3_SAC code
+                    #    bc_policy.actor.log_std.weight.fill_(0.0)
+                    #    bc_policy.actor.log_std.bias.fill_(-3.0)
                 obs_list, act_list, reward_list = generate_toy_imitation_trajectories(pretrain_env, self.warm_baseline, n_episodes=1)                    
 
                 lambda_action = 1.0
                 lambda_value  = 0.01#For single step environment lambda_value=0.01 and lambda_value=1.0 give similar results
                 bc_lr         = 1e-3
-                bc_epochs     = 10000
                 batch_size    = 32
+                if self.algorithm=="PPO":
+                    bc_epochs     = 10000
+                    if self.env_type=="Rastrigin7DMultipleStepEnv":
+                        bc_epochs=int(bc_epochs/10)
                 if self.algorithm=="SAC":
                     lambda_value = 0
                     bc_epochs = 300
-                if self.env_type=="Rastrigin7DMultipleStepEnv":
-                    bc_epochs=int(bc_epochs/10)
+                elif self.algorithm=="SB3_SAC":
+                    lambda_value = 0
+                    bc_epochs = 300
 
                 #Convert trajectories into training tensors:
                 obs_tensor, act_tensor, ret_tensor = [], [], []
@@ -3243,13 +3275,13 @@ class toy_RL():
 
                 if self.env_type=="Rastrigin7DMultipleStepEnv":
                     act_tensor=act_tensor.unsqueeze(-1)
-                if self.algorithm=="SAC":#For d3rlpy SAC I need to scale actions for the BC this way:
+                if self.algorithm=="SAC" or self.algorithm=="SB3_SAC":#For SAC I need to scale actions for the BC this way:
                     act_tensor = 2 * (act_tensor - train_env.low) / (train_env.high - train_env.low) - 1
 
                 dataset = TensorDataset(obs_tensor, act_tensor, ret_tensor)
                 loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)#TO_DO: Check if there is a bug because for Rastrigin7DMultipleStepEnv I think I need to use shuffle=False
 
-                if self.algorithm=="PPO":
+                if self.algorithm=="PPO" or self.algorithm=="SB3_SAC":
                     optimizer = torch.optim.Adam(bc_policy.parameters(), lr=bc_lr)
                 elif self.algorithm=="SAC":
                     optimizer = torch.optim.Adam(bc_policy._impl.policy.parameters(), lr=bc_lr)
@@ -3276,6 +3308,10 @@ class toy_RL():
                             action_loss = mse_loss(pred_actions, batch_act)
                             value_loss = mse_loss(value_pred.squeeze(-1), batch_ret)
                             loss = lambda_action * action_loss + lambda_value * value_loss
+                        elif self.algorithm=="SB3_SAC":
+                            pred_actions=bc_policy.forward(batch_obs, deterministic=True)
+                            action_loss = mse_loss(pred_actions, batch_act)
+                            loss = action_loss
                         elif self.algorithm=="SAC":
                             action_out = bc_policy._impl.policy(batch_obs)
                             pred_actions = action_out.mu
@@ -3441,6 +3477,33 @@ class toy_RL():
             print("Trained PPO model log_std:")
             print(model.policy.log_std)
             model.save(f"outputs/{self.WandB['name']}/ppo_model")
+        elif self.algorithm=="SB3_SAC":
+            callback = TrainingStatsCallback(eval_env=eval_env, eval_freq=eval_freq, verbose=1)
+
+            model = SAC(
+                policy="MlpPolicy",
+                env=train_env,
+                learning_rate=1e-3,#6e-4,#6e-5,
+                batch_size=512,#128,
+                gamma=0.99,#1.0,                 
+                train_freq=256,            
+                gradient_steps=8,#1,          # one update per rollout chunk
+                buffer_size=100000,
+                learning_starts=10000,
+                ent_coef="auto",           
+                tau=0.005,                 
+                verbose=1,
+                policy_kwargs=policy_kwargs,
+                device=self.device,
+            )
+
+            if self.use_warm_baseline:
+                #Load the policy that was pretrained using BC:
+                bc_policy.eval()
+                model.policy.load_state_dict(bc_policy.state_dict())#TO_DO: Am I copying correctly all weights needed?
+            
+            model.learn(total_timesteps=self.training_steps, callback=callback)
+            model.save(f"outputs/{self.WandB['name']}/dqn_model")
         elif self.algorithm=="SAC":
             if not (self.use_warm_baseline and self.warm_baseline_strategy=="replay_buffer"):
                 buffer=None
