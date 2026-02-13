@@ -3016,7 +3016,7 @@ class Rastrigin7DMultipleStepEnv(gym.Env):
             if self.add_noise:
                 scale=1.0#0.1
                 added_noise=self.noise(self.obs, scale)
-                self.scale_rewards:
+                if self.scale_rewards:
                     added_noise=added_noise/100
                 reward+=added_noise
                 info["added_noise"]=added_noise
