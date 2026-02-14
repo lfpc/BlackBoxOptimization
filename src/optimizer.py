@@ -1921,7 +1921,7 @@ class TrainingStatsCallback(BaseCallback):
                 self.eval_noises.append(info["added_noise"])
             self.eval_xs.append(info["x"])
             self.last_eval_step = self.num_timesteps
-            print(f"Steps played: {self.num_timesteps}, deterministic evaluation reward: {reward.item()}, deterministic reward subtracting noise: {reward.item()-info['added_noise']}, obtained solution: {info['x']}, correct solution: {self.eval_env.c}")
+            print(f"Steps played: {self.num_timesteps}, deterministic evaluation reward: {reward.item()}, deterministic reward subtracting noise: {reward.item()-info['added_noise']}, obtained solution: {info['x']}, correct solution: {self.eval_env.c}, distance from obtained solution to correct solution: {np.linalg.norm(self.eval_env.c - info['x'])}")
         return True
 
 class myd3rlpyCallback():
@@ -3588,8 +3588,9 @@ class toy_RL():
         plt.close(fig)
 
         fig=plt.figure()
+        x_vals = 100 * np.linspace(1/len(callback.eval_xs), 1, len(callback.eval_xs))
         distances=[np.linalg.norm(eval_env.c - callback.eval_xs[i]) for i in range(len(callback.eval_xs))]
-        plt.plot(distances,marker='o')
+        plt.plot(x_vals,distances,marker='o')
         plt.xlabel(f"Training % ({self.training_steps} steps)")
         plt.ylabel("Distance")
         plt.title(f"Euclidean distance from deterministic solution to correct solution ({self.algorithm})")
