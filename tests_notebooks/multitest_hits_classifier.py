@@ -4,7 +4,7 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join('..', 'src')))
 sys.path.append(os.path.abspath(os.path.join('..')))
-from problems import ThreeHump_stochastic_hits, Rosenbrock_stochastic_hits, HelicalValley_stochastic_hits, ShipMuonShieldCuda, Quadratic_stochastic_hits
+from problems import ThreeHump_stochastic_hits, Rosenbrock_stochastic_hits, HelicalValley_stochastic_hits, ShipMuonShieldCuda
 from utils import normalize_vector, denormalize_vector, get_freest_gpu
 from utils.nets import Classifier, DeepONetClassifier, QuadraticModel, ParametricNWDeepONet
 import torch
@@ -21,19 +21,17 @@ dev = get_freest_gpu()
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--second_order', action='store_true', help='Use second order optimization')
-parser.add_argument('--problem', type=str, choices=['ThreeHump', 'Rosenbrock', 'HelicalValley', 'MuonShield', 'Quadratic'], default='Rosenbrock', help='Optimization problem to use')
+parser.add_argument('--problem', type=str, choices=['ThreeHump', 'Rosenbrock', 'HelicalValley', 'MuonShield'], default='Rosenbrock', help='Optimization problem to use')
 parser.add_argument('--batch_size', type=int, default=32768, help='Batch size for training the surrogate model')
 parser.add_argument('--samples_phi', type=int, default=5, help='Number of samples for phi in each iteration')
 parser.add_argument('--n_samples', type=int, default=1_000_000, help='Number of samples per phi')
 parser.add_argument('--subsamples', type=int, default=200_000, help='Number of subsamples for surrogate training per iteration')
 parser.add_argument('--n_test', type=int, default=5, help='Number of test samples to evaluate the surrogate model')
 parser.add_argument('--n_epochs', type=int, default=10, help='Number of epochs to train the surrogate model')
-parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate for surrogate model training')
 parser.add_argument('--step_lr', type=int, default=8, help='Step size for learning rate scheduler')
 parser.add_argument('--epsilon', type=float, default=0.1, help='Trust region radius for phi optimization')
 parser.add_argument('--dims', type=int, default=4, help='Number of dimensions for Rosenbrock problem')
 parser.add_argument('--model', type=str, choices=['mlp', 'deeponet', 'quadratic', 'NW'], default='mlp', help='Type of surrogate model to use')
-parser.add_argument('--activation', type=str, default='relu', help='Activation function for surrogate model')
 parser.add_argument(
     '--hess_method',
     type=str,
@@ -41,12 +39,9 @@ parser.add_argument(
     default='hess',
     help="How to compute surrogate Hessian for analysis: "
          "'hess' = torch.func.hessian, 'hvp' = build Hessian via (damped) HVP columns")
-parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
-parser.add_argument('--plot', action='store_true', help='Display plots interactively after saving')
+parser.add_argument('--n_experiments', type=int, default=5, help='Number of random experiments / seeds to run')
 args = parser.parse_args()
 
-torch.manual_seed(args.seed)
-np.random.seed(args.seed)
 
 samples_phi = args.samples_phi
 epsilon = args.epsilon
@@ -93,14 +88,6 @@ elif args.problem == 'MuonShield':
     CONFIG['cost_as_constraint'] = False
     problem = ShipMuonShieldCuda(**CONFIG)
     initial_phi = problem.initial_phi
-elif args.problem == 'Quadratic':
-    dim = args.dims
-    x_dim = 1
-    problem = Quadratic_stochastic_hits(dim = dim, 
-                                         n_samples = n_samples, 
-                                        phi_bounds=((-1.0, 1.0)), x_bounds=(0.0, 1.0),
-                                        reduction = 'none')
-    initial_phi = torch.tensor([[-0.5, 0.5]*(dim//2)]).flatten()
 
 print(f"Using problem {args.problem} with dim {dim} and x_dim {x_dim}, samples_phi = {samples_phi}")
 
@@ -151,12 +138,7 @@ class Sampler():
         x = self.true_model.sample_x(phi)
         return x.to(torch.get_default_dtype())
 
-SAMPLER = Sampler(true_model=problem,
-                  bounds=bounds,
-                  epsilon=epsilon,
-                  initial_phi=initial_phi,
-                  seed=args.seed,
-                  second_order=args.second_order)
+SAMPLER = None
 
 class Metrics:
     """Helper to compute surrogate diagnostics for train/validation splits."""
@@ -216,7 +198,7 @@ class Metrics:
         grad_real = self.true_model.gradient(phi0_denorm, analytic = False).squeeze()
         grad_cosine = self.cosine_similarity(grad_sur, grad_real)
         surrogate_hessian = self.surrogate_hessian_from_hvp(phi0, x[0].unsqueeze(0), damping=1e-3)
-        real_hessian = self.true_model.hessian(phi0_denorm, analytic=False).squeeze().to(self.device)
+        real_hessian = self.true_model.hessian(phi0_denorm, analytic=False).squeeze()
         step_sur = self._newton_step(grad_sur, surrogate_hessian)
         step_real = self._newton_step(grad_real, real_hessian)
         newton_cosine = self.cosine_similarity(step_sur, step_real)
@@ -346,60 +328,12 @@ class Metrics:
             'newton_step_cosine': self.cosine_similarity(step_est, step_real)
         }
     def _newton_step(self, grad, hess, eps = 1e-8):
-        #sym_hess = 0.5 * (hess + hess.T)
-        #eye = torch.eye(sym_hess.size(0), device=sym_hess.device, dtype=sym_hess.dtype)
-        #shift = torch.clamp(-torch.linalg.eigvalsh(sym_hess).min() + eps, min=0.0)
-        #hpd = sym_hess + shift * eye
-        step = -torch.linalg.solve(hess, grad)
+        sym_hess = 0.5 * (hess + hess.T)
+        eye = torch.eye(sym_hess.size(0), device=sym_hess.device, dtype=sym_hess.dtype)
+        shift = torch.clamp(-torch.linalg.eigvalsh(sym_hess).min() + eps, min=0.0)
+        hpd = sym_hess + shift * eye
+        step = -torch.linalg.solve(hpd, grad)
         return step
-
-    def gain_newton(self, phi0, newton_step, eta, x_samp):
-        """
-        Computes f(phi0) - f(phi0 + eta * newton_step) using the surrogate objective.
-        Positive gain means improvement (objective decreased).
-        """
-        with torch.no_grad():
-            f0 = self.surrogate_objective(phi0, x_samp)
-            phi1 = (phi0 + eta * newton_step).clamp(0.0, 1.0)
-            f1 = self.surrogate_objective(phi1, x_samp)
-            return (f0 - f1).item()
-
-    def gain_gradient(self, phi0, grad, eta, x_samp):
-        """
-        Computes f(phi0) - f(phi0 - eta * grad) using the surrogate objective.
-        Positive gain means improvement (objective decreased).
-        """
-        with torch.no_grad():
-            f0 = self.surrogate_objective(phi0, x_samp)
-            phi1 = (phi0 - eta * grad).clamp(0.0, 1.0)
-            f1 = self.surrogate_objective(phi1, x_samp)
-            return (f0 - f1).item()
-
-    def gain_newton_true(self, phi0, newton_step, eta, n_samples=None):
-        """
-        Computes true_f(phi0) - true_f(phi0 + eta * newton_step) using simulation.
-        """
-        with torch.no_grad():
-            phi0_denorm = denormalize_vector(phi0.unsqueeze(0), self.bounds).cpu()
-            phi1 = (phi0 + eta * newton_step).clamp(0.0, 1.0)
-            phi1_denorm = denormalize_vector(phi1.unsqueeze(0), self.bounds).cpu()
-            _, y0 = simulate(phi0.unsqueeze(0), n_samples=n_samples)
-            _, y1 = simulate(phi1.unsqueeze(0), n_samples=n_samples)
-            f0 = y0.float().mean().item()
-            f1 = y1.float().mean().item()
-            return f0 - f1
-
-    def gain_gradient_true(self, phi0, grad, eta, n_samples=None):
-        """
-        Computes true_f(phi0) - true_f(phi0 - eta * grad) using simulation.
-        """
-        with torch.no_grad():
-            phi1 = (phi0 - eta * grad).clamp(0.0, 1.0)
-            _, y0 = simulate(phi0.unsqueeze(0), n_samples=n_samples)
-            _, y1 = simulate(phi1.unsqueeze(0), n_samples=n_samples)
-            f0 = y0.float().mean().item()
-            f1 = y1.float().mean().item()
-            return f0 - f1
 
 @torch.no_grad()
 def simulate(phi, n_samples:int = None):
@@ -442,14 +376,13 @@ class BinaryClassifierModel:
                 step_lr: int = 20,
                  lr: float = 1e-3,
                  model:str = 'mlp',
-                 activation:str = 'relu',
                  device: str = 'cuda'):
         self.device = device
         if model == 'mlp':
-            self.model = Classifier(phi_dim,x_dim, 128, activation=activation).to(self.device)
+            self.model = Classifier(phi_dim,x_dim, 128).to(self.device)
         elif model == 'deeponet':
             layers = [[128,128],[128,128]]#[[256,128,128],[128,128]]
-            self.model = DeepONetClassifier(phi_dim,x_dim, layers = layers, layer_norm=False, p=128, activation=activation).to(self.device)
+            self.model = DeepONetClassifier(phi_dim,x_dim, layers = layers, layer_norm=False, p=128).to(self.device)
         elif model == 'quadratic':
             self.model = QuadraticModel(phi_dim, x_dim,trunk_layers=[128,128], layer_norm=False, p=128).to(self.device)
         elif model == 'NW':
@@ -516,6 +449,7 @@ class BinaryClassifierModel:
                     val_metrics['loss'].append(val_m['loss'])
                     val_metrics['hits_error'].append(val_m['hits_error'].mean().item())
                     val_metrics['prob_gap'].append(val_m['prob_gap'])
+
             grad_m = self.metrics.compute_grad_metrics(phi[0], x)
             grad_metrics['grad_cosine'].append(grad_m['grad_cosine'])
             grad_metrics['newton_cosine'].append(grad_m['newton_cosine'])
@@ -534,179 +468,252 @@ class BinaryClassifierModel:
     def normalize_params(self, params):
         return normalize_vector(params, self.bounds_phi)
 
-initial_phi = normalize_vector(initial_phi, bounds)
-X_initial, Y_initial = simulate(initial_phi.unsqueeze(0), n_samples=args.n_samples)
-training_phis = SAMPLER.sample_phi(samples_phi=args.samples_phi)
-training_phis = torch.cat([initial_phi.unsqueeze(0), training_phis], dim=0)
-validation_phis = SAMPLER.sample_phi_uniform(samples_phi=args.n_test)  
 
+# Run multiple random experiments (seeds) and aggregate epoch-wise metrics
+initial_phi_norm = normalize_vector(initial_phi, bounds)
 
-x_training, y_training = simulate(training_phis, n_samples=args.subsamples)
-x_validation, y_validation = simulate(validation_phis, n_samples=args.n_samples)
+# Accumulators
+train_loss_all = []
+val_loss_all = []
+train_hits_all = []
+val_hits_all = []
+train_prob_gap_all = []
+val_prob_gap_all = []
+grad_cos_all = []
+newton_cos_all = []
 
-surrogate_model = BinaryClassifierModel(
-    phi_dim=dim,
-    x_dim=x_dim,
-    bounds_phi=bounds,
-    n_epochs=args.n_epochs,
-    step_lr= args.step_lr,
-    batch_size=args.batch_size,
-    lr = args.lr,
-    model=args.model,
-    activation=args.activation,
-    device=dev)  
+# Pooled predictions for calibration/scatter/histograms
+pred_probs_train_list = []
+real_probs_train_list = []
+pred_probs_val_list = []
+real_probs_val_list = []
+true_loss_train_list = []
+sur_loss_train_list = []
+true_loss_val_list = []
+sur_loss_val_list = []
+y_train_raw_list = []
+y_val_raw_list = []
 
-metrics = Metrics(bounds, problem, surrogate_model)
-surrogate_model.metrics = metrics 
-train_metrics, val_metrics, grad_metrics = surrogate_model.fit(
-    training_phis, x_training, y_training,
-    val_phis=validation_phis, val_x=x_validation, val_y=y_validation)
+for seed in range(args.n_experiments):
+    print(f"Running experiment seed={seed+1}/{args.n_experiments}")
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
+    # recreate sampler for this seed
+    SAMPLER = Sampler(true_model=problem,
+                      bounds=bounds,
+                      epsilon=epsilon,
+                      initial_phi=initial_phi,
+                      seed=seed,
+                      second_order=args.second_order)
 
+    X_initial, Y_initial = simulate(initial_phi_norm.unsqueeze(0), n_samples=args.n_samples)
+    training_phis = SAMPLER.sample_phi(samples_phi=args.samples_phi)
+    training_phis = torch.cat([initial_phi_norm.unsqueeze(0), training_phis], dim=0)
+    validation_phis = SAMPLER.sample_phi_uniform(samples_phi=args.n_test)
 
-# --- Plotting training/validation loss and metrics ---
-epochs = range(1, len(train_metrics['loss']) + 1)
+    x_training, y_training = simulate(training_phis, n_samples=args.subsamples)
+    x_validation, y_validation = simulate(validation_phis, n_samples=args.n_samples)
+
+    surrogate_model = BinaryClassifierModel(
+        phi_dim=dim,
+        x_dim=x_dim,
+        bounds_phi=bounds,
+        n_epochs=args.n_epochs,
+        step_lr=args.step_lr,
+        batch_size=args.batch_size,
+        model=args.model,
+        device=dev)
+
+    metrics = Metrics(bounds, problem, surrogate_model)
+    surrogate_model.metrics = metrics
+
+    train_metrics, val_metrics, grad_metrics = surrogate_model.fit(
+        training_phis, x_training, y_training,
+        val_phis=validation_phis, val_x=x_validation, val_y=y_validation)
+
+    train_loss_all.append(np.array(train_metrics['loss']))
+    val_loss_all.append(np.array(val_metrics['loss']))
+    train_hits_all.append(np.array(train_metrics['hits_error']))
+    val_hits_all.append(np.array(val_metrics['hits_error']))
+    train_prob_gap_all.append(np.array(train_metrics['prob_gap']))
+    val_prob_gap_all.append(np.array(val_metrics['prob_gap']))
+    grad_cos_all.append(np.array(grad_metrics['grad_cosine']))
+    newton_cos_all.append(np.array(grad_metrics['newton_cosine']))
+
+    # store pooled pred/real probs for calibration and scatter
+    p_train, r_train = metrics.get_probs(training_phis, x_training)
+    p_val, r_val = metrics.get_probs(validation_phis, x_validation)
+    pred_probs_train_list.append(p_train.detach().cpu())
+    real_probs_train_list.append(r_train.detach().cpu())
+    pred_probs_val_list.append(p_val.detach().cpu())
+    real_probs_val_list.append(r_val.detach().cpu())
+
+    true_loss_train_list.append(y_training.sum(dim=1).flatten().cpu())
+    sur_loss_train_list.append(p_train.sum(dim=1).flatten().cpu())
+    y_train_raw_list.append(y_training.flatten().cpu())
+    true_loss_val_list.append(y_validation.sum(dim=1).flatten().cpu())
+    sur_loss_val_list.append(p_val.sum(dim=1).flatten().cpu())
+    y_val_raw_list.append(y_validation.flatten().cpu())
+
+# Convert to arrays and compute mean/std across experiments (axis=0 over experiments)
+train_loss_arr = np.stack(train_loss_all)
+val_loss_arr = np.stack(val_loss_all)
+train_hits_arr = np.stack(train_hits_all)
+val_hits_arr = np.stack(val_hits_all)
+train_prob_gap_arr = np.stack(train_prob_gap_all)
+val_prob_gap_arr = np.stack(val_prob_gap_all)
+grad_cos_arr = np.stack(grad_cos_all)
+newton_cos_arr = np.stack(newton_cos_all)
+
+epochs = np.arange(1, train_loss_arr.shape[1] + 1)
+
+# Plot mean +/- std for losses and metrics
 fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
 
-# First subplot: Loss
-ax1.plot(epochs, train_metrics['loss'], label='Train Loss', color='blue')
-ax1.plot(epochs, val_metrics['loss'], label='Validation Loss', color='orange')
+# Loss
+mean_train = train_loss_arr.mean(axis=0)
+std_train = train_loss_arr.std(axis=0)
+mean_val = val_loss_arr.mean(axis=0)
+std_val = val_loss_arr.std(axis=0)
+ax1.plot(epochs, mean_train, label='Train Loss (mean)', color='blue')
+ax1.fill_between(epochs, mean_train - std_train, mean_train + std_train, color='blue', alpha=0.2)
+ax1.plot(epochs, mean_val, label='Val Loss (mean)', color='orange')
+ax1.fill_between(epochs, mean_val - std_val, mean_val + std_val, color='orange', alpha=0.2)
 ax1.set_ylabel('Loss')
-ax1.set_title('Training and Validation Loss')
+ax1.set_title('Training and Validation Loss (mean ± std)')
 ax1.legend()
 ax1.grid(True, linestyle='--', alpha=0.6)
 
-# Second subplot: hits_error and prob_gap (twin y-axes)
-color1 = 'tab:blue'
-color2 = 'tab:green'
-ax2.plot(epochs, train_metrics['hits_error'], label='Train Hits Error', color=color1, linestyle='-')
-ax2.set_ylabel('Hits Error', color=color1)
-ax2.tick_params(axis='y', labelcolor=color1)
+# Hits error and prob gap
+mean_hits = train_hits_arr.mean(axis=0)
+std_hits = train_hits_arr.std(axis=0)
+mean_prob = train_prob_gap_arr.mean(axis=0)
+std_prob = train_prob_gap_arr.std(axis=0)
+ax2.plot(epochs, mean_hits, label='Train Hits Error (mean)', color='tab:blue')
+ax2.fill_between(epochs, mean_hits - std_hits, mean_hits + std_hits, color='tab:blue', alpha=0.2)
+ax2.set_ylabel('Hits Error', color='tab:blue')
+ax2.tick_params(axis='y', labelcolor='tab:blue')
 ax2b = ax2.twinx()
-ax2b.plot(epochs, train_metrics['prob_gap'], label='Train Prob Gap', color=color2, linestyle='-')
-ax2b.set_ylabel('Prob Gap', color=color2)
-ax2b.tick_params(axis='y', labelcolor=color2)
-ax2.plot(epochs, val_metrics['hits_error'], label='Val Hits Error', color=color1, linestyle='--')
-ax2b.plot(epochs, val_metrics['prob_gap'], label='Val Prob Gap', color=color2, linestyle='--')
+ax2b.plot(epochs, mean_prob, label='Train Prob Gap (mean)', color='tab:green')
+ax2b.fill_between(epochs, mean_prob - std_prob, mean_prob + std_prob, color='tab:green', alpha=0.2)
+mean_hits_v = val_hits_arr.mean(axis=0)
+std_hits_v = val_hits_arr.std(axis=0)
+mean_prob_v = val_prob_gap_arr.mean(axis=0)
+std_prob_v = val_prob_gap_arr.std(axis=0)
+ax2.plot(epochs, mean_hits_v, label='Val Hits Error (mean)', color='tab:blue', linestyle='--')
+ax2b.plot(epochs, mean_prob_v, label='Val Prob Gap (mean)', color='tab:green', linestyle='--')
 ax2.set_xlabel('Epoch')
-ax2.set_title('Hits Error and Probability Gap')
+ax2.set_title('Hits Error and Probability Gap (mean ± std)')
 lines1, labels1 = ax2.get_legend_handles_labels()
 lines2, labels2 = ax2b.get_legend_handles_labels()
 ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
 
-# Third subplot: Cosine similarities
-ax3.plot(epochs, grad_metrics['grad_cosine'], label='Grad Cosine', color='purple', marker='o')
-ax3.plot(epochs, grad_metrics['newton_cosine'], label='Newton Step Cosine', color='red', marker='x')
+# Cosine similarities
+mean_grad = grad_cos_arr.mean(axis=0)
+std_grad = grad_cos_arr.std(axis=0)
+mean_newt = newton_cos_arr.mean(axis=0)
+std_newt = newton_cos_arr.std(axis=0)
+ax3.plot(epochs, mean_grad, label='Grad Cosine (mean)', color='purple', marker='o')
+ax3.fill_between(epochs, mean_grad - std_grad, mean_grad + std_grad, color='purple', alpha=0.2)
+ax3.plot(epochs, mean_newt, label='Newton Step Cosine (mean)', color='red', marker='x')
+ax3.fill_between(epochs, mean_newt - std_newt, mean_newt + std_newt, color='red', alpha=0.2)
 ax3.set_ylabel('Cosine Similarity')
 ax3.set_xlabel('Epoch')
-ax3.set_title('Cosine Similarities (Grad & Newton Step)')
+ax3.set_title('Cosine Similarities (Grad & Newton Step, mean ± std)')
 ax3.legend()
 ax3.grid(True, linestyle='--', alpha=0.6)
 
 fig.tight_layout()
-plt.savefig('outputs/figs/train_val_metrics.png')
-if args.plot:
-    plt.show()
+plt.savefig('figs/train_val_metrics_avg.png')
 plt.close(fig)
 
-# Get predicted and real probabilities for training and validation sets
-pred_probs_train, real_probs_train = metrics.get_probs(training_phis, x_training)
-pred_probs_val, real_probs_val = metrics.get_probs(validation_phis, x_validation)
+# Pool predictions across experiments for calibration/scatter/histograms
+pred_probs_train_all = torch.cat(pred_probs_train_list, dim=0)
+real_probs_train_all = torch.cat(real_probs_train_list, dim=0)
+pred_probs_val_all = torch.cat(pred_probs_val_list, dim=0)
+real_probs_val_all = torch.cat(real_probs_val_list, dim=0)
 
-# True vs surrogate loss (sum of hits) for train/val
-true_loss_train = y_training.sum(dim=1).flatten().cpu()
-sur_loss_train = pred_probs_train.sum(dim=1).flatten().cpu()
+true_loss_train = torch.cat(true_loss_train_list).cpu()
+sur_loss_train = torch.cat(sur_loss_train_list).cpu()
+true_loss_val = torch.cat(true_loss_val_list).cpu()
+sur_loss_val = torch.cat(sur_loss_val_list).cpu()
 
-true_loss_val = y_validation.sum(dim=1).flatten().cpu()
-sur_loss_val = pred_probs_val.sum(dim=1).flatten().cpu()
-
-# Current / initial phi losses (keep special star marker)
+# Current / initial phi losses (from last experiment's X_initial/Y_initial)
 true_loss_current = Y_initial.sum(dim=1).flatten().cpu()
-sur_loss_current = metrics.get_probs(initial_phi.unsqueeze(0), X_initial)[0].sum(dim=1).flatten().cpu()
+sur_loss_current = metrics.get_probs(initial_phi_norm.unsqueeze(0), X_initial)[0].sum(dim=1).flatten().cpu()
 
-dists_train = torch.norm(training_phis - initial_phi, dim=1).numpy()
-dists_val = torch.norm(validation_phis - initial_phi, dim=1).numpy()
+dists_train = torch.norm(torch.vstack([training_phis - initial_phi_norm for _ in range(1)]).squeeze(0) - 0, dim=0) if False else None
 
 plt.figure(figsize=(6, 6))
-plt.scatter(true_loss_train, sur_loss_train, s=40, c=dists_train, cmap='viridis', marker='o', label='Train samples')
-plt.scatter(true_loss_val, sur_loss_val, s=40, c=dists_val, cmap='plasma', marker='s', label='Val samples')
+plt.scatter(true_loss_train.numpy(), sur_loss_train.numpy(), s=20, alpha=0.6, label='Train pooled')
+plt.scatter(true_loss_val.numpy(), sur_loss_val.numpy(), s=20, alpha=0.6, label='Val pooled')
 plt.scatter(true_loss_current, sur_loss_current, color='red', marker='*', s=150, label='Initial sample', zorder=5)
-plt.colorbar(label='Distance to initial phi')
 mn = min(true_loss_train.min().item(), true_loss_val.min().item(), true_loss_current.min().item())
 mx = max(true_loss_train.max().item(), true_loss_val.max().item(), true_loss_current.max().item())
 plt.plot([mn, mx], [mn, mx], 'k--', label='y = x')
-plt.xlabel('True Loss'); plt.ylabel('Surrogate Loss'); plt.title('Surrogate vs True Loss (Train & Val)')
-plt.legend(); plt.grid(True); plt.tight_layout(); plt.savefig('outputs/figs/surrogate_vs_true_loss_lcso.png')
-if args.plot:
-    plt.show()
+plt.xlabel('True Loss'); plt.ylabel('Surrogate Loss'); plt.title('Surrogate vs True Loss (Pooled)')
+plt.legend(); plt.grid(True); plt.tight_layout(); plt.savefig('figs/surrogate_vs_true_loss_pooled.png')
 plt.close()
 
-# Calibration: predicted vs real probabilities (binned) — plot train & val separately
+# Calibration: predicted vs real probabilities (binned) — pooled
 bin_edges = torch.linspace(0, 1, 12)
-mid_t, mean_t, std_t = metrics.get_calib_stats_vs_real(real_probs_train.flatten(), pred_probs_train.flatten(), bin_edges)
-mid_v, mean_v, std_v = metrics.get_calib_stats_vs_real(real_probs_val.flatten(), pred_probs_val.flatten(), bin_edges)
+mid_t, mean_t, std_t = Metrics.get_calib_stats_vs_real(real_probs_train_all.flatten(), pred_probs_train_all.flatten(), bin_edges)
+mid_v, mean_v, std_v = Metrics.get_calib_stats_vs_real(real_probs_val_all.flatten(), pred_probs_val_all.flatten(), bin_edges)
 
 plt.figure(figsize=(10, 8))
 if len(mid_t) > 0:
-    plt.errorbar(mid_t.numpy(), mean_t.numpy(), yerr=std_t.numpy(), fmt="o-", markersize=6, capsize=4, label="Train: Pred vs Real", color='blue')
+    plt.errorbar(mid_t.numpy(), mean_t.numpy(), yerr=std_t.numpy(), fmt="o-", markersize=6, capsize=4, label="Train: Pred vs Real (pooled)", color='blue')
 if len(mid_v) > 0:
-    plt.errorbar(mid_v.numpy(), mean_v.numpy(), yerr=std_v.numpy(), fmt="s--", markersize=6, capsize=4, label="Val: Pred vs Real", color='orange')
+    plt.errorbar(mid_v.numpy(), mean_v.numpy(), yerr=std_v.numpy(), fmt="s--", markersize=6, capsize=4, label="Val: Pred vs Real (pooled)", color='orange')
 plt.plot([0, 1], [0, 1], "k--", label="Perfect Agreement")
 plt.xlabel('Real Probability (bin midpoint)'); plt.ylabel('Mean Predicted Probability (+/- 1 std)')
-plt.title('Calibration: Predicted vs Real Probabilities (Train & Val)')
+plt.title('Calibration: Predicted vs Real Probabilities (Pooled)')
 plt.legend(); plt.grid(True, linestyle='--', alpha=0.6); plt.xlim(0, 1); plt.ylim(0, 1)
-plt.gca().set_aspect('equal', adjustable='box'); plt.tight_layout(); plt.savefig('outputs/figs/calibration_plot_real_lcso.png')
-if args.plot:
-    plt.show()
+plt.gca().set_aspect('equal', adjustable='box'); plt.tight_layout(); plt.savefig('figs/calibration_plot_real_pooled.png')
 plt.close()
 
-# Calibration: predicted vs actual hits (sampled outcomes) — train & val
-mean_preds_t, frac_pos_t = metrics.get_calib_stats_vs_hits(pred_probs_train.flatten(), y_training.flatten(), bin_edges)
-mean_preds_v, frac_pos_v = metrics.get_calib_stats_vs_hits(pred_probs_val.flatten(), y_validation.flatten(), bin_edges)
+# Calibration: predicted vs actual hits (sampled outcomes) — pooled
+mean_preds_t, frac_pos_t = Metrics.get_calib_stats_vs_hits(pred_probs_train_all.flatten(), torch.cat(y_train_raw_list), bin_edges)
+mean_preds_v, frac_pos_v = Metrics.get_calib_stats_vs_hits(pred_probs_val_all.flatten(), torch.cat(y_val_raw_list), bin_edges)
 
 plt.figure(figsize=(10, 8))
 if len(mean_preds_t) > 0:
-    plt.plot(mean_preds_t, frac_pos_t, "o-", markersize=6, label="Train: Model Calibration", color='green')
+    plt.plot(mean_preds_t, frac_pos_t, "o-", markersize=6, label="Train: Model Calibration (pooled)", color='green')
 if len(mean_preds_v) > 0:
-    plt.plot(mean_preds_v, frac_pos_v, "s--", markersize=6, label="Val: Model Calibration", color='purple')
+    plt.plot(mean_preds_v, frac_pos_v, "s--", markersize=6, label="Val: Model Calibration (pooled)", color='purple')
 plt.plot([0, 1], [0, 1], "k--", label="Perfect Calibration")
 plt.xlabel("Mean Predicted Probability (per bin)"); plt.ylabel("Fraction of Positives (per bin)")
-plt.title("Calibration Plot (vs. Actual Outcomes) - Train & Val")
+plt.title("Calibration Plot (vs. Actual Outcomes) - Pooled")
 plt.legend(); plt.grid(True, linestyle='--', alpha=0.6); plt.xlim(0, 1); plt.ylim(0, 1)
-plt.gca().set_aspect('equal', adjustable='box'); plt.tight_layout(); plt.savefig('outputs/figs/calibration_plot_sampled_lcso.png')
-if args.plot:
-    plt.show()
+plt.gca().set_aspect('equal', adjustable='box'); plt.tight_layout(); plt.savefig('figs/calibration_plot_sampled_pooled.png')
 plt.close()
 
-# Histograms of real and predicted probabilities (overlay train & val)
+# Histograms of real and predicted probabilities (overlay pooled train & val)
 plt.figure(figsize=(10, 7))
 bins = np.linspace(0, 1, 50)
 log = n_samples > 100_000
-rp_t = real_probs_train.flatten().cpu().numpy()
-pp_t = pred_probs_train.flatten().cpu().numpy()
-rp_v = real_probs_val.flatten().cpu().numpy()
-pp_v = pred_probs_val.flatten().cpu().numpy()
-plt.hist(rp_t, bins=bins, color='blue', histtype='step', label='Real Probs (Train)', linewidth=2, density=False, log=log)
-plt.hist(pp_t, bins=bins, color='green', histtype='step', label='Predicted Probs (Train)', linewidth=2, density=False, log=log)
-plt.hist(rp_v, bins=bins, color='cyan', histtype='step', label='Real Probs (Val)', linewidth=2, linestyle='--', density=False, log=log)
-plt.hist(pp_v, bins=bins, color='magenta', histtype='step', label='Predicted Probs (Val)', linewidth=2, linestyle='--', density=False, log=log)
-plt.xlabel('Probability'); plt.ylabel('Frequency'); plt.title('Histograms of Real and Predicted Probabilities (Train & Val)')
-plt.legend(); plt.grid(True, linestyle='--', alpha=0.6); plt.tight_layout(); plt.savefig('outputs/figs/probability_histograms_lcso.png')
-if args.plot:
-    plt.show()
+rp_t = real_probs_train_all.flatten().numpy()
+pp_t = pred_probs_train_all.flatten().numpy()
+rp_v = real_probs_val_all.flatten().numpy()
+pp_v = pred_probs_val_all.flatten().numpy()
+plt.hist(rp_t, bins=bins, color='blue', histtype='step', label='Real Probs (Train pooled)', linewidth=2, density=False, log=log)
+plt.hist(pp_t, bins=bins, color='green', histtype='step', label='Predicted Probs (Train pooled)', linewidth=2, density=False, log=log)
+plt.hist(rp_v, bins=bins, color='cyan', histtype='step', label='Real Probs (Val pooled)', linewidth=2, linestyle='--', density=False, log=log)
+plt.hist(pp_v, bins=bins, color='magenta', histtype='step', label='Predicted Probs (Val pooled)', linewidth=2, linestyle='--', density=False, log=log)
+plt.xlabel('Probability'); plt.ylabel('Frequency'); plt.title('Histograms of Real and Predicted Probabilities (Pooled)')
+plt.legend(); plt.grid(True, linestyle='--', alpha=0.6); plt.tight_layout(); plt.savefig('figs/probability_histograms_pooled.png')
 plt.close()
-print("Plots saved.")
+print("Pooled plots saved.")
 
 
-
-
-print("Plots saved.")
-x_samp = SAMPLER.sample_x(initial_phi.unsqueeze(0), n_samples=args.n_samples).squeeze(0)
+# Keep the original single-run Hessian/gradient checks using the last experiment's metrics
+x_samp = SAMPLER.sample_x(initial_phi_norm.unsqueeze(0), n_samples=args.n_samples).squeeze(0)
 surrogate_objective = lambda phi: metrics.surrogate_objective(phi, x_samp)
-surrogate_grad = torch.func.grad(surrogate_objective)(initial_phi)
+surrogate_grad = torch.func.grad(surrogate_objective)(initial_phi_norm)
 
 dev = metrics.surrogate_model.device
-surrogate_hessian = metrics.surrogate_hessian_from_hvp(initial_phi.to(dev), x_samp.unsqueeze(0).to(dev), damping=1e-3)
+surrogate_hessian = metrics.surrogate_hessian_from_hvp(initial_phi_norm.to(dev), x_samp.unsqueeze(0).to(dev), damping=1e-3)
 
 surrogate_step = metrics._newton_step(surrogate_grad.to(surrogate_hessian.device), surrogate_hessian)
 
@@ -714,9 +721,8 @@ cos_step_surrogate = metrics.cosine_similarity(surrogate_grad.to(surrogate_hessi
 print(f"Cosine between surrogate gradient and surrogate Newton step: {cos_step_surrogate}")
 
 if args.problem != 'MuonShield':
-    # real gradient / hessian from the true problem (use analytic=False for fairness)
-    real_gradient = problem.gradient(denormalize_vector(initial_phi.unsqueeze(0), bounds), analytic=False).squeeze()
-    real_hessian = problem.hessian(denormalize_vector(initial_phi.unsqueeze(0), bounds), analytic=False).squeeze()
+    real_gradient = problem.gradient(denormalize_vector(initial_phi_norm.unsqueeze(0), bounds), analytic=False).squeeze()
+    real_hessian = problem.hessian(denormalize_vector(initial_phi_norm.unsqueeze(0), bounds), analytic=False).squeeze()
 
     print("Real Gradient:", real_gradient)
     print("Surrogate Gradient:", surrogate_grad)
@@ -736,65 +742,4 @@ if args.problem != 'MuonShield':
     print('=' * 50)
     print("Cosine between real and surrogate gradients:", metrics.cosine_similarity(real_gradient.to(surrogate_grad.device), surrogate_grad))
     print(f"Cosine between real step and surrogate step: {cos_between_steps}")
-
-# --- Gain analysis for gradient and Newton steps across step sizes ---
-print('\n' + '=' * 50)
-print("Gain analysis (surrogate and true objectives)")
-print('=' * 50)
-etas = [1e-4, 1e-3, 0.01, 0.1, 1.0, 10.0]
-gains_newton_sur = []
-gains_grad_sur = []
-gains_newton_true = []
-gains_grad_true = []
-
-phi0_dev = initial_phi.to(dev)
-grad_dev = surrogate_grad.to(dev)
-step_dev = surrogate_step.to(dev)
-x_samp_dev = x_samp.to(dev)
-
-for eta in etas:
-    gn_s = metrics.gain_newton(phi0_dev, step_dev, eta, x_samp_dev)
-    gg_s = metrics.gain_gradient(phi0_dev, grad_dev, eta, x_samp_dev)
-    gains_newton_sur.append(gn_s)
-    gains_grad_sur.append(gg_s)
-    gn_t = metrics.gain_newton_true(initial_phi, surrogate_step.cpu(), eta, n_samples=args.n_samples)
-    gg_t = metrics.gain_gradient_true(initial_phi, surrogate_grad.cpu(), eta, n_samples=args.n_samples)
-    gains_newton_true.append(gn_t)
-    gains_grad_true.append(gg_t)
-    print(f"eta={eta:.0e}  | Sur Newton={gn_s:.6f}  Sur Grad={gg_s:.6f}  | True Newton={gn_t:.6f}  True Grad={gg_t:.6f}")
-
-# --- Gain comparison plot ---
-fig, (ax_sur, ax_true) = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-eta_labels = [f"{e:.0e}" for e in etas]
-x_pos = np.arange(len(etas))
-width = 0.35
-
-ax_sur.bar(x_pos - width/2, gains_newton_sur, width, label='Newton step', color='C0')
-ax_sur.bar(x_pos + width/2, gains_grad_sur, width, label='Gradient step', color='C1')
-ax_sur.axhline(0.0, color='k', linewidth=1, linestyle='--', alpha=0.6)
-ax_sur.set_xticks(x_pos)
-ax_sur.set_xticklabels(eta_labels)
-ax_sur.set_xlabel('Step size (eta)')
-ax_sur.set_ylabel('Gain  (f(x0) - f(x1))')
-ax_sur.set_title('Gain — Surrogate Objective')
-ax_sur.legend()
-ax_sur.grid(True, axis='y', linestyle='--', alpha=0.4)
-
-ax_true.bar(x_pos - width/2, gains_newton_true, width, label='Newton step', color='C0')
-ax_true.bar(x_pos + width/2, gains_grad_true, width, label='Gradient step', color='C1')
-ax_true.axhline(0.0, color='k', linewidth=1, linestyle='--', alpha=0.6)
-ax_true.set_xticks(x_pos)
-ax_true.set_xticklabels(eta_labels)
-ax_true.set_xlabel('Step size (eta)')
-ax_true.set_title('Gain — True Objective (Simulation)')
-ax_true.legend()
-ax_true.grid(True, axis='y', linestyle='--', alpha=0.4)
-
-fig.suptitle('Gain Comparison: Newton vs Gradient Step')
-plt.tight_layout()
-plt.savefig('outputs/figs/gain_comparison_lcso.png')
-if args.plot:
-    plt.show()
-plt.close(fig)
-print("Gain plot saved to outputs/figs/gain_comparison_lcso.png")
 

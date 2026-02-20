@@ -20,7 +20,7 @@ parser.add_argument("--cpu",dest = 'cuda', action = 'store_false')
 parser.add_argument("--seed", type=int, default=13)
 parser.add_argument("--maxiter", type=int, default=1000)
 parser.add_argument('--problem', type=str, default='ship_cuda')
-parser.add_argument('--optimization', type=str, default='bayesian')
+parser.add_argument('--optimizer', type=str, choices=['bayesian', 'turbo', 'cma-es', 'lgso'], default='bayesian')
 parser.add_argument('--model', type=str, default='gp_rbf')
 parser.add_argument('--name', type=str, default='optimizationtest')
 parser.add_argument('--group', type=str, default='BayesianOptimization')
@@ -111,7 +111,7 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_bounds, m
         raise ValueError(f"Some initial_phi values are out of bounds at indices: {violating_indices}\nViolating values: {initial_phi[violating_indices]}")
     
     
-    if args.optimization == 'bayesian':
+    if args.optimizer== 'bayesian':
         acquisition_fn = Custom_LogEI#acquisition.qLogExpectedImprovement if args.parallel>1 else acquisition.LogExpectedImprovement
         q = min(args.parallel,problem_fn.cores)
         optimizer = BayesianOptimizer(problem_fn,model,
@@ -126,7 +126,7 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_bounds, m
                                       acquisition_params = {'q':q,'num_restarts': 30, 'raw_samples':5000},
                                       multi_fidelity= args.multi_fidelity,
                                       resume = args.resume)
-    elif args.optimization == 'turbo':
+    elif args.optimizer == 'turbo':
         acquisition_fn = Custom_LogEI#acquisition.qLogExpectedImprovement if args.parallel>1 else acquisition.LogExpectedImprovement
         q = min(args.parallel,problem_fn.cores)
         optimizer = TurboOptimizer(problem_fn,model,
@@ -138,7 +138,7 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_bounds, m
                                       WandB = WANDB,
                                       acquisition_params = {'q':q,'num_restarts': 30, 'raw_samples':5000},
                                       resume = args.resume)
-    elif args.optimization == 'cma-es':
+    elif args.optimizer == 'cma-es':
         from src.optimizer import CMAESOptimizer
         optimizer = CMAESOptimizer(problem_fn,
                                    phi_bounds,
@@ -147,7 +147,7 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_bounds, m
                                    outputs_dir=OUTPUTS_DIR,
                                    WandB = WANDB,
                                    resume=args.resume)
-    elif args.optimization == 'lgso':
+    elif args.optimizer == 'lgso':
         optimizer = LGSO(problem_fn,
                          model,
                          phi_bounds,

@@ -1,7 +1,7 @@
 import torch
 import botorch
 import gpytorch
-from utils.nets import IBNN_ReLU, Classifier, DeepONetClassifier
+from utils.nets import IBNN_ReLU, Classifier, DeepONetClassifier, ParametricNWDeepONet
 from tqdm import trange
 from matplotlib import pyplot as plt
 from utils import HDF5Dataset, normalize_vector
@@ -216,6 +216,8 @@ class BinaryClassifierModel:
             self.model = Classifier(phi_dim,x_dim, 128).to(self.device)
         elif model == 'deeponet':
             self.model = DeepONetClassifier(phi_dim,x_dim, layers = [[256,128,128],[128,128]], layer_norm=False, p=128).to(self.device)
+        elif model == 'NW':
+            self.model = ParametricNWDeepONet(phi_dim,x_dim, layers = [[256,128,128],[128,128]], layer_norm=False, p=128,num_experts=32).to(self.device)
         self.n_epochs = n_epochs
         self.gen_epoch = 0
         self.batch_size = batch_size
@@ -383,8 +385,14 @@ class BinaryClassifierModel:
         #self.model.eval()
         #condition = torch.cat([phi.repeat(x.size(0), 1), x], dim=-1)
         #return self._predict_proba_cond(condition)
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)  # [1, dim]
+        if x.dim() == 2:
+            x = x.unsqueeze(0)
+        phi = phi.to(self.device)
+        x = x.to(self.device)
         phi = self.normalize_params(phi)
-        return torch.sigmoid(self.model(phi.to(self.device), x.to(self.device)))
+        return torch.sigmoid(self.model(phi, x))
     def normalize_params(self, params):
         return normalize_vector(params, self.bounds_phi)
 

@@ -207,7 +207,6 @@ class LCSO(OptimizerClass):
     def get_model_pred(self, phi, normalize:bool = False):
         n_hits = 0.0
         x = torch.as_tensor(self.true_model.sample_x(phi),device=self.device, dtype=torch.get_default_dtype())
-        print("x size:", x.size())
         if normalize:
             phi = normalize_vector(phi, self.bounds)
         for i in range(0, x.size(0), self.model.batch_size):
@@ -222,7 +221,10 @@ class LCSO(OptimizerClass):
     def clean_training_data(self):
         if self.local_file_storage is not None and os.path.exists(self.local_file_storage):
             return [self.local_file_storage]
-        return torch.cat(self.local_results[0], dim=0), torch.cat(self.local_results[1], dim=0), torch.cat(self.local_results[2], dim=0)
+        phis = torch.cat(self.local_results[0], dim=0)
+        xs = torch.cat(self.local_results[1], dim=0)
+        ys = torch.cat(self.local_results[2], dim=0)
+        return phis, xs, ys 
 
     @torch.no_grad()
     def simulate_and_update(self, phi, update_history:bool = True, file = None):
@@ -644,7 +646,6 @@ class LCSO_sampled(LCSO):
                 self.model.step_lr = 1
             self._get_local_data()
             print('Simulation finished. Fitting surrogate model...')
-            print('Number of local training samples:', len(self.local_results[0]))
             self.fit_surrogate_model()
             if self.local_file_storage is not None: self._clean_file(keep_last=False)
             else: continue#self.local_results = [[],[],[]] UNCOMMENT THIS
@@ -660,7 +661,6 @@ class LCSO_sampled(LCSO):
         5) Return (phi, loss)
         """
         self._train_local_surrogate()
-        
         self.phi_optimizer.zero_grad()
         loss_sur = self.get_model_pred(self._current_phi)
         constraints = self.true_model.get_constraints(self.current_phi).to(loss_sur.device)
@@ -676,10 +676,9 @@ class LCSO_sampled(LCSO):
                 with h5py.File(self.local_file_storage, 'a', libver='latest', swmr=True) as file:
                     self.simulate_and_update(self._current_phi, update_history=True, file=file)
             else:
-                self.local_results = [[],[]]
                 self.simulate_and_update(self._current_phi, update_history=True)
-
-        return self.history[0][-1], self.history[1][-1]
+                self.local_results = [[],[],[]]
+        return denormalize_vector(self.history[0][-1], self.bounds), self.history[1][-1]
     def optimization_iteration_second_order(self, debug = False):
         """
         Performs ONE optimization step using a trust-region method,
