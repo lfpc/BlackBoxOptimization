@@ -8,3 +8,6 @@ tests_notebooks/*.png
 tests_notebooks/*.pkl
 tests_notebooks/*.h5
 tests_notebooks/*.npy
+d3rlpy_logs/
+local_python_libs/
+outcmaes/
