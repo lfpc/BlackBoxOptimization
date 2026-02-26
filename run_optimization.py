@@ -21,7 +21,7 @@ parser.add_argument("--cpu",dest = 'cuda', action = 'store_false')
 parser.add_argument("--seed", type=int, default=13)
 parser.add_argument("--maxiter", type=int, default=2000)#1000
 parser.add_argument('--problem', type=str, default='ship_cuda')
-parser.add_argument('--optimizer', type=str, choices=['bayesian', 'turbo', 'cma-es', 'lgso'], default='bayesian')
+parser.add_argument('--optimizer', type=str, choices=['bayesian', 'turbo', 'cma-es', 'lgso', 'GA'], default='bayesian')
 parser.add_argument('--model', type=str, default='gp_rbf')
 parser.add_argument('--name', type=str, default='optimizationtest')
 parser.add_argument('--group', type=str, default='BayesianOptimization')
