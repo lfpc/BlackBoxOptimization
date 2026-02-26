@@ -38,7 +38,7 @@ parser.add_argument('--fine_tune', type=str, default=None)
 
 args = parser.parse_args()
 
-if args.fine_tune is not None and args.optimization!="CMAES" and args.optimization!="CEM":
+if args.fine_tune is not None and args.optimizer!="CMAES" and args.optimizer!="CEM":
     print("Finetuning is currently only implemented for CMAES and CEM!")
     sys.exit()
 
@@ -91,7 +91,7 @@ else:
 
 
 wandb.login()
-if args.optimization == 'GA':
+if args.optimizer == 'GA':
     GA_dict={}
     GA_dict["population_size"]=20
     GA_dict["generations"]=100#50
@@ -106,8 +106,8 @@ if args.optimization == 'GA':
     GA_dict["tournament_size"]=3
     GA_dict["elite_size"]=3
     GA_dict["hall_of_fame_size"]=3
-    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **GA_dict}, 'name': args.name}
-elif args.optimization == 'RL':
+    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimizer, 'config': {**vars(args), **CONFIG, **GA_dict}, 'name': args.name}
+elif args.optimizer == 'RL':
     RL_dict={}
     """
     RL_dict["max_steps"]=20#TO_DO: Identify a proper value
@@ -116,23 +116,23 @@ elif args.optimization == 'RL':
     """
     RL_dict["training_steps"]=2*2000#2*2000#20000*7#TO_DO: Identify a proper value
     RL_dict["fix_additional_params"]=True
-    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **RL_dict}, 'name': args.name}
-elif args.optimization == 'toyRL':
+    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimizer, 'config': {**vars(args), **CONFIG, **RL_dict}, 'name': args.name}
+elif args.optimizer == 'toyRL':
     toyRL_dict={}
-    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **toyRL_dict}, 'name': args.name}
-elif args.optimization == 'CMAES':
+    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimizer, 'config': {**vars(args), **CONFIG, **toyRL_dict}, 'name': args.name}
+elif args.optimizer == 'CMAES':
     CMAES_dict={}
     CMAES_dict["initial_step_size"]=0.00001#0.3#TO_DO: Identify a proper value
     CMAES_dict["population_size"]=20
     CMAES_dict["generations"]=100
-    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **CMAES_dict}, 'name': args.name}
-elif args.optimization == 'CEM':
+    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimizer, 'config': {**vars(args), **CONFIG, **CMAES_dict}, 'name': args.name}
+elif args.optimizer == 'CEM':
     CEM_dict={}
     CEM_dict["initial_std_factor"]=0.001
     CEM_dict["elite_frac"]=0.1
     CEM_dict["population_size"]=80
     CEM_dict["generations"]=25
-    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimization, 'config': {**vars(args), **CONFIG, **CEM_dict}, 'name': args.name}
+    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimizer, 'config': {**vars(args), **CONFIG, **CEM_dict}, 'name': args.name}
 else:
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.group, 'config': {**vars(args), **CONFIG}, 'name': args.name}
 
@@ -150,7 +150,7 @@ def get_freest_gpu():
     max_idx = mem_free.index(max(mem_free))
     return torch.device(f'cuda:{max_idx}')
 if torch.cuda.is_available() and args.cuda: 
-    if args.optimization == 'GA' or args.optimization == 'RL' or args.optimization == 'toyRL' or args.optimization == 'CMAES' or args.optimization == 'CEM':
+    if args.optimizer == 'GA' or args.optimizer == 'RL' or args.optimizer == 'toyRL' or args.optimizer == 'CMAES' or args.optimizer == 'CEM':
         dev=torch.device('cuda')
     else:
         dev = get_freest_gpu()
@@ -263,7 +263,7 @@ if __name__ == "__main__":
     model_scheduler = {args.model_switch:GP_IBNN
                        }
 
-    if args.optimization == 'GA':#Genetic Algorithms
+    if args.optimizer == 'GA':#Genetic Algorithms
         num_gpus = torch.cuda.device_count()
         devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
         GA(problem_fn=problem_fn,
@@ -285,12 +285,12 @@ if __name__ == "__main__":
             devices=devices,
             WandB=WANDB).run_optimization()
         sys.exit()
-    elif args.optimization == 'toyRL':#Reinforcement Learning
+    elif args.optimizer == 'toyRL':#Reinforcement Learning
         num_gpus = torch.cuda.device_count()
         devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
         toy_RL(device=dev,WandB=WANDB).run_optimization()
         sys.exit()
-    elif args.optimization == 'RL':#Reinforcement Learning
+    elif args.optimizer == 'RL':#Reinforcement Learning
         num_gpus = torch.cuda.device_count()
         devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
         RL(problem_fn=problem_fn,
@@ -305,7 +305,7 @@ if __name__ == "__main__":
             devices=devices,
             WandB=WANDB).run_optimization()
         sys.exit()
-    elif args.optimization == 'CMAES':#Covariance Matrix Adaptation Evolution Strategy
+    elif args.optimizer == 'CMAES':#Covariance Matrix Adaptation Evolution Strategy
         num_gpus = torch.cuda.device_count()
         devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
         CMAES(problem_fn=problem_fn,
@@ -317,7 +317,7 @@ if __name__ == "__main__":
             devices=devices,
             WandB=WANDB).run_optimization(args.fine_tune)
         sys.exit()
-    elif args.optimization == 'CEM':#Cross Entropy Method
+    elif args.optimizer == 'CEM':#Cross Entropy Method
         num_gpus = torch.cuda.device_count()
         devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
         CEM(problem_fn=problem_fn,
