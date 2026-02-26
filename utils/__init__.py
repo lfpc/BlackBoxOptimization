@@ -1,6 +1,20 @@
 import torch
 import numpy as np
 import h5py
+import subprocess
+
+def get_freest_gpu():
+    if not torch.cuda.is_available():
+        return torch.device('cpu')
+    result = subprocess.run(
+        ['nvidia-smi', '--query-gpu=memory.free', '--format=csv,nounits,noheader'],
+        stdout=subprocess.PIPE, encoding='utf-8'
+    )
+    # Parse free memory for each GPU
+    mem_free = [int(x) for x in result.stdout.strip().split('\n')]
+    max_idx = mem_free.index(max(mem_free))
+    return torch.device(f'cuda:{max_idx}')
+
 
 def uniform_sample(shape, bounds, device):
     """

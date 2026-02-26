@@ -32,7 +32,7 @@ def get_freest_gpu():
 
 
 
-parser = argparse.ArgumentParser()
+parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--name', type=str, default=None, help='WandB run name')
 parser.add_argument('--second_order', action='store_true', help='Use second order optimization')
 parser.add_argument('--n_epochs', type=int, default=10, help='Number of epochs for classifier training per iteration')
@@ -73,14 +73,14 @@ if args.problem == 'ThreeHump':
                                     reduction = 'none')
     initial_phi = torch.tensor([-2.1,2.0])#torch.tensor([-1.2, 1.0])
 elif args.problem == 'Rosenbrock':
-    dim = 20
+    dim = 2#20
     samples_phi = args.samples_phi
     x_dim = 2
     problem = Rosenbrock_stochastic_hits(dim = dim, n_samples = n_samples, 
                                     phi_bounds = ((-2.0, 2.0)), 
                                     x_bounds = (-3,3),
                                     reduction = 'none')
-    initial_phi = torch.tensor([[-1.2, 1.8]*(dim//2)]).flatten()
+    initial_phi = torch.tensor([[-1.5,-1.5]*(dim//2)]).flatten()
 elif args.problem == 'HelicalValley':
     dim = 3
     samples_phi = args.samples_phi
@@ -123,10 +123,12 @@ bounds = problem.GetBounds(device=torch.device('cpu'))
 
 classifier = BinaryClassifierModel(phi_dim=dim,
                             x_dim = x_dim,
+                            bounds_phi = bounds,
                             batch_size = args.batch_size,
+                            n_epochs = 10,
                             lr = 1e-2,
                             device = dev,
-                            activation = 'silu' if args.second_order else 'relu',
+                            model = 'deeponet',
                             data_from_file = args.local_file_storage
                             )
 
@@ -230,8 +232,8 @@ plt.xlabel('Iteration')
 plt.ylabel('Train Loss')
 plt.grid(True)
 plt.axvline(x=15, color='red', linestyle='--')
-for idx in range(15, len(train_losses), 3):
-    plt.axvline(x=idx, color='red', linestyle='--')
+#for idx in range(15, len(train_losses), 3):
+#    plt.axvline(x=idx, color='red', linestyle='--')
 
 plt.subplot(1,2,2)
 plt.plot(objective_losses, marker='o', color='orange')
@@ -241,9 +243,9 @@ plt.ylabel('Objective Loss')
 plt.grid(True)
 
 plt.tight_layout()
-plt.savefig('figs/test_lcso.png')
+plt.savefig('outputs/figs/test_lcso.png')
 
-print('Figure saved as figs/test_lcso.png')
+print('Figure saved as outputs/figs/test_lcso.png')
 
 print(f"Final Objective loss = {objective_losses[-1]}") 
 

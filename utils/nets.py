@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 from gpytorch.kernels import Kernel
+from . import normalize_vector
 
 
 class PsiCompressor(nn.Module):
@@ -318,20 +319,173 @@ class IBNN_ReLU(Kernel):
         return result
 
 class Classifier(torch.nn.Module):
-    def __init__(self, phi_dim,x_dim = 3, hidden_dim=256):
+    def __init__(self, phi_dim,x_dim = 3, hidden_dim=128):
         super().__init__()
         self.fc1 = torch.nn.Linear(x_dim + phi_dim, hidden_dim)
         self.fc2 = torch.nn.Linear(hidden_dim, hidden_dim)
         #self.fc3 = torch.nn.Linear(hidden_dim, hidden_dim)
-        self.fc4 = torch.nn.Linear(hidden_dim, 1)
-        self.activation = torch.nn.ReLU()
+        self.fc3 = torch.nn.Linear(hidden_dim, 1)
+        self.activation = torch.nn.SiLU()
 
     def forward(self, x):
         x = self.activation(self.fc1(x))
         x = self.activation(self.fc2(x))
         #x = self.activation(self.fc3(x))
-        x = self.fc4(x)
+        x = self.fc3(x)
         return x
+    def predict(self, phi, position):
+        #position = self.normalize_position(position)
+        #phi = self.normalize_params(phi)
+        input_tensor = torch.cat([phi, position], dim=1)
+        return torch.sigmoid(self.forward(input_tensor))
+    def normalize_params(self, params):
+        return normalize_vector(params, self.bounds_phi)
 
+class DeepONetClassifier(torch.nn.Module):
+    def __init__(self, phi_dim, x_dim = 3,
+                 layers:list = [[128,128],[128,128]], p = 64, layer_norm:bool=False):
+        super().__init__()
+        self.output_dim = 1
+        self.p = p
+        branch_input_dim = phi_dim
+        trunk_input_dim = x_dim
+        branch_layers, trunk_layers = layers
+        self.layer_dims = [(phi_dim, x_dim), branch_layers, trunk_layers]
+        self.branch_net = self._build_network(branch_input_dim, branch_layers, self.output_dim*self.p, activation='silu')
+        self.trunk_net = self._build_network(trunk_input_dim, trunk_layers, self.output_dim*self.p, activation='relu')
+        self.bias = torch.nn.Parameter(torch.zeros(self.output_dim))
+        self._init_weights()
+        self.branch_ln = torch.nn.LayerNorm(self.output_dim * self.p) if layer_norm else None
+        self.trunk_ln = torch.nn.LayerNorm(self.output_dim * self.p) if layer_norm else None
+        self.last_layer = torch.nn.Linear(self.output_dim * self.p, self.output_dim)
+        self.head = torch.nn.Linear(2*self.p, 1)#torch.nn.Sequential(torch.nn.Linear(2*self.p, 2*self.p), torch.nn.SiLU(),torch.nn.Linear(2*self.p, 1))
+        
+    def _build_network(self, input_dim, layers, final_dim, activation = 'silu'):
+        modules = []
+        in_size = input_dim
+        for h_dim in layers:
+            modules.append(torch.nn.Linear(in_size, h_dim))
+            modules.append(torch.nn.SiLU() if activation == 'silu' else torch.nn.ReLU())
+            in_size = h_dim
+        modules.append(torch.nn.Linear(in_size, final_dim))
+        return torch.nn.Sequential(*modules)
+    
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.xavier_normal_(m.weight)
+                torch.nn.init.zeros_(m.bias)
+        with torch.no_grad():
+            self.branch_net[-1].weight.div_(self.p**0.5)
+            self.trunk_net[-1].weight.div_(self.p**0.5)
+    
+    def forward(self, branch_input, trunk_input):
+        assert branch_input.le(1.0).all() and branch_input.ge(0.0).all(), "Branch input should be in [0, 1]"
+        b = self.branch_net(branch_input)
+        t = self.trunk_net(trunk_input)
+        if self.branch_ln is not None:
+            b = self.branch_ln(b)
+        if self.trunk_ln is not None:
+            t = self.trunk_ln(t)
+        #b = b.unsqueeze(1).expand_as(t)                 # [B, N, H]
+        #feats = torch.cat([t, b], dim=-1)    # [B, N, 3H]
+        #logits = self.head(feats).squeeze(-1) + self.bias   # [B, N]
+        #return logits
+        prediction = torch.einsum('bp,bnp->bnp', b, t)  # [B, N, p]
+        prediction = self.last_layer(prediction).squeeze(-1)  # [B, N]
+        prediction = prediction + self.bias
+        return prediction
+    
+class QuadraticModel(nn.Module):
+    def __init__(self, phi_dim, x_dim=3,
+                 trunk_layers: list = [128, 128], p=64, layer_norm: bool = False):
+        super().__init__()
+        self.output_dim = 1
+        self.p = p
+        
+        branch_input_dim = phi_dim
+        trunk_input_dim = x_dim
+        
+        self.branch_net = self._build_poly(branch_input_dim, self.output_dim * self.p)
+        
+        self.trunk_net = self._build_network(trunk_input_dim, trunk_layers, self.output_dim * self.p, activation='relu')
+        
+        self.bias = nn.Parameter(torch.zeros(self.output_dim))
+        
+        self._init_weights()
+        
+        self.trunk_ln = nn.LayerNorm(self.output_dim * self.p) if layer_norm else None
+        self.head = torch.nn.Linear(2*self.p, 1)
 
+    def _build_network(self, input_dim, layers, final_dim, activation='silu'):
+        """Standard MLP construction for the Trunk."""
+        modules = []
+        in_size = input_dim
+        for h_dim in layers:
+            modules.append(nn.Linear(in_size, h_dim))
+            modules.append(nn.SiLU() if activation == 'silu' else nn.ReLU())
+            in_size = h_dim
+        modules.append(nn.Linear(in_size, final_dim))
+        return nn.Sequential(*modules)
 
+    def _build_poly(self, input_dim, final_dim):
+        """
+        Builds a Polynomial Expansion layer followed by a Linear projection.
+        This guarantees that the mapping from phi -> embedding is quadratic.
+        """
+        class QuadraticExpansion(nn.Module):
+            def __init__(self, dim):
+                super().__init__()
+                self.dim = dim
+            
+            def forward(self, x):
+                # 1. Linear terms
+                linear = x
+                # 2. Quadratic terms (Full Outer Product: x_i * x_j)
+                # We use triu_indices to take only unique combinations (upper triangle)
+                B, D = x.shape
+                # Compute outer product [B, D, D]
+                outer = torch.einsum('bi,bj->bij', x, x)
+                # Extract upper triangle indices
+                idx = torch.triu_indices(D, D, device=x.device)
+                quad = outer[:, idx[0], idx[1]]
+                
+                # Concatenate [x, x^2 + cross_terms]
+                return torch.cat([linear, quad], dim=1)
+
+        # Calculate expansion dimension: D + D*(D+1)/2
+        poly_dim = input_dim + (input_dim * (input_dim + 1)) // 2
+        
+        return nn.Sequential(
+            QuadraticExpansion(input_dim),
+            nn.Linear(poly_dim, final_dim)
+        )
+    
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        # Scale final layers for stability
+        with torch.no_grad():
+            self.branch_net[-1].weight.div_(self.p**0.5)
+            self.trunk_net[-1].weight.div_(self.p**0.5)
+    
+    def forward(self, branch_input, trunk_input):
+        assert branch_input.le(1.0).all() and branch_input.ge(0.0).all(), "Branch input should be in [0, 1]"
+        
+        b = self.branch_net(branch_input)
+
+        t = self.trunk_net(trunk_input) 
+        
+        if self.trunk_ln is not None:
+            t = self.trunk_ln(t)
+        if t.dim() == 3:
+            b = b.unsqueeze(1) # [B, 1, p]
+        logits = (b * t).sum(dim=-1, keepdim=False) + self.bias
+        return logits
+        b = b.unsqueeze(1).expand_as(t)                 # [B, N, H]
+        feats = torch.cat([t, b], dim=-1)    # [B, N, 3H]
+        logits = self.head(feats).squeeze(-1) + self.bias   # [B, N]
+        return logits
