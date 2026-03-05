@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch
 from gpytorch.kernels import Kernel
 from . import normalize_vector
+from math import sqrt
 
 
 class PsiCompressor(nn.Module):
@@ -489,3 +490,146 @@ class QuadraticModel(nn.Module):
         feats = torch.cat([t, b], dim=-1)    # [B, N, 3H]
         logits = self.head(feats).squeeze(-1) + self.bias   # [B, N]
         return logits
+    
+
+
+
+
+class StochasticTaylor(torch.nn.Module):
+    def __init__(self, phi_dim, x_dim, phi0, hidden_dim=128, p=64, use_residual=True):
+        super().__init__()
+        self.D = phi_dim
+        self.K = x_dim
+        
+        # Register phi0 as a buffer so it automatically moves to the correct device
+        self.register_buffer('phi0', phi0.view(-1))
+        
+        # 1. The Shared Trunk (Particle Latent Representation)
+        self.trunk = torch.nn.Sequential(
+            torch.nn.Linear(self.K, hidden_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden_dim, hidden_dim),
+            torch.nn.GELU()
+        )
+        
+        # 2. The Taylor Heads
+        self.head_a = torch.nn.Linear(hidden_dim, 1)
+        self.head_b = torch.nn.Linear(hidden_dim, self.D)
+        
+        # W_C shape: (hidden_dim, D, D)
+        self.W_C = torch.nn.Parameter(torch.empty(hidden_dim, self.D, self.D))
+        self.bias_C = torch.nn.Parameter(torch.zeros(self.D, self.D))
+        torch.nn.init.kaiming_uniform_(self.W_C, a=sqrt(5))
+        
+        # 3. DeepONet Residual Architecture (Memory Saver)
+        self.res_branch = torch.nn.Sequential(
+            torch.nn.Linear(self.K, hidden_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden_dim, p)
+        )
+        self.res_trunk = torch.nn.Sequential(
+            torch.nn.Linear(self.D, hidden_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden_dim, p)
+        )
+        self.use_residual = use_residual
+
+    def forward(self, phi, x):
+        """
+        phi: shape (n_phi, D)
+        x: shape (n_phi, S, K) or (S, K)
+        """
+        # Ensure phi is 2D and compute dphi internally
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+            
+        dphi = phi - self.phi0
+        
+        # --- Taylor Expansion Part ---
+        h = self.trunk(x)
+        a = self.head_a(h) 
+        b = self.head_b(h) 
+        
+        # Expand dphi for the sample dimension if x is 3D
+        lin_term = torch.sum(b * dphi.unsqueeze(1), dim=2, keepdim=True) 
+        
+        W_dphi = torch.einsum('lij, nj -> nli', self.W_C, dphi)
+        v = torch.einsum('ni, nli -> nl', dphi, W_dphi)
+        quad_main = torch.einsum('nsl, nl -> ns', h, v).unsqueeze(-1)
+        
+        bias_dphi = torch.einsum('ij, nj -> ni', self.bias_C, dphi)
+        b_term = torch.einsum('ni, ni -> n', dphi, bias_dphi).view(-1, 1, 1)
+
+        quad_term = 0.5 * (quad_main + b_term)
+        logit = a + lin_term + quad_term 
+        # --- DeepONet Residual Part ---
+        if self.use_residual:
+            norm_dphi_cubed = (torch.norm(dphi, p=2, dim=1) ** 3).view(-1, 1, 1)
+        
+            y_branch = self.res_branch(x)    
+            y_trunk = self.res_trunk(dphi)   
+        
+            residual = torch.einsum('nsp, np -> ns', y_branch, y_trunk).unsqueeze(-1) * norm_dphi_cubed 
+        
+            logit = logit + residual
+        return logit.squeeze(-1) 
+
+    @torch.no_grad()
+    def get_taylor_coefficients(self, x):
+        h = self.trunk(x)
+        a = self.head_a(h)
+        b = self.head_b(h)
+        
+        # Dynamically handle both 2D (S, K) and 3D (n_phi, S, K) batches
+        if h.dim() == 3:
+            C_unsym = torch.einsum('nsl, lij -> nsij', h, self.W_C) + self.bias_C
+            C = 0.5 * (C_unsym + C_unsym.transpose(2, 3))
+        else:
+            C_unsym = torch.einsum('sl, lij -> sij', h, self.W_C) + self.bias_C
+            C = 0.5 * (C_unsym + C_unsym.transpose(1, 2))
+        return a, b, C
+
+    @torch.no_grad()
+    def grad_phi(self, phi, x):
+        """
+        Analytical Gradient of the expected hits evaluated strictly at phi0.
+        Requires zero autograd overhead.
+        """
+        a, b, _ = self.get_taylor_coefficients(x)
+        
+        # Sigmoid derivatives
+        p = torch.sigmoid(a)
+        dp = p * (1.0 - p)
+        
+        # Sum over the sample dimension
+        sample_dim = 1 if x.dim() == 3 else 0
+        grad = torch.sum(dp * b, dim=sample_dim) 
+        return grad
+
+    @torch.no_grad()
+    def hess_phi(self, phi, x):
+        """
+        Analytical Hessian of the expected hits evaluated strictly at phi0.
+        Outputs the exact DxD matrix to run your eigenvalue compensation analysis.
+        """
+        a, b, C = self.get_taylor_coefficients(x)
+        
+        p = torch.sigmoid(a)
+        dp = p * (1.0 - p)
+        ddp = p * (1.0 - p) * (1.0 - 2.0 * p)
+        
+        if x.dim() == 3:
+            b_outer = torch.einsum('nsi, nsj -> nsij', b, b)
+            hess = ddp.unsqueeze(-1) * b_outer + dp.unsqueeze(-1) * C
+            return torch.sum(hess, dim=1) # Shape: (n_phi, D, D)
+        else:
+            b_outer = torch.einsum('si, sj -> sij', b, b)
+            hess = ddp.unsqueeze(-1) * b_outer + dp.unsqueeze(-1) * C
+            return torch.sum(hess, dim=0) # Shape: (D, D)
+
+    def predict_proba(self, phi, x):
+        logits = self.forward(phi, x)
+        return torch.sigmoid(logits)
+
+    def predict_hits(self, phi, x):
+        return self.predict_proba(phi, x).sum(dim=-1)

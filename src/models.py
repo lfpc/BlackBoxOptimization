@@ -1,7 +1,7 @@
 import torch
 import botorch
 import gpytorch
-from utils.nets import IBNN_ReLU, Classifier, DeepONetClassifier, ParametricNWDeepONet
+from utils.nets import IBNN_ReLU, Classifier, DeepONetClassifier
 from tqdm import trange
 from matplotlib import pyplot as plt
 from utils import HDF5Dataset, normalize_vector

@@ -980,12 +980,7 @@ class ShipMuonShield():
             make_index(6, list(range(1,10)) + [14])
         ),
         "robustness": (
-            make_index(0, [1,2,8,14]) +
-            make_index(1, [1,2,8,14]) +
-            make_index(2, [1,2,8,14]) +
-            make_index(3, [1,2,8,14]) +
-            make_index(4, [1,2,8,14]) +
-            make_index(5, [1,2,8,14])
+            make_index(1, [1,2,14]) 
         ),
         "piet_idx": (
             make_index(1, [1,2,4,3,6,7]) +
@@ -1395,7 +1390,7 @@ class ShipMuonShield():
                 bounds_low[inverted_polarity, 9] = 1.0 / yoke_bounds[1]
                 bounds_high[inverted_polarity, 9] = 1.0 / yoke_bounds[0]
 
-        if self.use_diluted and self.key:
+        if self.use_diluted:
             if self.n_magnets <7:
                 # First Magnet Big
                 bounds_low[1,1] = 485.5
@@ -1563,7 +1558,6 @@ class ShipMuonShield():
             return torch.nn.functional.relu(x,inplace=False).pow(2)
         phi = self.add_fixed_params(phi)
         constraints = fn_pen((self.get_total_length(phi)-self.L0)*100)
-        print(f'Constraint 1: {constraints}')
         wall_gap = 1 #cm
         def get_cavern_bounds(z):
             mask = z <= 2051.8 - 214.0
@@ -1578,14 +1572,10 @@ class ShipMuonShield():
         Z_in = Z_out - 2*phi[:,1]
         with torch.no_grad(): x_min, y_min = get_cavern_bounds(Z_in)
         constraints = constraints + fn_pen(phi[:,2]+phi[:,8]*phi[:,2]+phi[:,6]+phi[:,12]-x_min)
-        print(f'Constraint 2: {constraints}')
         constraints = constraints + fn_pen(phi[:,4]+phi[:,10]+Ymgap - y_min)
-        print(f'Constraint 3: {constraints}')
         with torch.no_grad(): x_min, y_min = get_cavern_bounds(Z_out)
         constraints = constraints + fn_pen(phi[:,3]+phi[:,9]*phi[:,3]+phi[:,7]+phi[:,13] -x_min)
-        print(f'Constraint 4: {constraints}')
         constraints = constraints + fn_pen(phi[:,5]+phi[:,11]+Ymgap - y_min)
-        print(f'Constraint 5: {constraints}')
         if self.use_diluted:
             if False:#self.key and not self.key.startswith("stella"):
                 constraints = constraints + fn_pen((1-phi[:,8])) 
@@ -1598,13 +1588,10 @@ class ShipMuonShield():
                 pad = torch.zeros(1, device=delta.device, dtype=delta.dtype)
                 delta = torch.cat([pad, delta])
                 constraints = constraints + delta
-                print(f'Constraint 6: {constraints}')
         if self.cost_as_constraint:
             M = self.get_total_cost(phi)
             constraints = constraints + fn_pen(M - self.W0)
-            print(f'Constraint 7: {constraints}')
         constraints = constraints.sum()*self.lambda_constraints
-        assert False, constraints
         return constraints.clamp(min=0,max=1E8)
 
     def get_constraints_func(self, phi):
@@ -1756,8 +1743,8 @@ class ShipMuonShieldCuda(ShipMuonShield):
 
         super().__init__(**kwargs)
         self.n_steps = max(n_steps, np.ceil(self.sensitive_plane[0]['position']/0.02) + 100)
-        from cuda_muons import run
-        self.run_muonshield = run
+        from cuda_muons_ship import run_from_params
+        self.run_muonshield = run_from_params
         self.muons = super().sample_x()
     def sample_x(self, phi=None, idx=None):
         if 0 < self.n_samples < self.muons.size(0):
@@ -1770,9 +1757,7 @@ class ShipMuonShieldCuda(ShipMuonShield):
         if muons is None: muons = self.sample_x()
         self._sum_weights = muons[:, -1].sum()
         assert phi.shape[1] == 15, f"Expected phi to have 15 columns, got {phi.shape}"
-        print('SIMULATING MAGNETIC FIELDS')
         #self.simulate_mag_fields(phi)
-        assert not (self.use_diluted and (phi[:,8].lt(1.0).any() or phi[:,9].lt(1.0).any())), f"Diluted magnets with yoke {phi[:,8]}, {phi[:,9]}"
         try: 
             output = self.run_muonshield(phi.numpy(), 
                                         muons,
@@ -1780,6 +1765,7 @@ class ShipMuonShieldCuda(ShipMuonShield):
                                         n_steps=self.n_steps,
                                         SmearBeamRadius=self.SmearBeamRadius,
                                         fSC_mag = self.fSC_mag,
+                                        simulate_fields = not self.uniform_fields,
                                         field_map_file = self.fields_file,
                                         NI_from_B = self.use_B_goal,
                                         use_diluted = self.use_diluted,

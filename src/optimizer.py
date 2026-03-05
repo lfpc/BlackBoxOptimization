@@ -5,7 +5,9 @@ from tqdm import tqdm
 from scipy.stats.qmc import LatinHypercube
 from matplotlib import pyplot as plt
 from pickle import dump,  load
-import wandb
+try: import wandb
+except ImportError:
+    print("wandb not found, proceeding without it. Install with `pip install wandb`")
 from os.path import join, exists
 from scipy.optimize import minimize, Bounds as ScipyBounds, NonlinearConstraint
 import numpy as np

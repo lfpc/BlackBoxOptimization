@@ -2,7 +2,9 @@ __pycache__/
 *.png
 wandb/
 *.log
-outputs/
+outputs/*
+!outputs/config.json
+!outputs/stellatryon_v4
 plots/
 tests_notebooks/*.png
 tests_notebooks/*.pkl

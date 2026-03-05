@@ -1,0 +1,38 @@
+{
+  "data_treatment": {
+    "save_data": false
+  },
+  "sensitive_plane": [
+    {
+      "dz": 0.02,
+      "dx": 4,
+      "dy": 6,
+      "position": 82
+    },
+    {
+      "dz": 0.02,
+      "dx": 4,
+      "dy": 6,
+      "position": 91
+    }
+  ],
+  "n_samples": 0,
+  "loss_fn": "hits",
+  "apply_det_loss": false, "cost_loss_fn": "exponential",
+  "reduction": "mean",
+  "fSC_mag": false,
+  "uniform_fields": false,
+  "use_B_goal": true,
+  "cavern": true,
+  "seed": null,
+  "x_margin": 2.1, "y_margin": 3.0,
+  "fields_file": null,
+  "muons_file": "/home/hep/lprate/projects/MuonsAndMatter/data/muons/full_sample_after_target.h5",
+  "SND": true,
+  "use_diluted": false,
+  "SmearBeamRadius": 0.0,
+  "cost_as_constraint": true,
+  "n_steps": 5000,
+  "W0": 20e6,
+  "L0": 30
+}

@@ -6,7 +6,7 @@ sys.path.append(os.path.abspath(os.path.join('..', 'src')))
 sys.path.append(os.path.abspath(os.path.join('..')))
 from problems import ThreeHump_stochastic_hits, Rosenbrock_stochastic_hits, HelicalValley_stochastic_hits, ShipMuonShieldCuda, Quadratic_stochastic_hits
 from utils import normalize_vector, denormalize_vector, get_freest_gpu
-from utils.nets import Classifier, DeepONetClassifier, QuadraticModel, ParametricNWDeepONet
+from utils.nets import Classifier, DeepONetClassifier, QuadraticModel
 import torch
 from tqdm import trange
 import json
@@ -87,7 +87,7 @@ elif args.problem == 'MuonShield':
     CONFIG.pop("data_treatment", None)
     CONFIG.pop('results_dir', None)
     CONFIG['dimensions_phi'] = dim
-    CONFIG['initial_phi'] = ShipMuonShieldCuda.params['stellatryon_v2']
+    CONFIG['initial_phi'] = ShipMuonShieldCuda.params['stellatryon_v3']
     CONFIG['n_samples'] = n_samples
     CONFIG['reduction'] = 'none'
     CONFIG['cost_as_constraint'] = False
