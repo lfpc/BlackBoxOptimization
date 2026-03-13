@@ -57,22 +57,22 @@ else:
         CONFIG = json.load(src)
         if 'W0' not in CONFIG:
             if run_in_background:
-                CONFIG['W0'] = float(13E6)
+                CONFIG['W0'] = float(20E6)
             else:
                 CONFIG['W0'] = float(input("Enter Reference Cost (W0) [default: 13E6]: ") or 13E6)
         if 'L0' not in CONFIG:
             if run_in_background:
-                CONFIG['L0'] = float(29.7)
+                CONFIG['L0'] = float(29.8)
             else:
                 CONFIG['L0'] = float(input("Enter Maximum Length (L0) [default: 29.7]: ") or 29.7)
         if 'dimensions_phi' not in CONFIG:
             if run_in_background:
-                CONFIG['dimensions_phi'] = int(63)
+                CONFIG['dimensions_phi'] = int(31)#int(24)#int(28)
             else:
                 CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 63]: ") or 63)
         if 'initial_phi' not in CONFIG:
             if run_in_background:
-                default_phi_name = str('warm_baseline')
+                default_phi_name = str('stellatryon_try2')#str('stellatryon_t')
             else:
                 default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or '')
             print('default_phi_name', default_phi_name)
@@ -102,7 +102,7 @@ if args.optimizer == 'GA':
     GA_dict["num_local_searches"]=20
     GA_dict["local_search_std_deviations_factor"]=0.05
     GA_dict["random_immigration_probability"]=0.01
-    GA_dict["mutation_std_deviations_factor"]=0.05
+    GA_dict["mutation_std_deviations_factor"]=0.05#*3
     GA_dict["tournament_size"]=3
     GA_dict["elite_size"]=3
     GA_dict["hall_of_fame_size"]=3

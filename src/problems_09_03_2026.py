@@ -8,7 +8,7 @@ import os
 from multiprocessing import Pool, cpu_count
 PROJECTS_DIR = os.getenv('PROJECTS_DIR', '~/projects')
 sys.path.insert(1, os.path.join(PROJECTS_DIR,'BlackBoxOptimization'))
-from utils import split_array, split_array_idx, get_split_indices, compute_solid_volume, make_index, apply_index, uniform_sample
+from utils import split_array, split_array_idx, get_split_indices, compute_solid_volume, make_index, apply_index
 import logging
 import json
 from functools import partial
@@ -140,9 +140,10 @@ class Rosenbrock_stochastic_hits(RosenbrockProblem):
         """Scales the Rosenbrock function to the [0, 1] range."""
         return (super().loss(phi) / self.y_max + self.offset).clamp(max=1.0)
 
-    def sample_x(self, device='cpu'):
+    def sample_x(self, phi = None, device='cpu'):
         """Samples the random variable X from a 2D uniform distribution."""
-        return torch.empty(self.n_samples, 2).uniform_(*self.x_bounds).to(device).float()
+        n_phi = phi.shape[0] if (phi is not None and phi.dim()>1) else 1
+        return torch.empty(n_phi,self.n_samples, 2).uniform_(*self.x_bounds).to(device).float()
     def get_weights(self,x):
         return torch.ones(x.shape[0], device=x.device)
 
@@ -152,14 +153,18 @@ class Rosenbrock_stochastic_hits(RosenbrockProblem):
         of the parallel fringes is controlled by PHI. This design ensures the
         integral over X is constant with respect to PHI.
         """
-        x1 = X[:, 0]
-        x2 = X[:, 1]
-        
-        angle = phi[:, 0]
-        if self.dim > 1:
-            angle = angle + phi[:, 1]
+        if X.dim() == 2:
+            X = X.unsqueeze(0)
+        if X.shape[0] == 1 and phi.shape[0] > 1:
+            X = X.expand(phi.shape[0], -1, -1)
 
-        # Rotate the coordinate system according to the angle from PHI
+        x1 = X[:, :, 0]
+        x2 = X[:, :, 1]
+        
+        angle = phi[:, 0].view(-1, 1)
+        if self.dim > 1:
+            angle = angle + phi[:, 1].view(-1, 1)
+
         c, s = torch.cos(angle), torch.sin(angle)
         x_rot = x1 * c - x2 * s
 
@@ -169,7 +174,7 @@ class Rosenbrock_stochastic_hits(RosenbrockProblem):
         interference_pattern = 0.5 * (torch.sin(frequency * x_rot) + 1)
         
         # 2. A Gaussian decay to ensure the function is zero near the boundaries
-        decay_sigma = 2.0
+        decay_sigma = 5.0
         radial_decay = torch.exp(-((x1).pow(2) + x2.pow(2)) / (2 * decay_sigma**2))
         
         # The final sensitivity is the product of the two parts
@@ -180,14 +185,16 @@ class Rosenbrock_stochastic_hits(RosenbrockProblem):
         """
         Calculates the hit probability P(hit|X, PHI).
         """
-        return (self.sensitivity(phi, X) * self.loss(phi)).clamp(0.0,1.0)
+        S = self.sensitivity(phi, X)
+        L = self.loss(phi).view(-1,1)
+        return (S * L).clamp(0.0,1.0)
 
     def simulate(self, phi, X):
         """
         Performs a stochastic simulation. A hit occurs if a random number
         is less than the hit probability P(hit|X, PHI).
         """
-        x0 = torch.rand(X.shape[0], device=X.device)
+        x0 = torch.rand((phi.shape[0], X.shape[1]), device=X.device)
         hit_probability = self.probability_of_hit(phi, X)
         return hit_probability - x0
 
@@ -197,7 +204,7 @@ class Rosenbrock_stochastic_hits(RosenbrockProblem):
 
     def __call__(self, phi, x=None):
         if x is None:
-            x = self.sample_x(device=phi.device)
+            x = self.sample_x(phi, device=phi.device)
             
         if phi.dim() == 1:
             phi = phi.unsqueeze(0)
@@ -396,7 +403,6 @@ class ThreeHump_stochastic_hits(ThreeHump):
         self.y_max = self._find_max_value()
         self.normalize_factor = 1.0
         #self.normalize_factor = self._integrate_sensitivity(self.GetBounds().mean(0))
-
     def _find_max_value(self):
         """Numerically finds the max value of the function in its domain."""
         pp1 = torch.linspace(self._phi_bounds[0][0], self._phi_bounds[1][0], 500)
@@ -418,10 +424,17 @@ class ThreeHump_stochastic_hits(ThreeHump):
         """Scales the camel function to the [0, 1] range to act as a probability."""
         return (super().loss(phi.reshape(-1,2)) / self.y_max + self.offset).clamp(max=1.0)
 
-    def sample_x(self, device='cpu'):
-        """Samples the random variable X. Here, X is uniformly distributed in [0, 1]."""
-        return torch.empty(self.n_samples, 2).uniform_(*self.x_bounds).to(device)
-    def get_weights(self,x):
+    def sample_x(self, phi=None, device='cpu'):
+        """Samples the random variable X from a 2D uniform distribution.
+
+        Returns shape (n_phi, n_samples, 2), where n_phi is inferred from phi.
+        """
+        n_phi = phi.shape[0] if (phi is not None and phi.dim() > 1) else 1
+        return torch.empty(n_phi, self.n_samples, 2).uniform_(*self.x_bounds).to(device)
+
+    def get_weights(self, x):
+        if x.dim() >= 2:
+            return torch.ones(x.shape[:-1], device=x.device)
         return torch.ones(x.shape[0], device=x.device)
 
     def sensitivity(self, phi, X):
@@ -429,21 +442,40 @@ class ThreeHump_stochastic_hits(ThreeHump):
         The 'sensitivity' function s(X), which makes the hit probability
         dependent on the features of X.
         """
-        x1 = X[:, 0]
-        x2 = X[:, 1]
-        radial_decay = torch.exp(-(x1**2 + x2**2) / 4.0)
-        angular_part = 0.5 * (torch.sin(5 * (torch.atan2(x2, x1) + phi.sum(-1))) + 1)
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+
+        # Accept either X: (n_samples, 2) or (n_phi, n_samples, 2)
+        if X.dim() == 2:
+            X = X.unsqueeze(0)
+        if X.shape[0] == 1 and phi.shape[0] > 1:
+            X = X.expand(phi.shape[0], -1, -1)
+
+        x1 = X[:, :, 0]
+        x2 = X[:, :, 1]
+        radial_decay = torch.exp(-(x1**4 + x2**4) / 30.0)
+        phi_phase = phi.sum(-1).view(-1, 1)
+        angular_part = 0.5 * (torch.sin(5 * (torch.atan2(x2, x1) + phi_phase)) + 1)
         return radial_decay * angular_part / self.normalize_factor
     def probability_of_hit(self, phi, X):
         """
         Calculates the hit probability P(hit|X, PHI).
         """
-        return (self.sensitivity(phi, X) * self.loss(phi)).clamp(0.0,1.0)
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        return (self.sensitivity(phi, X) * self.loss(phi).view(-1, 1)).clamp(0.0, 1.0)
     def simulate(self, phi, X):
         """
         Calculates the comparison value. A hit occurs if this value > 0.
         """
-        x0 = torch.rand(X.shape[0], device=X.device)
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        if X.dim() == 2:
+            X = X.unsqueeze(0)
+        if X.shape[0] == 1 and phi.shape[0] > 1:
+            X = X.expand(phi.shape[0], -1, -1)
+
+        x0 = torch.rand((phi.shape[0], X.shape[1]), device=X.device)
         return self.probability_of_hit(phi, X) - x0
 
     def _blackbox_loss(self, y):
@@ -455,14 +487,22 @@ class ThreeHump_stochastic_hits(ThreeHump):
         return hits
 
     def __call__(self, phi, x=None):
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+
         if x is None:
-            x = self.sample_x()
+            x = self.sample_x(phi, device=phi.device)
+        elif x.dim() == 2:
+            x = x.unsqueeze(0)
+        if x.shape[0] == 1 and phi.shape[0] > 1:
+            x = x.expand(phi.shape[0], -1, -1)
+
         y = self.simulate(phi, x)
         y = self._blackbox_loss(y)
         if self.reduction == 'mean':
-            return y.sum().float() / self.n_samples
+            return y.float().mean()
         elif self.reduction == 'sum':
-            return y.sum().float()
+            return y.float().sum()
         return y
     
 class HelicalValleyProblem:
@@ -546,7 +586,8 @@ class HelicalValleyProblem:
         if self.noise and x is not None:
             y += x
         return y
-
+    def get_weights(self,x):
+        return torch.ones(x.shape[0], device=x.device)
 
 class HelicalValley_stochastic_hits(HelicalValleyProblem):
     """
@@ -588,9 +629,18 @@ class HelicalValley_stochastic_hits(HelicalValleyProblem):
         """Scales Helical Valley function to the [0, 1] range."""
         return (super().loss(phi) / self.y_max + self.offset).clamp(max=1.0)
 
-    def sample_x(self, device='cpu'):
-        """Samples the random variable X from a 2D uniform distribution."""
-        return torch.empty(self.n_samples, 2).uniform_(*self.x_bounds).to(device)
+    def sample_x(self, phi=None, device='cpu'):
+        """Samples the random variable X from a 2D uniform distribution.
+
+        Returns shape (n_phi, n_samples, 2), where n_phi is inferred from phi.
+        """
+        n_phi = phi.shape[0] if (phi is not None and phi.dim() > 1) else 1
+        return torch.empty(n_phi, self.n_samples, 2).uniform_(*self.x_bounds).to(device)
+
+    def get_weights(self, x):
+        if x.dim() >= 2:
+            return torch.ones(x.shape[:-1], device=x.device)
+        return torch.ones(x.shape[0], device=x.device)
 
     def sensitivity(self, phi, X):
         """
@@ -600,17 +650,23 @@ class HelicalValley_stochastic_hits(HelicalValleyProblem):
         """
         if phi.dim() == 1:
             phi = phi.unsqueeze(0)
-            
-        x1_orig = X[:, 0]
-        x2_orig = X[:, 1]
+
+        # Accept either X: (n_samples, 2) or (n_phi, n_samples, 2)
+        if X.dim() == 2:
+            X = X.unsqueeze(0)
+        if X.shape[0] == 1 and phi.shape[0] > 1:
+            X = X.expand(phi.shape[0], -1, -1)
+
+        x1_orig = X[:, :, 0]
+        x2_orig = X[:, :, 1]
         
         # --- PHI controls the manifold's rotation ---
         # We use different components for a more complex rotation control
-        angle = phi[:, 0] + phi[:, 2] # Components 0 and 2 control the angle
+        angle = (phi[:, 0] + phi[:, 2]).view(-1, 1)  # Components 0 and 2 control the angle
 
         # Rotate the coordinate system
         c, s = torch.cos(angle), torch.sin(angle)
-        x_rot = x1_orig  - x2_orig * s
+        x_rot = x1_orig - x2_orig * s
         y_rot = x1_orig * s + x2_orig * c
 
         # --- Define the static shape of the sensitivity manifold ---
@@ -621,7 +677,7 @@ class HelicalValley_stochastic_hits(HelicalValleyProblem):
         # 1. A radial decay part
         radial_decay = torch.exp(-0.5 * r)
         
-        arm_tightness = 1.0 + phi[:, 1].pow(2) # Make it positive and > 1
+        arm_tightness = (1.0 + phi[:, 1].pow(2)).view(-1, 1)  # Make it positive and > 1
         num_arms = 2.0
         spiral_arms = (torch.sin(num_arms * (theta + arm_tightness * r)) + 1)
         
@@ -632,14 +688,23 @@ class HelicalValley_stochastic_hits(HelicalValleyProblem):
         """
         Calculates the hit probability P(hit|X, PHI).
         """
-        return (self.sensitivity(phi, X) * self.loss(phi)).clamp(0.0,1.0)
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        return (self.sensitivity(phi, X) * self.loss(phi).view(-1, 1)).clamp(0.0, 1.0)
 
     def simulate(self, phi, X):
         """
         Performs a stochastic simulation. A hit occurs if a random number
         is less than the hit probability P(hit|X, PHI).
         """
-        x0 = torch.rand(X.shape[0], device=X.device)
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        if X.dim() == 2:
+            X = X.unsqueeze(0)
+        if X.shape[0] == 1 and phi.shape[0] > 1:
+            X = X.expand(phi.shape[0], -1, -1)
+
+        x0 = torch.rand((phi.shape[0], X.shape[1]), device=X.device)
         hit_probability = self.probability_of_hit(phi, X)
         return hit_probability - x0
 
@@ -648,11 +713,15 @@ class HelicalValley_stochastic_hits(HelicalValleyProblem):
         return (y>0).int()
 
     def __call__(self, phi, x=None):
-        if x is None:
-            x = self.sample_x(device=phi.device)
-            
         if phi.dim() == 1:
             phi = phi.unsqueeze(0)
+
+        if x is None:
+            x = self.sample_x(phi, device=phi.device)
+        elif x.dim() == 2:
+            x = x.unsqueeze(0)
+        if x.shape[0] == 1 and phi.shape[0] > 1:
+            x = x.expand(phi.shape[0], -1, -1)
 
         y = self.simulate(phi, x)
         y = self._blackbox_loss(y)
@@ -662,6 +731,147 @@ class HelicalValley_stochastic_hits(HelicalValleyProblem):
         elif self.reduction == 'sum':
             return y.float().sum()
         return y
+
+class QuadraticProblem:
+    """
+    Trivial N-dimensional quadratic (parabola) centered at `center`.
+    f(phi) = 0.5 * (phi - center)^T A (phi - center)
+    Default A = I and center = 0 => f = 0.5 * sum(phi^2)
+    """
+    def __init__(self, dim: int = 2, phi_bounds=((-5.0, 5.0)), A=None, center=None, noise: float = 0.0) -> None:
+        if dim < 1:
+            raise ValueError("Dimension for QuadraticProblem must be >= 1")
+        self.dim = dim
+        self._phi_bounds = ([phi_bounds[0]] * self.dim, [phi_bounds[1]] * self.dim)
+        self.noise = noise
+        if A is None:
+            self.A = torch.eye(self.dim, dtype=torch.get_default_dtype())
+        else:
+            self.A = torch.as_tensor(A, dtype=torch.get_default_dtype())
+            if self.A.shape != (self.dim, self.dim):
+                raise ValueError("A must be of shape (dim, dim)")
+        if center is None:
+            self.center = torch.zeros(self.dim, dtype=torch.get_default_dtype())
+        else:
+            self.center = torch.as_tensor(center, dtype=torch.get_default_dtype()).view(-1)
+            if self.center.numel() != self.dim:
+                raise ValueError("center must have length dim")
+
+    def GetBounds(self, device='cpu') -> torch.Tensor:
+        return torch.tensor(self._phi_bounds, device=device, dtype=torch.get_default_dtype())
+
+    def loss(self, phi: torch.Tensor):
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        d = phi - self.center.to(phi.device)
+        Ad = torch.matmul(d, self.A.to(phi.device))
+        return 0.5 * (Ad * d).sum(dim=1)
+
+    def gradient(self, phi: torch.Tensor, analytic: bool = True):
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        d = phi - self.center.to(phi.device)
+        if analytic:
+            A_sym = 0.5 * (self.A.to(phi.device) + self.A.to(phi.device).T)
+            return torch.matmul(d, A_sym.T)
+        if not phi.requires_grad:
+            phi = phi.clone().requires_grad_(True)
+        loss_val = self.loss(phi)
+        if loss_val.dim() > 0 and len(loss_val) > 1:
+            loss_val = loss_val.sum()
+        return torch.autograd.grad(loss_val, phi)[0]
+
+    def hessian(self, phi: torch.Tensor = None, analytic: bool = True):
+        # Hessian is constant = A_sym
+        A_sym = 0.5 * (self.A + self.A.T)
+        return A_sym.to(torch.get_default_dtype())
+
+    def get_constraints(self, phi):
+        return torch.tensor(0.0, device=phi.device)
+
+    def __call__(self, phi: torch.Tensor, x: torch.Tensor = None):
+        y = self.loss(phi)
+        y = y.view(-1, 1)
+        if self.noise and x is not None:
+            y = y + x
+        return y
+
+
+class Quadratic_stochastic_hits(QuadraticProblem):
+    """
+    Stochastic binary 'hits' version of the trivial quadratic.
+    Sensitivity is constant across X (trivial).
+    Hit probability = sensitivity(X) * scaled_loss(PHI)
+    """
+    def __init__(self, dim: int = 2, n_samples: int = 10000,
+                 phi_bounds=((-5.0, 5.0)), x_bounds=(0.0, 1.0), reduction='mean', offset=0.01):
+        super().__init__(dim=dim, phi_bounds=phi_bounds)
+        self.n_samples = n_samples
+        self.x_bounds = x_bounds
+        self.reduction = reduction
+        self.offset = offset
+        self.y_max = self._find_max_value()
+        self.normalize_factor = 1.0  # sensitivity constant -> normalized to 1
+
+    def _find_max_value(self):
+        n_mc_samples = min(20000, max(1000, 2000 * self.dim))
+        bounds = self.GetBounds()
+        phis = (bounds[1] - bounds[0]) * torch.rand(n_mc_samples, self.dim) + bounds[0]
+        y_vals = super().loss(phis)
+        return torch.max(y_vals).mul(1.1).item()
+
+    def loss(self, phi: torch.Tensor):
+        base = super().loss(phi)
+        return (base / (self.y_max + 1e-12) + self.offset).clamp(max=1.0)
+
+    def sample_x(self, phi=None, device='cpu'):
+        n_phi = phi.shape[0] if (phi is not None and phi.dim() > 1) else 1
+        # trivial X; shape (n_phi, n_samples, 1)
+        return torch.empty(n_phi, self.n_samples, 1, device=device).uniform_(*self.x_bounds)
+
+    def get_weights(self, x):
+        return torch.ones(x.shape[0], device=x.device)
+
+    def sensitivity(self, phi, X):
+        # constant sensitivity (independent of phi and X)
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        if X.dim() == 2:
+            X = X.unsqueeze(0)
+        s = torch.ones((phi.shape[0], X.shape[1]), device=X.device) / self.normalize_factor
+        return s
+
+    def probability_of_hit(self, phi, X):
+        return (self.sensitivity(phi, X) * self.loss(phi).view(-1, 1)).clamp(0.0, 1.0)
+
+    def simulate(self, phi, X):
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        if X.dim() == 2:
+            X = X.unsqueeze(0)
+        x0 = torch.rand((phi.shape[0], X.shape[1]), device=X.device)
+        return self.probability_of_hit(phi, X) - x0
+
+    def _blackbox_loss(self, y):
+        return (y > 0).int()
+
+    def __call__(self, phi, x=None):
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        if x is None:
+            x = self.sample_x(phi, device=phi.device)
+        elif x.dim() == 2:
+            x = x.unsqueeze(0)
+        if x.shape[0] == 1 and phi.shape[0] > 1:
+            x = x.expand(phi.shape[0], -1, -1)
+        y = self.simulate(phi, x)
+        y = self._blackbox_loss(y)
+        if self.reduction == 'mean':
+            return y.float().mean()
+        elif self.reduction == 'sum':
+            return y.float().sum()
+        return y
+
 
 class ShipMuonShield():
 
@@ -727,30 +937,7 @@ class ShipMuonShield():
     [10.00, 113.85, 20, 20, 30.00, 30.00, 0.00, 0.00, 8, 8, 10.41, 10.41, 0.00, 0.00, -0.00],
     [10.00, 168.00, 20.00, 30.00, 40.00, 40.00, 28.79, 11.75, 6.16, 4.34, 33.00, 33.00, 0.00, 0.00, -0.88],
     [10.00, 193.16, 40, 50, 50.00, 50.00, 8.00, 8.00, 5.59, 3.94, 92.39, 92.39, 0.00, 0.00, -1.87],
-],
-
-
-    "stellatryon_try2" :   [[  0.0000, 120.5000,  50.0000,  50.0000, 119.0000, 119.0000,   2.0000,
-          2.0000,   1.0000,   1.0000,  50.0000,  50.0000,   0.0000,   0.0000,
-          1.9000],
-[ 10.0000, 275,  10,  10,  10,  10,   8.0000,
-          8.0000,   1.0000,   1.0000,  11,  11,   0.0000,   0.0000,
-          1.9000],
-[ 10.0000, 275,  10,  10,  10,  10,   8.0000,
-          8.0000,   1.0000,   1.0000,  11,  11,   0.0000,   0.0000,
-          1.9000],
-[ 10.0000, 275,  10,  10,  10,  10,   8.0000,
-          8.0000,   1.0000,   1.0000,  11,  11,   0.0000,   0.0000,
-          1.9000],
-[ 10.0000, 182,  10,  10,  10,  10,   2.0000,
-          2.0000,   1.0000,   1.0000,  11,  11,   0.0000,   0.0000,
-          0],
-[ 10.0000, 168.0000,  20.0000,  30.0000,  10.0000,  10.0000,  18,
-         8,   1.6,   1,  22.0000,  33.0000,   0.0000,   0.0000,
-         -1.2],
-[ 10.0000, 100,  10,  10,  10,  10,   8.0000,
-          8.0000,   6.0000,   6.0000,  20,  20,   0.0000,   0.0000,
-          -1.9000]]
+]
     }
     
     parametrization = {
@@ -810,15 +997,6 @@ class ShipMuonShield():
             make_index(5, [6,7,9] + [14]) +
             make_index(6, [1,2,3,4,9,14])
         ),
-        # 31 parameters
-        "stellatryon_rect_soft": (
-            make_index(1, [1,2,4,6,7,9]) +
-            make_index(2, [1,2,4,6,7,9]) +
-            make_index(3, [1,2,4,6,7,9]) +
-            make_index(4, [1,9]) +
-            make_index(5, [6,7,9]) +
-            make_index(6, [1,2,3,4,6,7,9,14])
-        ),
         # 24 parameters
         # "stellatryon_soft_old": (
         #     make_index(1, [1,2,3,9]) +
@@ -831,6 +1009,15 @@ class ShipMuonShield():
         # 7 parameters
         "stellatryon_last_magnet_soft": (
             make_index(6, [1,2,3,6,7,9,14])
+        ),
+
+        "stellatryon_rect_soft": (
+            make_index(1, [1,2,4,9]) +
+            make_index(2, [1,2,4,9]) +
+            make_index(3, [1,2,4,9]) +
+            make_index(4, [1,4,9]) +
+            make_index(5, [6,7,9] + [14]) +
+            make_index(6, [1,2,4,9,14])
         ),
     }
 
@@ -1162,7 +1349,7 @@ class ShipMuonShield():
                 y.append(self(p))
             return torch.stack(y)
         M = self.get_total_cost(phi)
-        jump = self.get_constraints(phi) > 10
+        jump = self.get_constraints(phi) > 0.0
         if not self.cost_as_constraint: jump = jump | (M > ((6 * np.log(10) / 10 + 1) * self.W0))
         jump = jump & (self.reduction != 'none')
         if jump: 
@@ -1181,7 +1368,6 @@ class ShipMuonShield():
             loss = loss + self._apply_deterministic_loss(phi, loss)
         return loss
 
-
     def GetBounds(self,device = torch.device('cpu')):
         z_gap = (10,50)
         magnet_lengths = (100, 300)
@@ -1191,7 +1377,7 @@ class ShipMuonShield():
         else: NI_bounds = (0.0, 70e3)
         if self.use_diluted:
             dX_bounds = (10, 85)
-            gap_bounds = (8, 30)
+            gap_bounds = (8, 20)
             inner_gap_bounds = (0., 30.)
             yoke_bounds = (1,10)
         else:
@@ -1235,9 +1421,9 @@ class ShipMuonShield():
                 bounds_high[2,1] = 400
             # SND MAGNET
             bounds_low[-2,6] = 8+10   # This make it rectangular
-            bounds_low[-2,2] = 20
-            bounds_high[-2,3] = 30
             bounds_high[-2,6] = bounds_high[-2,7] = 50
+            bounds_low[-2,-1] = -1.2 if self.use_B_goal else -70e3/1.9*1.2 # T or NI
+            bounds_high[-2,-1] = -0.6 if self.use_B_goal else -70e3/1.9*0.6 # T or NI
             # LAST MAGNET
             bounds_high[-1,2] = 40
             bounds_high[-1,3] = 50
@@ -1333,12 +1519,12 @@ class ShipMuonShield():
                         values_9
                     )   
                 elif self.key and self.key.startswith("stell"):
-                    rows_S1 = torch.arange(1, new_phi.size(0)-3, device=new_phi.device)
                     #∆Xcore,2 = ∆Xcore,1
                     new_phi = new_phi.index_put(
-                                                (rows_S1, torch.tensor([3])),
-                                                new_phi[rows_S1, 2]
+                                                (rows, torch.tensor([3])),
+                                                new_phi[rows, 2]
                                             )
+
                     # X_yoke 1 = X_yoke2 => ∆Xcore,1 · (1 + Ryoke/core,1) = ∆Xcore,2 · (1 + Ryoke/core,2) => ∆Xcore,2 = ∆Xcore,1 · (1 + Ryoke/core,1)/ (1 + Ryoke/core,2)
                     values_8 = (new_phi[rows, 3] * (1 + new_phi[rows, 9]) + new_phi[rows, 7] - new_phi[rows, 6] - new_phi[rows, 2])/(new_phi[rows, 2])
                     #Ensure that the yoke is never less than 1
@@ -1413,7 +1599,7 @@ class ShipMuonShield():
                 print("soft Constraints")
                 X_yoke_out = phi[:,3] * (1 + phi[:,9]) + phi[:,7]
                 X_yoke_in =  phi[:,2] * (1 + phi[:,8]) + phi[:,6]
-                constraints[-1] +=  fn_pen(X_yoke_out[1:].max() - X_yoke_out[-1])
+                constraints[-1] +=  fn_pen(X_yoke_out.max() - X_yoke_out[-1])
                 print("X_yoke_out: ", X_yoke_out)
                 print("X_yoke_in: ", X_yoke_in)
             print("constaint on yoke alignment:", constraints)
@@ -1561,7 +1747,6 @@ class ShipMuonShieldCluster(ShipMuonShield):
             print(f"Error occurred with input: {phi}")
             print(e)
             raise
-        n_samples = self.n_samples
         
         
         if self.apply_det_loss: loss = self._apply_deterministic_loss(phi,loss)
@@ -1591,6 +1776,7 @@ class ShipMuonShieldCuda(ShipMuonShield):
         assert phi.shape[1] == 15, f"Expected phi to have 15 columns, got {phi.shape}"
         print('SIMULATING MAGNETIC FIELDS')
         #self.simulate_mag_fields(phi)
+        assert not (self.use_diluted and (phi[:,8].lt(1.0).any() or phi[:,9].lt(1.0).any())), f"Diluted magnets with yoke {phi[:,8]}, {phi[:,9]}"
         try: 
             output = self.run_muonshield(phi.numpy(), 
                                         muons,
@@ -1619,64 +1805,6 @@ class ShipMuonShieldCuda(ShipMuonShield):
         particle = output['pdg_id']
         weight = output['weight']
         return torch.stack([px, py, pz, x, y, z, particle, weight])    
-
-class stochastic_RosenbrockProblem(RosenbrockProblem):
-    def __init__(self,bounds = (-10,10), 
-                 n_samples:int = 1, 
-                 average_x = True,
-                 std:float = 1.) -> None:
-        super().__init__(0)
-        self.bounds = bounds
-        self.n_samples = n_samples
-        self.average_x = average_x
-        self.std = std
-    def sample_x(self,phi):
-        mu = uniform_sample((phi.shape[0],self.n_samples),self.bounds,device = phi.device)
-        return torch.randn_like(mu)+mu
-    def simulate(self,phi:torch.tensor, x:torch.tensor = None):
-        if x is None: x = self.sample_x(phi)
-        y = super().__call__(phi) + x
-        y += torch.randn(y.size(0),1,device=phi.device)*self.std
-        return y
-    def loss(self,x):
-        return x
-    def __call__(self,phi:torch.tensor, x:torch.tensor = None):
-        y = self.loss(self.simulate(phi,x))
-        if self.average_x: y = y.mean(-1,keepdim = True)
-        return y
-    @staticmethod
-    def GetBounds(device = torch.device('cpu')):
-        pass
-class stochastic_ThreeHump(ThreeHump):
-    def __init__(self, n_samples = 1, 
-                 average_x = True,
-                 bounds_1 = (-2,0), 
-                 bounds_2 = (2,5),
-                 std:float = 1.0) -> None:
-        super().__init__(0)
-        self.bounds_1 = bounds_1
-        self.bounds_2 = bounds_2
-        self.n_samples = n_samples
-        self.average_x = average_x
-        self.std = std
-    def loss(self,x):
-        return torch.sigmoid(x-10)-torch.sigmoid(x)
-    def sample_x(self,phi):
-        P1 = phi[:,0].div(phi.norm(p=2,dim=-1)).view(-1,1)
-        mask = torch.rand((phi.size(0),self.n_samples),device=phi.device).le(P1)
-        x1 = uniform_sample((phi.size(0),self.n_samples),self.bounds_1,device=phi.device)
-        x2 = uniform_sample((phi.size(0),self.n_samples),self.bounds_2,device=phi.device)
-        return torch.where(mask, x1, x2)
-    def simulate(self, phi:torch.tensor, x:torch.tensor = None):
-        h = super().__call__(phi)
-        if x is None: x = self.sample_x(phi)
-        mu = x*h + torch.randn_like(h)*self.std
-        y =  mu+torch.randn_like(h)*self.std
-        return y
-    def __call__(self, phi:torch.tensor, x:torch.tensor = None):
-        y = self.loss((self.simulate(phi,x)))
-        if self.average_x: y = y.mean(-1,keepdim=True)
-        return y
 
 if __name__ == '__main__':
     import argparse
@@ -1796,5 +1924,6 @@ if __name__ == '__main__':
     print(f"Number of hits WEIGHTED:   {factor[hits].sum().item()}")
     print(f"Simulation time:  {simulation_time:.2f}s")
     print(f"Total time:       {time.time() - t0:.2f}s")
+
 
 

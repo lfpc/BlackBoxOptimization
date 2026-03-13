@@ -1279,10 +1279,33 @@ class Population():
         self.local_search_std_deviations=[self.local_search_std_deviations_factor*elem for elem in self.mutation_std_deviations]
         self.tournament_size=tournament_size
         self.population=[]
+        """
+        file_path = "/home/hep/ghijan/MuonShieldProject/BlackBoxOptimization/outputs/stellatryon_try2/population_history.csv"
+        with open(file_path, newline='') as csvfile:
+            reader = csv.reader(csvfile)
+            next(reader)  # skip header
+            last_generation_number = None
+            for row in reader:
+                last_generation_number = int(row[0])
+        last_generation_individuals = []
+
+        with open(file_path, newline='') as csvfile:
+            reader = csv.reader(csvfile)
+            next(reader)  # skip header
+            for row in reader:
+                generation = int(row[0])
+                if generation == last_generation_number:
+                    genes = [float(x) for x in row[1:-1]]
+                    fitness = float(row[-1])
+                    individual=Individual(self.problem_fn,genes,self.computed_fitness_values,self.device)
+                    self.population.append(individual)
+        """
+        #"""
         for _ in range(self.population_size):
             genes=self.get_initial_genes()
             individual=Individual(self.problem_fn,genes,self.computed_fitness_values,self.device)
             self.population.append(individual)
+        #"""
         compute_simulation(self.population,self.problem_fn,self.devices)
         self.num_evaluations+=len(self.population)
         #torch.cuda.empty_cache()
@@ -1476,6 +1499,11 @@ class Population():
         self.no_progress_counter=0
         with wandb.init(reinit = True,**self.WandB) as wb, tqdm(total=self.generations) as pbar:
             for generation in range(self.generations):
+                #self.mutation_std_deviations=[0.99*elem for elem in self.mutation_std_deviations]
+                #self.local_search_std_deviations=[0.99*elem for elem in self.local_search_std_deviations]
+                #print(f"Generation: {generation}")
+                #print(self.mutation_std_deviations)
+                #print(self.local_search_std_deviations)
                 self.update_generation()
                 if generation>0:
                     if -self.hall_of_fame[0].fitness<current_best_loss:
