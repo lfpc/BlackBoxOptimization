@@ -21,7 +21,7 @@ parser.add_argument("--cpu",dest = 'cuda', action = 'store_false')
 parser.add_argument("--seed", type=int, default=13)
 parser.add_argument("--maxiter", type=int, default=2000)#1000
 parser.add_argument('--problem', type=str, default='ship_cuda')
-parser.add_argument('--optimizer', type=str, choices=['bayesian', 'turbo', 'cma-es', 'lgso', 'GA'], default='bayesian')
+parser.add_argument('--optimizer', type=str, choices=['bayesian', 'turbo', 'cma-es', 'lgso', 'GA', 'toyRL'], default='bayesian')
 parser.add_argument('--model', type=str, default='gp_rbf')
 parser.add_argument('--name', type=str, default='optimizationtest')
 parser.add_argument('--group', type=str, default='BayesianOptimization')
@@ -72,7 +72,7 @@ else:
                 CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 63]: ") or 63)
         if 'initial_phi' not in CONFIG:
             if run_in_background:
-                default_phi_name = str('stellatryon_try2')#str('stellatryon_t')
+                default_phi_name = str('stellatryon_soft_v1')#str('stellatryon_t')
             else:
                 default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or '')
             print('default_phi_name', default_phi_name)

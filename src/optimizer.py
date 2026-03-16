@@ -3,6 +3,9 @@ import botorch
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
+import torch as th
+import torch.nn.functional as F
+import math
 import torch.multiprocessing as mp
 from tqdm import tqdm
 from scipy.stats.qmc import LatinHypercube
@@ -27,6 +30,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.utils import get_schedule_fn
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.sac.policies import SACPolicy
+from stable_baselines3.common.utils import polyak_update
 from imitation.data.types import Trajectory
 from imitation.algorithms import bc
 from imitation.util import logger as imit_logger
@@ -3005,12 +3009,12 @@ class Rastrigin7DMultipleStepEnv(gym.Env):
         self.total_steps_history=[]
 
     def rastrigin(self, x):
-        return 10 * self.dim + np.sum(x**2 - 10 * np.cos(2 * np.pi * x))
+        return 10 * self.dim + np.sum(x**2 - 10 * np.cos(0.8 * np.pi * x))
 
     def rastrigin_shifted(self, x, c):
         x = np.asarray(x)
         c = np.asarray(c)
-        return 10 * len(x) + np.sum((x - c)**2 - 10 * np.cos(2 * np.pi * (x - c)))
+        return 10 * len(x) + np.sum((x - c)**2 - 10 * np.cos(0.8 * np.pi * (x - c)))
 
     def constraint_violation(self, x):
         violation = 0.0
@@ -3107,12 +3111,12 @@ class Rastrigin7DSingleStepEnv(gym.Env):
 
 
     def rastrigin(self, x):
-        return 10 * self.dim + np.sum(x**2 - 10 * np.cos(2 * np.pi * x))
+        return 10 * self.dim + np.sum(x**2 - 10 * np.cos(0.8 * np.pi * x))
 
     def rastrigin_shifted(self, x, c):
         x = np.asarray(x)
         c = np.asarray(c)
-        return 10 * len(x) + np.sum((x - c)**2 - 10 * np.cos(2 * np.pi * (x - c)))
+        return 10 * len(x) + np.sum((x - c)**2 - 10 * np.cos(0.8 * np.pi * (x - c)))
 
     def constraint_violation(self, x):
         violation = 0.0
@@ -3176,6 +3180,134 @@ def linear_schedule(initial_value: float, final_value: float):
         return progress_remaining * initial_value + (1.0-progress_remaining) * final_value
     return func
 
+class CustomSAC(SAC):
+    def set_expert_data(self, obs_tensor, act_tensor):
+        self.expert_obs = obs_tensor.to(self.device)
+        self.expert_act = act_tensor.to(self.device)
+        self.actor_losses=[]
+        self.critic_losses=[]
+        self.supervised_losses=[]
+
+    def infer_step_from_obs_batch(self, obs_batch):
+        step = (obs_batch != 0).sum(dim=1)
+        return step.clamp(min=0)
+
+    def train(self, gradient_steps: int, batch_size: int = 64) -> None:#Same train() method as in SAC from SB3, but with a supervised loss derived from expert trajectories for the actor
+        # Switch to train mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(True)
+        # Update optimizers learning rate
+        optimizers = [self.actor.optimizer, self.critic.optimizer]
+        if self.ent_coef_optimizer is not None:
+            optimizers += [self.ent_coef_optimizer]
+
+        # Update learning rate according to lr schedule
+        self._update_learning_rate(optimizers)
+
+        ent_coef_losses, ent_coefs = [], []
+        actor_losses, critic_losses = [], []
+
+        for gradient_step in range(gradient_steps):
+            # Sample replay buffer
+            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+            # For n-step replay, discount factor is gamma**n_steps (when no early termination)
+            discounts = replay_data.discounts if replay_data.discounts is not None else self.gamma
+
+            # We need to sample because `log_std` may have changed between two gradient steps
+            if self.use_sde:
+                self.actor.reset_noise()
+
+            # Action by the current actor for the sampled state
+            actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+            log_prob = log_prob.reshape(-1, 1)
+
+            ent_coef_loss = None
+            if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
+                # Important: detach the variable from the graph
+                # so we don't change it with other losses
+                # see https://github.com/rail-berkeley/softlearning/issues/60
+                ent_coef = th.exp(self.log_ent_coef.detach())
+                assert isinstance(self.target_entropy, float)
+                ent_coef_loss = -(self.log_ent_coef * (log_prob + self.target_entropy).detach()).mean()
+                ent_coef_losses.append(ent_coef_loss.item())
+            else:
+                ent_coef = self.ent_coef_tensor
+
+            ent_coefs.append(ent_coef.item())
+
+            # Optimize entropy coefficient, also called
+            # entropy temperature or alpha in the paper
+            if ent_coef_loss is not None and self.ent_coef_optimizer is not None:
+                self.ent_coef_optimizer.zero_grad()
+                ent_coef_loss.backward()
+                self.ent_coef_optimizer.step()
+
+            with th.no_grad():
+                # Select action according to policy
+                next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
+                # Compute the next Q values: min over all critics targets
+                next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
+                next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
+                # add entropy term
+                next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
+                # td error + entropy term
+                target_q_values = replay_data.rewards + (1 - replay_data.dones) * discounts * next_q_values
+
+            # Get current Q-values estimates for each critic network
+            # using action from the replay buffer
+            current_q_values = self.critic(replay_data.observations, replay_data.actions)
+
+            # Compute critic loss
+            critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
+            assert isinstance(critic_loss, th.Tensor)  # for type checker
+            critic_losses.append(critic_loss.item())  # type: ignore[union-attr]
+
+            # Optimize the critic
+            self.critic.optimizer.zero_grad()
+            critic_loss.backward()
+            self.critic.optimizer.step()
+
+            # Compute actor loss
+            # Alternative: actor_loss = th.mean(log_prob - qf1_pi)
+            # Min over all critic networks
+            q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi), dim=1)
+            min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
+            actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
+            actor_losses.append(actor_loss.item())
+
+            ###Code I added:{
+            batch_steps = self.infer_step_from_obs_batch(replay_data.observations)
+            expert_actions = self.expert_act[batch_steps]
+            # MSE imitation loss
+            expert_loss = F.mse_loss(actions_pi, expert_actions) 
+            expert_loss=expert_loss*math.exp(-2.0 * self.num_timesteps / self._total_timesteps)
+
+            self.critic_losses.append(critic_loss.item())
+            self.actor_losses.append(actor_loss.item())
+            self.supervised_losses.append(expert_loss.item())
+
+            actor_loss+=expert_loss
+            ###}
+
+            # Optimize the actor
+            self.actor.optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor.optimizer.step()
+
+            # Update target networks
+            if gradient_step % self.target_update_interval == 0:
+                polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
+                # Copy running stats, see GH issue #996
+                polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
+
+        self._n_updates += gradient_steps
+
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/ent_coef", np.mean(ent_coefs))
+        self.logger.record("train/actor_loss", np.mean(actor_losses))
+        self.logger.record("train/critic_loss", np.mean(critic_losses))
+        if len(ent_coef_losses) > 0:
+            self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
+
 class toy_RL():
     def __init__(self,device,WandB):
         self.algorithm="SB3_SAC"#"SB3_SAC"#"SAC"#"PPO"
@@ -3194,9 +3326,9 @@ class toy_RL():
             if self.env_type=="Rastrigin7DMultipleStepEnv":
                 self.training_steps=15000
         elif self.algorithm=="SB3_SAC":
-            self.training_steps=500000
+            self.training_steps=100000
         self.use_warm_baseline=True#False#True
-        self.warm_baseline_strategy="BC"#"BC"#"replay_buffer"
+        self.warm_baseline_strategy="supervised_loss"#"BC"#"replay_buffer"#"supervised_loss"
         if self.algorithm=="PPO" and self.use_warm_baseline and self.warm_baseline_strategy!="BC":
             print("Invalid configuration!")
             sys.exit()
@@ -3251,47 +3383,8 @@ class toy_RL():
             #scale=0.5
             self.warm_baseline=pretrain_env.c+np.array([-0.18511472,-0.00619498,-0.14750585,0.17160661,-0.60160435,-0.24393126, -0.54970125])#+ np.random.normal(loc=0.0, scale=scale, size=pretrain_env.dim)
 
-            if self.warm_baseline_strategy=="BC":
-                if self.algorithm=="PPO":
-                    lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
-                    bc_policy=CustomPolicy(pretrain_env.observation_space, pretrain_env.action_space, lr_schedule, **policy_kwargs)
-                    bc_policy.to(self.device)
-                    #Fix std:
-                    with torch.no_grad():
-                        bc_policy.log_std[:] = -3.0
-                    print("log_std before BC:")
-                    print(bc_policy.log_std)
-                elif self.algorithm=="SAC":
-                    bc_policy = sac_policy
-                    #with torch.no_grad():
-                    #    sac._impl.policy._logstd.weight.fill_(0.0)
-                    #    bc_policy._impl.policy._logstd.bias.fill_(-3.0)
-                    print("log_std before BC (weight and bias):")
-                    print(bc_policy._impl.policy._logstd.weight)
-                    print(bc_policy._impl.policy._logstd.bias)
-                elif self.algorithm=="SB3_SAC":
-                    lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
-                    bc_policy=SACPolicy(pretrain_env.observation_space, pretrain_env.action_space, lr_schedule, **policy_kwargs)
-                    bc_policy.to(self.device)
-                    #with torch.no_grad():#TO_DO: Check if I need to set log_std=-3 everywhere in the SB3_SAC code
-                    #    bc_policy.actor.log_std.weight.fill_(0.0)
-                    #    bc_policy.actor.log_std.bias.fill_(-3.0)
+            if self.warm_baseline_strategy=="BC" or self.warm_baseline_strategy=="supervised_loss":
                 obs_list, act_list, reward_list = generate_toy_imitation_trajectories(pretrain_env, self.warm_baseline, n_episodes=1)                    
-
-                lambda_action = 1.0
-                lambda_value  = 0.01#For single step environment lambda_value=0.01 and lambda_value=1.0 give similar results
-                bc_lr         = 1e-3
-                batch_size    = 32
-                if self.algorithm=="PPO":
-                    bc_epochs     = 10000
-                    if self.env_type=="Rastrigin7DMultipleStepEnv":
-                        bc_epochs=int(bc_epochs/10)
-                if self.algorithm=="SAC":
-                    lambda_value = 0
-                    bc_epochs = 300
-                elif self.algorithm=="SB3_SAC":
-                    lambda_value = 0
-                    bc_epochs = 300
 
                 #Convert trajectories into training tensors:
                 obs_tensor, act_tensor, ret_tensor = [], [], []
@@ -3311,66 +3404,109 @@ class toy_RL():
                 if self.algorithm=="SAC" or self.algorithm=="SB3_SAC":#For SAC I need to scale actions for the BC this way:
                     act_tensor = 2 * (act_tensor - train_env.low) / (train_env.high - train_env.low) - 1
 
-                dataset = TensorDataset(obs_tensor, act_tensor, ret_tensor)
-                loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)#TO_DO: Check if there is a bug because for Rastrigin7DMultipleStepEnv I think I need to use shuffle=False
 
-                if self.algorithm=="PPO" or self.algorithm=="SB3_SAC":
-                    optimizer = torch.optim.Adam(bc_policy.parameters(), lr=bc_lr)
-                elif self.algorithm=="SAC":
-                    optimizer = torch.optim.Adam(bc_policy._impl.policy.parameters(), lr=bc_lr)
-                mse_loss = nn.MSELoss()
-
-                bc_reward_iters=[]
-                bc_noise_iters=[]
-                bc_x_iters=[]
-                check_period=bc_epochs//10
-
-                # Actor-Critic Behavioral Cloning:
-                action_losses = []
-                value_losses  = []
-                total_losses  = []
-                for epoch in range(bc_epochs):
-                    epoch_action_loss = 0.0
-                    epoch_value_loss  = 0.0
-                    epoch_total_loss  = 0.0
-                    n_batches = 0
-                    for batch_obs, batch_act, batch_ret in loader:
-                        optimizer.zero_grad()
-                        if self.algorithm=="PPO":
-                            pred_actions, value_pred, _ = bc_policy.forward(batch_obs, deterministic=True)
-                            action_loss = mse_loss(pred_actions, batch_act)
-                            value_loss = mse_loss(value_pred.squeeze(-1), batch_ret)
-                            loss = lambda_action * action_loss + lambda_value * value_loss
-                        elif self.algorithm=="SB3_SAC":
-                            pred_actions=bc_policy.forward(batch_obs, deterministic=True)
-                            action_loss = mse_loss(pred_actions, batch_act)
-                            loss = action_loss
-                        elif self.algorithm=="SAC":
-                            action_out = bc_policy._impl.policy(batch_obs)
-                            pred_actions = action_out.mu
-                            action_loss = mse_loss(pred_actions, batch_act)
-                            loss = action_loss
-                        loss.backward()
-                        optimizer.step()
-                        epoch_action_loss += lambda_action*action_loss.item()
-                        if self.algorithm=="PPO":
-                            epoch_value_loss  += lambda_value*value_loss.item()
-                        epoch_total_loss  += loss.item()
-                        n_batches += 1
-                    action_losses.append(epoch_action_loss / n_batches)
+                if self.warm_baseline_strategy=="BC":
                     if self.algorithm=="PPO":
-                        value_losses.append(epoch_value_loss / n_batches)
-                    total_losses.append(epoch_total_loss / n_batches)
-                    if (epoch+1)%check_period==0:
+                        lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
+                        bc_policy=CustomPolicy(pretrain_env.observation_space, pretrain_env.action_space, lr_schedule, **policy_kwargs)
+                        bc_policy.to(self.device)
+                        #Fix std:
                         with torch.no_grad():
-                            bc_reward_iter, bc_noise_iter, bc_x_iter= evaluate_policy(bc_policy, pretrain_env, deterministic=True, n_eval_episodes=1)
-                            if bc_noise_iter is not None:
-                                print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, deterministic reward subtracting noise: {bc_reward_iter-bc_noise_iter}, obtained solution: {bc_x_iter}, correct solution: {pretrain_env.c}")
-                                bc_noise_iters.append(bc_noise_iter)
-                            else:
-                                print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, obtained solution: {bc_x_iter}, correct solution: {pretrain_env.c}")
-                            bc_reward_iters.append(bc_reward_iter)
-                            bc_x_iters.append(bc_x_iter)
+                            bc_policy.log_std[:] = -3.0
+                        print("log_std before BC:")
+                        print(bc_policy.log_std)
+                    elif self.algorithm=="SAC":
+                        bc_policy = sac_policy
+                        #with torch.no_grad():
+                        #    sac._impl.policy._logstd.weight.fill_(0.0)
+                        #    bc_policy._impl.policy._logstd.bias.fill_(-3.0)
+                        print("log_std before BC (weight and bias):")
+                        print(bc_policy._impl.policy._logstd.weight)
+                        print(bc_policy._impl.policy._logstd.bias)
+                    elif self.algorithm=="SB3_SAC":
+                        lr_schedule = get_schedule_fn(1e-3)#Learning schedule for BC
+                        bc_policy=SACPolicy(pretrain_env.observation_space, pretrain_env.action_space, lr_schedule, **policy_kwargs)
+                        bc_policy.to(self.device)
+                        #with torch.no_grad():#TO_DO: Check if I need to set log_std=-3 everywhere in the SB3_SAC code
+                        #    bc_policy.actor.log_std.weight.fill_(0.0)
+                        #    bc_policy.actor.log_std.bias.fill_(-3.0)
+
+                    lambda_action = 1.0
+                    lambda_value  = 0.01#For single step environment lambda_value=0.01 and lambda_value=1.0 give similar results
+                    bc_lr         = 1e-3
+                    batch_size    = 32
+                    if self.algorithm=="PPO":
+                        bc_epochs     = 10000
+                        if self.env_type=="Rastrigin7DMultipleStepEnv":
+                            bc_epochs=int(bc_epochs/10)
+                    if self.algorithm=="SAC":
+                        lambda_value = 0
+                        bc_epochs = 300
+                    elif self.algorithm=="SB3_SAC":
+                        lambda_value = 0
+                        bc_epochs = 300
+
+
+                    dataset = TensorDataset(obs_tensor, act_tensor, ret_tensor)
+                    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)#TO_DO: Check if there is a bug because for Rastrigin7DMultipleStepEnv I think I need to use shuffle=False
+
+                    if self.algorithm=="PPO" or self.algorithm=="SB3_SAC":
+                        optimizer = torch.optim.Adam(bc_policy.parameters(), lr=bc_lr)
+                    elif self.algorithm=="SAC":
+                        optimizer = torch.optim.Adam(bc_policy._impl.policy.parameters(), lr=bc_lr)
+                    mse_loss = nn.MSELoss()
+
+                    bc_reward_iters=[]
+                    bc_noise_iters=[]
+                    bc_x_iters=[]
+                    check_period=bc_epochs//10
+
+                    # Actor-Critic Behavioral Cloning:
+                    action_losses = []
+                    value_losses  = []
+                    total_losses  = []
+                    for epoch in range(bc_epochs):
+                        epoch_action_loss = 0.0
+                        epoch_value_loss  = 0.0
+                        epoch_total_loss  = 0.0
+                        n_batches = 0
+                        for batch_obs, batch_act, batch_ret in loader:
+                            optimizer.zero_grad()
+                            if self.algorithm=="PPO":
+                                pred_actions, value_pred, _ = bc_policy.forward(batch_obs, deterministic=True)
+                                action_loss = mse_loss(pred_actions, batch_act)
+                                value_loss = mse_loss(value_pred.squeeze(-1), batch_ret)
+                                loss = lambda_action * action_loss + lambda_value * value_loss
+                            elif self.algorithm=="SB3_SAC":
+                                pred_actions=bc_policy.forward(batch_obs, deterministic=True)
+                                action_loss = mse_loss(pred_actions, batch_act)
+                                loss = action_loss
+                            elif self.algorithm=="SAC":
+                                action_out = bc_policy._impl.policy(batch_obs)
+                                pred_actions = action_out.mu
+                                action_loss = mse_loss(pred_actions, batch_act)
+                                loss = action_loss
+                            loss.backward()
+                            optimizer.step()
+                            epoch_action_loss += lambda_action*action_loss.item()
+                            if self.algorithm=="PPO":
+                                epoch_value_loss  += lambda_value*value_loss.item()
+                            epoch_total_loss  += loss.item()
+                            n_batches += 1
+                        action_losses.append(epoch_action_loss / n_batches)
+                        if self.algorithm=="PPO":
+                            value_losses.append(epoch_value_loss / n_batches)
+                        total_losses.append(epoch_total_loss / n_batches)
+                        if (epoch+1)%check_period==0:
+                            with torch.no_grad():
+                                bc_reward_iter, bc_noise_iter, bc_x_iter= evaluate_policy(bc_policy, pretrain_env, deterministic=True, n_eval_episodes=1)
+                                if bc_noise_iter is not None:
+                                    print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, deterministic reward subtracting noise: {bc_reward_iter-bc_noise_iter}, obtained solution: {bc_x_iter}, correct solution: {pretrain_env.c}")
+                                    bc_noise_iters.append(bc_noise_iter)
+                                else:
+                                    print(f"Epoch {epoch+1}/{bc_epochs}, deterministic reward: {bc_reward_iter}, obtained solution: {bc_x_iter}, correct solution: {pretrain_env.c}")
+                                bc_reward_iters.append(bc_reward_iter)
+                                bc_x_iters.append(bc_x_iter)
             elif self.algorithm=="SAC" and self.warm_baseline_strategy=="replay_buffer":
                 buffer = ReplayBuffer(
                     buffer=FIFOBuffer(limit=1000000),#maxlen=1000000,#Default maxlen in d3rlpy
@@ -3513,27 +3649,48 @@ class toy_RL():
         elif self.algorithm=="SB3_SAC":
             callback = TrainingStatsCallback(eval_env=eval_env, eval_freq=eval_freq, verbose=1)
 
-            model = SAC(
-                policy="MlpPolicy",
-                env=train_env,
-                learning_rate=1e-3,#6e-4,#6e-5,
-                batch_size=512,#128,
-                gamma=0.99,#1.0,                 
-                train_freq=256,            
-                gradient_steps=8,#1,          # one update per rollout chunk
-                buffer_size=100000,
-                learning_starts=10000,
-                ent_coef="auto",           
-                tau=0.005,                 
-                verbose=1,
-                policy_kwargs=policy_kwargs,
-                device=self.device,
-            )
+            if self.use_warm_baseline and self.warm_baseline_strategy=="supervised_loss":
+                model = CustomSAC(
+                    policy="MlpPolicy",
+                    env=train_env,
+                    learning_rate=3e-4,
+                    batch_size=512,
+                    gamma=0.99,              
+                    train_freq=64,            
+                    gradient_steps=64,
+                    buffer_size=100000,
+                    learning_starts=10000,
+                    ent_coef="auto",           
+                    tau=0.005,                 
+                    verbose=1,
+                    policy_kwargs=policy_kwargs,
+                    device=self.device,
+                )
+            else:
+                model = SAC(
+                    policy="MlpPolicy",
+                    env=train_env,
+                    learning_rate=3e-4,
+                    batch_size=512,
+                    gamma=0.99,                 
+                    train_freq=64,#256,            
+                    gradient_steps=64,#8,#1,
+                    buffer_size=100000,
+                    learning_starts=10000,
+                    ent_coef="auto",           
+                    tau=0.005,                 
+                    verbose=1,
+                    policy_kwargs=policy_kwargs,
+                    device=self.device,
+                )
 
             if self.use_warm_baseline:
-                #Load the policy that was pretrained using BC:
-                bc_policy.eval()
-                model.policy.load_state_dict(bc_policy.state_dict())#TO_DO: Am I copying correctly all weights needed?
+                if self.warm_baseline_strategy=="supervised_loss":
+                    model.set_expert_data(obs_tensor,act_tensor)
+                elif self.warm_baseline_strategy=="BC":
+                    #Load the policy that was pretrained using BC:
+                    bc_policy.eval()
+                    model.policy.load_state_dict(bc_policy.state_dict())#TO_DO: Am I copying correctly all weights needed?
             
             model.learn(total_timesteps=self.training_steps, callback=callback)
             model.save(f"outputs/{self.WandB['name']}/dqn_model")
@@ -3624,12 +3781,28 @@ class toy_RL():
         x_vals = 100 * np.linspace(1/len(callback.eval_xs), 1, len(callback.eval_xs))
         distances=[np.linalg.norm(eval_env.c - callback.eval_xs[i]) for i in range(len(callback.eval_xs))]
         plt.plot(x_vals,distances,marker='o')
+        if self.use_warm_baseline:
+            plt.axhline(y=np.linalg.norm(eval_env.c - self.warm_baseline),linestyle='--',color='black',label='Warm baseline distance')
         plt.xlabel(f"Training % ({self.training_steps} steps)")
         plt.ylabel("Distance")
         plt.title(f"Euclidean distance from deterministic solution to correct solution ({self.algorithm})")
         plt.grid(True)
         plt.savefig(f"outputs/{self.WandB['name']}/distance.png")
         plt.close(fig)
+
+        if self.algorithm=="SB3_SAC" and self.use_warm_baseline:
+            fig=plt.figure()
+            plt.plot(model.supervised_losses,marker='o',label="Supervised loss")
+            plt.plot(model.actor_losses,marker='o',label="Original actor loss")
+            plt.plot([model.supervised_losses[i]+model.actor_losses[i] for i in range(len(model.supervised_losses))],marker='o',label="Total actor loss")
+            plt.plot(model.critic_losses,marker='o',label="Critic loss")
+            plt.xlabel("Training steps")
+            plt.ylabel("Loss")
+            plt.title(f"Training losses ({self.algorithm})")
+            plt.legend()
+            plt.grid(True)
+            plt.savefig(f"outputs/{self.WandB['name']}/training_losses.png")
+            plt.close(fig)
 
         return callback.best_x,callback.best_reward
 class CMAESOptimizer(OptimizerClass):
@@ -3854,4 +4027,4 @@ if __name__ == '__main__':
     plt.plot([y_gen.min(),y_gen.max()],[y_gen.min(),y_gen.max()],'k--')
     plt.savefig('testgan.png')
     plt.close()
-    
+
