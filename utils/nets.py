@@ -6,283 +6,6 @@ from . import normalize_vector
 from math import sqrt
 
 
-class PsiCompressor(nn.Module):
-    def __init__(self, input_param, out_dim):
-        super().__init__()
-        self.fc = nn.Linear(input_param, out_dim)
-        self.out_dim = out_dim
-        
-    def forward(self, psi):
-        return torch.tanh(self.fc(psi))
-
-
-class Net(nn.Module):
-    def __init__(self, out_dim, psi_dim, hidden_dim=100, X_dim=1):
-        super().__init__()
-        self.fc1 = nn.Linear(X_dim + psi_dim, hidden_dim)
-        nn.init.xavier_normal_(self.fc1.weight)
-        nn.init.constant_(self.fc1.bias, 0.0)
-        
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        nn.init.xavier_normal_(self.fc2.weight)
-        nn.init.constant_(self.fc2.bias, 0.0)
-        
-        self.fc3 = nn.Linear(hidden_dim, out_dim)
-        nn.init.xavier_normal_(self.fc3.weight)
-        nn.init.constant_(self.fc3.bias, 0.0)    
-        
-        self.fc4 = nn.Linear(hidden_dim, hidden_dim)
-        nn.init.xavier_normal_(self.fc4.weight)
-        nn.init.constant_(self.fc4.bias, 0.0)
-        
-    def forward(self, params):
-        """
-            Generator takes a vector of noise and produces sample
-        """
-        # psi_embedding = self.pc(params[:, :self.psi_dim])
-        # z = torch.cat([z, psi_embedding, params[:, self.psi_dim:]], dim=1)
-        h1 = torch.tanh(self.fc1(params))
-        h2 = torch.tanh(self.fc2(h1))
-        h3 = F.leaky_relu(self.fc4(h2))
-        y_gen = self.fc3(h3)
-        return y_gen        
-
-
-# Idea is kind of taken from https://arxiv.org/pdf/1805.08318.pdf and applied to conditions
-class Attention(nn.Module):
-    def __init__(self, psi_dim, hidden_dim):
-        super().__init__()
-        self.hidden_dim = hidden_dim
-        self._psi_dim = psi_dim
-
-        self.f_net = nn.Conv1d(1, hidden_dim, 1, stride=1, padding=0, bias=False)
-        self.g_net = nn.Conv1d(1, hidden_dim, 1, stride=1, padding=0, bias=False)
-        self.h_net = nn.Conv1d(1, hidden_dim, 1, stride=1, padding=0, bias=False)
-        self.v_net = nn.Conv1d(hidden_dim, 1, 1, stride=1, padding=0, bias=False)
-        self.softmax = nn.Softmax(dim=2)
-        self.gamma = nn.Parameter(torch.Tensor([0.]), requires_grad=True)
-
-    def forward(self, params):
-        params_psi = params[:, :self._psi_dim].unsqueeze(1)
-        attention_map = self.softmax(torch.bmm(self.f_net(params_psi).transpose(1, 2), self.g_net(params_psi)))
-        self_attention = self.v_net(torch.bmm(attention_map, self.h_net(params_psi).transpose(1, 2)).transpose(1, 2))
-        psi_with_attention = (self.gamma * self_attention + params_psi)[:, 0, :]
-        return torch.cat([psi_with_attention, params[:, self._psi_dim:]], dim=1)
-
-
-class SimpleAttention(nn.Module):
-    def __init__(self, psi_dim, hidden_dim):
-        super().__init__()
-        self.hidden_dim = hidden_dim
-        self._psi_dim = psi_dim
-
-        self._attention_net = nn.Sequential(
-            nn.Linear(psi_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, psi_dim),
-            nn.Softmax(dim=1)
-        )
-        self.gamma = nn.Parameter(torch.Tensor([0.]), requires_grad=True)
-
-    def forward(self, params):
-        psi_with_attention = params[:, :self._psi_dim] * self._attention_net(params[:, :self._psi_dim])
-        return torch.cat([psi_with_attention, params[:, self._psi_dim:]], dim=1)
-
-
-class Generator(nn.Module):
-    def __init__(self, noise_dim, out_dim, psi_dim, hidden_dim=100, x_dim=1, attention_net=None):
-        super(Generator, self).__init__()
-        
-        self.fc1 = nn.Linear(noise_dim + x_dim + psi_dim, hidden_dim)
-        # nn.init.xavier_normal_(self.fc1.weight)
-        # nn.init.constant_(self.fc1.bias, 0.0)
-        
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        # nn.init.xavier_normal_(self.fc2.weight)
-        # nn.init.constant_(self.fc2.bias, 0.0)
-        
-        self.fc3 = nn.Linear(hidden_dim, out_dim)
-        # nn.init.xavier_normal_(self.fc3.weight)
-        # nn.init.constant_(self.fc3.bias, 0.0)
-        
-        self.fc4 = nn.Linear(hidden_dim, hidden_dim)
-        # nn.init.xavier_normal_(self.fc4.weight)
-        # nn.init.constant_(self.fc4.bias, 0.0)
-        
-        # self.pc = psi_compressor
-        self.psi_dim = psi_dim
-        self.attention_net = attention_net
-
-    def forward(self, z, params):
-        """
-            Generator takes a vector of noise and produces sample
-        """
-        # psi_embedding = self.pc(params[:, :self.psi_dim])
-        # z = torch.cat([z, psi_embedding, params[:, self.psi_dim:]], dim=1)
-        if self.attention_net:
-            params = self.attention_net(params)
-        z = torch.cat([z, params], dim=1)
-        h1 = torch.tanh(self.fc1(z))
-        h4 = torch.tanh(self.fc4(h1))
-        h2 = F.leaky_relu(self.fc2(h4))
-        y_gen = self.fc3(h2)
-        return y_gen
-
-
-class Discriminator(nn.Module):
-    def __init__(self,
-                 in_dim,
-                 psi_dim,
-                 hidden_dim=100,
-                 output_logits=False,
-                 x_dim=1,
-                 output_dim=1,
-                 attention_net=None):
-        super(Discriminator, self).__init__()
-        self.output_logits = output_logits
-
-        self.fc1 = nn.Linear(in_dim + x_dim + psi_dim, hidden_dim)
-        nn.init.xavier_normal_(self.fc1.weight)
-        nn.init.constant_(self.fc1.bias, 0.0)
-        
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        nn.init.xavier_normal_(self.fc2.weight)
-        nn.init.constant_(self.fc2.bias, 0.0)
-        
-        self.fc3 = nn.Linear(hidden_dim, hidden_dim)
-        nn.init.xavier_normal_(self.fc3.weight)
-        nn.init.constant_(self.fc3.bias, 0.0)
-        
-        self.fc4 = nn.Linear(hidden_dim, output_dim)
-        nn.init.xavier_normal_(self.fc4.weight)
-        nn.init.constant_(self.fc4.bias, 0.0)
-        
-        # self.pc = psi_compressor
-        self.psi_dim = psi_dim
-        self.attention_net = attention_net
-
-    def forward(self, x, params):
-        if self.attention_net:
-            params = self.attention_net(params)
-        print('KSDJKALSDKADHASD')
-        print(x)
-        assert not torch.isnan(x).any(), "x have NaN values"
-        print(params)
-        assert not torch.isnan(params).any(), "params have NaN values"
-        x = torch.cat([x, params], dim=1)
-        # psi_embedding = self.pc(params[:, :self.psi_dim])
-        # x = torch.cat([x, psi_embedding, params[:, self.psi_dim:]], dim=1)
-        print(self.fc1(x))
-        assert not torch.isnan(self.fc1.weight).any(), "fc1 weights have NaN values"
-        h1 = torch.tanh(self.fc1(x))
-        h2 = F.leaky_relu(self.fc2(h1))
-        # h3 = F.leaky_relu(self.fc3(h2))
-        if self.output_logits:
-            return self.fc4(h2)
-        else:
-            return torch.sigmoid(self.fc4(h2))
-
-
-class GANLosses(object):
-    def __init__(self, task):
-        self.TASK = task
-
-    def g_loss(self, discrim_output, discrim_output_gen_prime=None, discrim_output_real=None):
-        eps = 1e-10
-        if self.TASK == 'KL':
-            loss = torch.log(1 - discrim_output + eps).mean()
-        elif self.TASK == 'REVERSED_KL':
-            loss = - torch.log(discrim_output + eps).mean()
-        elif self.TASK == 'WASSERSTEIN':
-            loss = - discrim_output.mean()
-        elif self.TASK == "CRAMER":
-            # loss = (torch.norm(discrim_output_real - discrim_output, dim=1) + \
-            #        torch.norm(discrim_output_real - discrim_output_gen_prime, dim=1) - \
-            #        torch.norm(discrim_output - discrim_output_gen_prime, dim=1)).mean()
-            loss =   (torch.norm(discrim_output_real - discrim_output_gen_prime, dim=1) -
-                      torch.norm(discrim_output_real, dim=1) -
-                      torch.norm(discrim_output - discrim_output_gen_prime, dim=1) +
-                      torch.norm(discrim_output, dim=1)).mean()
-        return loss
-
-    def d_loss(self, discrim_output_gen, discrim_output_real, discrim_output_gen_prime=None):
-        eps = 1e-10
-        if self.TASK in ['KL', 'REVERSED_KL']:
-            loss = - torch.log(discrim_output_real + eps).mean() - torch.log(1 - discrim_output_gen + eps).mean()
-        elif self.TASK == 'WASSERSTEIN':
-            loss = - (discrim_output_real.mean() - discrim_output_gen.mean())
-        elif self.TASK == "CRAMER":
-            loss = - (torch.norm(discrim_output_real - discrim_output_gen_prime, dim=1) -
-                      torch.norm(discrim_output_real, dim=1) -
-                      torch.norm(discrim_output_gen - discrim_output_gen_prime, dim=1) +
-                      torch.norm(discrim_output_gen, dim=1)).mean()
-        return loss
-
-    def calc_gradient_penalty(self, discriminator, data_gen, inputs_batch, inp_data, lambda_reg=.1, data_gen_prime=None):
-        device = data_gen.device
-        alpha = torch.rand(inp_data.shape[0], 1).to(device)
-        dims_to_add = len(inp_data.size()) - 2
-        for i in range(dims_to_add):
-            alpha = alpha.unsqueeze(-1)
-
-        interpolates = (alpha * inputs_batch + ((1 - alpha) * data_gen)).to(device)
-        interpolates.requires_grad_(True)
-        disc_interpolates = discriminator(interpolates, inp_data)
-        if self.TASK == "WASSERSTEIN":
-            gradients = torch.autograd.grad(outputs=disc_interpolates, inputs=interpolates,
-                                            grad_outputs=torch.ones(disc_interpolates.size()).to(device),
-                                            create_graph=True, retain_graph=True, only_inputs=True)[0]
-        elif self.TASK == "CRAMER":
-            f_val = torch.norm(discriminator(data_gen_prime, inp_data) - disc_interpolates, dim=1) - \
-                    torch.norm(disc_interpolates, dim=1)
-            gradients = torch.autograd.grad(outputs=f_val, inputs=interpolates,
-                                            grad_outputs=torch.ones(f_val.size()).to(device),
-                                            create_graph=True, retain_graph=True, only_inputs=True)[0]
-        grad_norm_diff = gradients.norm(2, dim=1) - 1
-        grad_norm_diff[grad_norm_diff < 0] = 0
-        gradient_penalty = (grad_norm_diff ** 2).mean() * lambda_reg
-        return gradient_penalty
-
-    def calc_zero_centered_GP(self, discriminator, data_gen, inputs_batch, inp_data, gamma_reg=.1):
-        # TODO: data_gen is not used!
-        device = inputs_batch.device
-        local_input = inp_data.clone().detach().requires_grad_(True)
-        disc_interpolates = discriminator(local_input, inputs_batch)
-        gradients = torch.autograd.grad(outputs=disc_interpolates, inputs=local_input,
-                                        grad_outputs=torch.ones(disc_interpolates.size()).to(device),
-                                        create_graph=True, retain_graph=True, only_inputs=True)[0]
-        return gamma_reg / 2 * (gradients.norm(2, dim=1) ** 2).mean() 
-
-
-class Encoder(nn.Module):
-    def __init__(self, input_dim, latent_dim):
-        super().__init__()
-        self.fc1 = nn.Linear(input_dim, 128)
-        self.fc2 = nn.Linear(128, 64)
-        self.fc_mean = nn.Linear(64, latent_dim)
-        self.fc_log_var = nn.Linear(64, latent_dim)
-        self.relu = nn.ReLU()
-
-    def forward(self, x):
-        h = self.relu(self.fc1(x))
-        h = self.relu(self.fc2(h))
-        return self.fc_mean(h), self.fc_log_var(h)
-
-class Decoder(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super().__init__()
-        self.fc1 = nn.Linear(input_dim, 64)
-        self.fc2 = nn.Linear(64, 128)
-        self.fc3 = nn.Linear(128, output_dim)
-        self.relu = nn.ReLU()
-
-    def forward(self, x):
-        h = self.relu(self.fc1(x))
-        h = self.relu(self.fc2(h))
-        return self.fc3(h)
-    
 class IBNN_ReLU(Kernel):
     is_stationary = False
 
@@ -320,13 +43,13 @@ class IBNN_ReLU(Kernel):
         return result
 
 class Classifier(torch.nn.Module):
-    def __init__(self, phi_dim,x_dim = 3, hidden_dim=128):
+    def __init__(self, phi_dim,x_dim = 3, hidden_dim=128, activation='silu'):
         super().__init__()
         self.fc1 = torch.nn.Linear(x_dim + phi_dim, hidden_dim)
         self.fc2 = torch.nn.Linear(hidden_dim, hidden_dim)
         #self.fc3 = torch.nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = torch.nn.Linear(hidden_dim, 1)
-        self.activation = torch.nn.SiLU()
+        self.activation = {'silu': torch.nn.SiLU(), 'relu': torch.nn.ReLU()}.get(activation)
 
     def forward(self, x):
         x = self.activation(self.fc1(x))
@@ -344,7 +67,8 @@ class Classifier(torch.nn.Module):
 
 class DeepONetClassifier(torch.nn.Module):
     def __init__(self, phi_dim, x_dim = 3,
-                 layers:list = [[128,128],[128,128]], p = 64, layer_norm:bool=False):
+                 layers:list = [[128,128],[128,128]], p = 64, 
+                 activation='silu', layer_norm:bool=False):
         super().__init__()
         self.output_dim = 1
         self.p = p
@@ -352,8 +76,8 @@ class DeepONetClassifier(torch.nn.Module):
         trunk_input_dim = x_dim
         branch_layers, trunk_layers = layers
         self.layer_dims = [(phi_dim, x_dim), branch_layers, trunk_layers]
-        self.branch_net = self._build_network(branch_input_dim, branch_layers, self.output_dim*self.p, activation='silu')
-        self.trunk_net = self._build_network(trunk_input_dim, trunk_layers, self.output_dim*self.p, activation='relu')
+        self.branch_net = self._build_network(branch_input_dim, branch_layers, self.output_dim*self.p, activation=activation)
+        self.trunk_net = self._build_network(trunk_input_dim, trunk_layers, self.output_dim*self.p, activation=activation)
         self.bias = torch.nn.Parameter(torch.zeros(self.output_dim))
         self._init_weights()
         self.branch_ln = torch.nn.LayerNorm(self.output_dim * self.p) if layer_norm else None
@@ -633,3 +357,376 @@ class StochasticTaylor(torch.nn.Module):
 
     def predict_hits(self, phi, x):
         return self.predict_proba(phi, x).sum(dim=-1)
+
+class SharedBasisStochasticTaylor(torch.nn.Module):
+    """
+    Local stochastic Taylor model around phi0.
+
+    For a muon x and parameter vector phi, define dphi = phi - phi0.
+    The model predicts the local logit
+
+        eta(x, phi) =
+            a(x)
+            + u(x)^T dphi
+            + 0.5 * sum_k lambda_k(x) * (v_k^T dphi)^2
+            + 0.5 * sum_j diag_j(x) * dphi_j^2
+            + residual_3(x, dphi)
+
+    where:
+      - a(x) is a scalar offset,
+      - u(x) is the linear coefficient,
+      - {v_k} are GLOBAL shared quadratic directions,
+      - lambda_k(x) are muon-dependent amplitudes for those directions,
+      - diag_j(x) is an optional muon-dependent diagonal correction,
+      - residual_3 is constrained to scale like ||dphi||^3.
+
+    The probability is sigmoid(eta).
+    """
+
+    def __init__(
+        self,
+        phi_dim,
+        x_dim,
+        phi0,
+        hidden_dim=128,
+        rank=8,
+        residual_width=64,
+        use_diagonal=True,
+        use_residual=True,
+        eps_norm=1e-12,
+    ):
+        super().__init__()
+
+        self.D = phi_dim
+        self.K = x_dim
+        self.rank = rank
+        self.use_diagonal = use_diagonal
+        self.use_residual = use_residual
+        self.eps_norm = eps_norm
+
+        # Center of the local Taylor model
+        self.register_buffer("phi0", phi0.view(-1))
+
+        # ---------------------------
+        # 1) Shared trunk over muon features
+        # ---------------------------
+        self.trunk = torch.nn.Sequential(
+            torch.nn.Linear(self.K, hidden_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden_dim, hidden_dim),
+            torch.nn.GELU(),
+        )
+
+        # ---------------------------
+        # 2) Heads for local Taylor coefficients
+        # ---------------------------
+        self.head_a = torch.nn.Linear(hidden_dim, 1)          # a(x)
+        self.head_u = torch.nn.Linear(hidden_dim, self.D)     # u(x)
+        self.head_lambda = torch.nn.Linear(hidden_dim, rank)  # lambda(x)
+
+        if self.use_diagonal:
+            self.head_diag = torch.nn.Linear(hidden_dim, self.D)  # diagonal correction d(x)
+
+        # ---------------------------
+        # 3) Global shared quadratic basis V in R^{D x rank}
+        #    These are the common curvature directions.
+        # ---------------------------
+        self.V_raw = torch.nn.Parameter(torch.empty(self.D, rank))
+        torch.nn.init.orthogonal_(self.V_raw)
+
+        # ---------------------------
+        # 4) Third-order residual branch
+        #    This branch is multiplied by ||dphi||^3 so it cannot dominate
+        #    first- and second-order behavior near phi0.
+        # ---------------------------
+        if self.use_residual:
+            self.res_branch = torch.nn.Sequential(
+                torch.nn.Linear(self.K, hidden_dim),
+                torch.nn.GELU(),
+                torch.nn.Linear(hidden_dim, residual_width),
+            )
+            self.res_trunk = torch.nn.Sequential(
+                torch.nn.Linear(self.D, hidden_dim),
+                torch.nn.GELU(),
+                torch.nn.Linear(hidden_dim, residual_width),
+            )
+
+    # ------------------------------------------------------------------
+    # Utility: orthonormalized shared basis
+    # ------------------------------------------------------------------
+    def basis(self):
+        """
+        Returns an orthonormal basis V derived from V_raw using QR.
+        Shape: (D, rank)
+        """
+        # Reduced QR gives D x rank with orthonormal columns if D >= rank
+        V, _ = torch.linalg.qr(self.V_raw, mode="reduced")
+        return V
+
+    # ------------------------------------------------------------------
+    # Utility: local coefficients
+    # ------------------------------------------------------------------
+    def local_coefficients(self, x):
+        """
+        Compute the muon-dependent coefficients a(x), u(x), lambda(x), diag(x).
+
+        x:
+          - shape (S, K), or
+          - shape (n_phi, S, K)
+
+        returns:
+          a       : (..., 1)
+          u       : (..., D)
+          lam     : (..., rank)
+          diag    : (..., D) or None
+        """
+        h = self.trunk(x)
+        a = self.head_a(h)
+        u = self.head_u(h)
+        lam = self.head_lambda(h)
+
+        diag = self.head_diag(h) if self.use_diagonal else None
+        return a, u, lam, diag
+
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
+    def forward(self, phi, x):
+        """
+        phi: shape (n_phi, D) or (D,)
+        x  : shape (S, K) or (n_phi, S, K)
+
+        returns:
+          logits of shape
+            - (n_phi, S) if x is (n_phi, S, K)
+            - (n_phi, S) if x is (S, K)
+        """
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+
+        dphi = phi - self.phi0                     # (n_phi, D)
+        n_phi = dphi.shape[0]
+
+        V = self.basis()                           # (D, rank)
+
+        # Local coefficients from muon features
+        a, u, lam, diag = self.local_coefficients(x)
+
+        # --------------------------------------------------------------
+        # Broadcast x if needed:
+        # - if x is (S, K), coefficients are (S, *)
+        # - if x is (n_phi, S, K), coefficients are (n_phi, S, *)
+        # --------------------------------------------------------------
+        if x.dim() == 2:
+            # a:    (S, 1)
+            # u:    (S, D)
+            # lam:  (S, rank)
+            # diag: (S, D) or None
+            S = x.shape[0]
+
+            # Linear term: u(x)^T dphi
+            # -> (n_phi, S)
+            lin_term = torch.einsum("sd,nd->ns", u, dphi)
+
+            # Shared low-rank quadratic term
+            # z = V^T dphi, shape (n_phi, rank)
+            z = dphi @ V
+            z2 = z ** 2
+            quad_lr = 0.5 * torch.einsum("sr,nr->ns", lam, z2)
+
+            # Optional diagonal quadratic correction
+            if self.use_diagonal:
+                dphi2 = dphi ** 2
+                quad_diag = 0.5 * torch.einsum("sd,nd->ns", diag, dphi2)
+            else:
+                quad_diag = 0.0
+
+            logit = a.transpose(0, 1) + lin_term + quad_lr + quad_diag
+
+            # Third-order residual
+            if self.use_residual:
+                norm_dphi = torch.norm(dphi, p=2, dim=1, keepdim=True)   # (n_phi, 1)
+                scale3 = norm_dphi ** 3                                  # (n_phi, 1)
+
+                # Direction only, to avoid the residual learning lower-order scale effects
+                dphi_unit = dphi / (norm_dphi + self.eps_norm)           # (n_phi, D)
+
+                y_branch = self.res_branch(x)                            # (S, residual_width)
+                y_trunk = self.res_trunk(dphi_unit)                      # (n_phi, residual_width)
+
+                residual = torch.einsum("sp,np->ns", y_branch, y_trunk)  # (n_phi, S)
+                logit = logit + scale3 * residual
+
+            return logit
+
+        elif x.dim() == 3:
+            # x is paired with phi
+            # a:    (n_phi, S, 1)
+            # u:    (n_phi, S, D)
+            # lam:  (n_phi, S, rank)
+            # diag: (n_phi, S, D) or None
+            S = x.shape[1]
+
+            # Linear term
+            lin_term = torch.sum(u * dphi.unsqueeze(1), dim=-1)          # (n_phi, S)
+
+            # Shared low-rank quadratic term
+            z = dphi @ V                                                 # (n_phi, rank)
+            z2 = z ** 2
+            quad_lr = 0.5 * torch.sum(lam * z2.unsqueeze(1), dim=-1)     # (n_phi, S)
+
+            # Optional diagonal correction
+            if self.use_diagonal:
+                dphi2 = dphi ** 2
+                quad_diag = 0.5 * torch.sum(diag * dphi2.unsqueeze(1), dim=-1)
+            else:
+                quad_diag = 0.0
+
+            logit = a.squeeze(-1) + lin_term + quad_lr + quad_diag
+
+            # Third-order residual
+            if self.use_residual:
+                norm_dphi = torch.norm(dphi, p=2, dim=1, keepdim=True)   # (n_phi, 1)
+                scale3 = norm_dphi ** 3                                  # (n_phi, 1)
+                dphi_unit = dphi / (norm_dphi + self.eps_norm)           # (n_phi, D)
+
+                y_branch = self.res_branch(x)                            # (n_phi, S, residual_width)
+                y_trunk = self.res_trunk(dphi_unit)                      # (n_phi, residual_width)
+
+                residual = torch.einsum("nsp,np->ns", y_branch, y_trunk)
+                logit = logit + scale3 * residual
+
+            return logit
+
+        else:
+            raise ValueError("x must have shape (S, K) or (n_phi, S, K)")
+
+    # ------------------------------------------------------------------
+    # Probability / expected hits
+    # ------------------------------------------------------------------
+    def predict_proba(self, phi, x):
+        return torch.sigmoid(self.forward(phi, x))
+
+    def predict_hits(self, phi, x):
+        return self.predict_proba(phi, x).sum(dim=-1)
+
+    # ------------------------------------------------------------------
+    # Explicit quadratic logit Hessian C(x) at phi0
+    # ------------------------------------------------------------------
+    @torch.no_grad()
+    def get_logit_hessian_coefficients(self, x):
+        """
+        Returns the muon-dependent Hessian of the LOGIT at phi0:
+            C(x) = V diag(lambda(x)) V^T + diag(diag(x))
+
+        Shapes:
+          if x is (S, K):         returns (S, D, D)
+          if x is (n_phi, S, K):  returns (n_phi, S, D, D)
+        """
+        V = self.basis()
+        _, _, lam, diag = self.local_coefficients(x)
+
+        if x.dim() == 2:
+            # low-rank part: sum_r lam[s,r] * v_r v_r^T
+            C_lr = torch.einsum("sr,dr,er->sde", lam, V, V)
+
+            if self.use_diagonal:
+                C_diag = torch.diag_embed(diag)
+                C = C_lr + C_diag
+            else:
+                C = C_lr
+            return C
+
+        elif x.dim() == 3:
+            C_lr = torch.einsum("nsr,dr,er->nsde", lam, V, V)
+
+            if self.use_diagonal:
+                C_diag = torch.diag_embed(diag)
+                C = C_lr + C_diag
+            else:
+                C = C_lr
+            return C
+
+        else:
+            raise ValueError("x must have shape (S, K) or (n_phi, S, K)")
+
+    # ------------------------------------------------------------------
+    # Analytical gradient of expected hits at phi0
+    # ------------------------------------------------------------------
+    @torch.no_grad()
+    def grad_phi(self, phi, x):
+        """
+        Analytical gradient of expected hits evaluated at phi0.
+
+        Uses:
+            grad p = sigma'(a) * u
+        because dphi = 0 kills quadratic and residual contributions in first derivative.
+
+        Returns:
+          if x is (S, K):         (D,)
+          if x is (n_phi, S, K):  (n_phi, D)
+        """
+        a, u, _, _ = self.local_coefficients(x)
+        p = torch.sigmoid(a)
+        dp = p * (1.0 - p)
+
+        if x.dim() == 2:
+            grad = torch.sum(dp * u, dim=0)          # (D,)
+            return grad
+
+        elif x.dim() == 3:
+            grad = torch.sum(dp * u, dim=1)          # (n_phi, D)
+            return grad
+
+        else:
+            raise ValueError("x must have shape (S, K) or (n_phi, S, K)")
+
+    # ------------------------------------------------------------------
+    # Analytical Hessian of expected hits at phi0
+    # ------------------------------------------------------------------
+    @torch.no_grad()
+    def hess_phi(self, phi, x):
+        """
+        Analytical Hessian of expected hits at phi0.
+
+        For one muon:
+            Hess p = sigma''(a) * u u^T + sigma'(a) * C
+
+        where
+            C = V diag(lambda) V^T + diag(diag)
+
+        Returns:
+          if x is (S, K):         (D, D)
+          if x is (n_phi, S, K):  (n_phi, D, D)
+        """
+        a, u, _, _ = self.local_coefficients(x)
+        C = self.get_logit_hessian_coefficients(x)
+
+        p = torch.sigmoid(a)
+        dp = p * (1.0 - p)
+        ddp = dp * (1.0 - 2.0 * p)
+
+        if x.dim() == 2:
+            u_outer = torch.einsum("sd,se->sde", u, u)              # (S, D, D)
+            hess_per_muon = ddp.unsqueeze(-1) * u_outer + dp.unsqueeze(-1) * C
+            return torch.sum(hess_per_muon, dim=0)                  # (D, D)
+
+        elif x.dim() == 3:
+            u_outer = torch.einsum("nsd,nse->nsde", u, u)           # (n_phi, S, D, D)
+            hess_per_muon = ddp.unsqueeze(-1) * u_outer + dp.unsqueeze(-1) * C
+            return torch.sum(hess_per_muon, dim=1)                  # (n_phi, D, D)
+
+        else:
+            raise ValueError("x must have shape (S, K) or (n_phi, S, K)")
+
+    # ------------------------------------------------------------------
+    # Optional regularizer to call from training loop
+    # ------------------------------------------------------------------
+    def orthogonality_penalty(self):
+        """
+        Penalize non-orthogonality of the shared basis.
+        Useful if you do not rely only on QR in basis().
+        """
+        G = self.V_raw.transpose(0, 1) @ self.V_raw
+        I = torch.eye(self.rank, device=G.device, dtype=G.dtype)
+        return torch.sum((G - I) ** 2)

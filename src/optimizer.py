@@ -120,7 +120,7 @@ class LCSO(OptimizerClass):
                  epsilon:float = 0.2,
                  initial_phi:torch.tensor = None,
                  history:tuple = (),
-                 WandB:dict = {'name': 'LGSOptimization'},
+                 WandB:dict = {'name': 'LCSOptimization'},
                  device = torch.device('cpu'),
                  outputs_dir = 'outputs',
                  resume:bool = False,
