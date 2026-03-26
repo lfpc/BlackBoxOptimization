@@ -1034,10 +1034,16 @@ class ShipMuonShield():
                 use_diluted:bool = False,
                 parallel:bool = False,
                 use_B_goal:bool = True,
+                use_ratio_yoke:bool = True,
                 cost_as_constraint:bool = False,
                 reduction:str = 'mean'
                  ) -> None:
         
+        if x_margin is None:
+            x_margin = sensitive_plane[1]['dx'] / 2 + 0.01
+        if y_margin is None:
+            y_margin = sensitive_plane[1]['dy'] / 2 + 0.01
+
         self.x_margin = x_margin
         self.y_margin = y_margin
         self.W0 = W0
@@ -1065,6 +1071,7 @@ class ShipMuonShield():
         self.decay_vessel_sensitive = decay_vessel_sensitive
         self.use_diluted = use_diluted
         self.parallel = parallel
+        self.use_ratio_yoke = use_ratio_yoke
         self.cost_as_constraint = cost_as_constraint    
 
         if initial_phi is not None:
@@ -1129,16 +1136,18 @@ class ShipMuonShield():
         x = torch.from_numpy(x)                  
         self._sum_weights = x[:, -1].sum()    
         return x
+
     def get_weights(self, x):
         return x[:, -1]
+
     def simulate_mag_fields(self,phi:torch.tensor, cores:int = 7):
         phi = self.add_fixed_params(phi)
-        z_gap, dZ, dXIn, dXOut, dYIn, dYOut, gapIn, gapOut, ratio_yokesIn, ratio_yokesOut, \
+        z_gap, dZ, dXIn, dXOut, dYIn, dYOut, gapIn, gapOut, x_yokeIn, x_yokeOut, \
         dY_yokeIn, dY_yokeOut, XmgapIn, XmgapOut = phi[:, :14].T
         length = (dZ.sum().mul(2) + z_gap.sum()).item()
         dX_all = torch.max(
-            dXIn * (1 + ratio_yokesIn) + gapIn + XmgapIn,
-            dXOut * (1 + ratio_yokesOut) + gapOut + XmgapOut
+            dXIn + x_yokeIn + gapIn + XmgapIn,
+            dXOut + x_yokeOut + gapOut + XmgapOut
         )
         dY_all = torch.max(dYIn + dY_yokeIn, dYOut + dY_yokeOut)
         max_x = dX_all.max().item()
@@ -1255,8 +1264,8 @@ class ShipMuonShield():
             dY2 = params[5]
             gap = params[6]
             gap2 = params[7]
-            ratio_yoke_1 = params[8]
-            ratio_yoke_2 = params[9]
+            x_yoke_1 = params[8]
+            x_yoke_2 = params[9]
             dY_yoke_1 = params[10]
             dY_yoke_2 = params[11]
             X_mgap_1 = params[12]
@@ -1274,24 +1283,24 @@ class ShipMuonShield():
             volume += compute_solid_volume(corners)
             corners = torch.tensor([
             [X_mgap_1 + dX + gap, 0, 0],
-            [X_mgap_1 + dX + gap + dX * ratio_yoke_1, 0, 0],
-            [X_mgap_1 + dX + gap + dX * ratio_yoke_1, dY + Ymgap, 0],
+            [X_mgap_1 + dX + gap + x_yoke_1, 0, 0],
+            [X_mgap_1 + dX + gap + x_yoke_1, dY + Ymgap, 0],
             [X_mgap_1 + dX + gap, dY + Ymgap, 0],
             [X_mgap_2 + dX2 + gap2, 0, 2 * dZ],
-            [X_mgap_2 + dX2 + gap2 + dX2 * ratio_yoke_2, 0, 2 * dZ],
-            [X_mgap_2 + dX2 + gap2 + dX2 * ratio_yoke_2, dY2 + Ymgap, 2 * dZ],
+            [X_mgap_2 + dX2 + gap2 + x_yoke_2, 0, 2 * dZ],
+            [X_mgap_2 + dX2 + gap2 + x_yoke_2, dY2 + Ymgap, 2 * dZ],
             [X_mgap_2 + dX2 + gap2, dY2 + Ymgap, 2 * dZ],
             ])
             volume += compute_solid_volume(corners)
 
             corners = torch.tensor([
             [X_mgap_1, dY, 0],
-            [X_mgap_1 + dX + gap + dX * ratio_yoke_1, dY, 0],
-            [X_mgap_1 + dX + gap + dX * ratio_yoke_1, dY + dY_yoke_1, 0],
+            [X_mgap_1 + dX + gap + x_yoke_1, dY, 0],
+            [X_mgap_1 + dX + gap + x_yoke_1, dY + dY_yoke_1, 0],
             [X_mgap_1, dY + dY_yoke_1, 0],
             [X_mgap_2, dY2, 2 * dZ],
-            [X_mgap_2 + dX2 + gap2 + dX2 * ratio_yoke_2, dY2, 2 * dZ],
-            [X_mgap_2 + dX2 + gap2 + dX2 * ratio_yoke_2, dY2 + dY_yoke_2, 2 * dZ],
+            [X_mgap_2 + dX2 + gap2 + x_yoke_2, dY2, 2 * dZ],
+            [X_mgap_2 + dX2 + gap2 + x_yoke_2, dY2 + dY_yoke_2, 2 * dZ],
             [X_mgap_2, dY2 + dY_yoke_2, 2 * dZ],
             ])
             volume += compute_solid_volume(corners)
@@ -1318,6 +1327,7 @@ class ShipMuonShield():
         elif self.cost_loss_fn == 'linear_length':
             return W/(1-L/self.L0)
         else: return 1
+        
     def __call__(self,phi,muons = None):
         if phi.dim()>1:
             y = []
@@ -1325,21 +1335,25 @@ class ShipMuonShield():
                 y.append(self(p))
             return torch.stack(y)
         M = self.get_total_cost(phi)
-        jump = self.get_constraints(phi) > 0.0
-        if not self.cost_as_constraint: jump = jump | (M > ((6 * np.log(10) / 10 + 1) * self.W0))
-        jump = jump & (self.reduction != 'none')
-        if jump: 
-            return torch.ones((1,1),device=phi.device)*1E6
-        try: loss = self.simulate(phi, muons, return_all=(self.reduction=='none'))
+
+        if self.reduction != 'none':
+            jump = self.get_constraints(phi) > 0.0
+            if not self.cost_as_constraint: jump = jump | (M > ((6 * np.log(10) / 10 + 1) * self.W0))
+            if jump: 
+                return 1E6 * torch.ones((1,1),device=phi.device)
+            
+        try: 
+            loss = self.simulate(phi, muons, return_all=(self.reduction=='none'))
         except Exception as e:
             print(f"Error occurred with input: {self.add_fixed_params(phi)}")
             print(e)
             raise
+
         loss = self._blackbox_loss(*loss)
         if self.reduction == 'mean':
-            return loss.sum()*1e6 / self._sum_weights
+            loss = loss.sum()*1e6 / self._sum_weights
         elif self.reduction == 'sum':
-            return loss.sum()
+            loss = loss.sum()
         if self.apply_det_loss:
             loss = loss + self._apply_deterministic_loss(phi, loss)
         return loss
@@ -1543,8 +1557,14 @@ class ShipMuonShield():
                 
         else:
             new_phi = phi
-            
-        return new_phi.view(self.n_magnets, self.n_params)
+
+        new_phi = new_phi.view(self.n_magnets, self.n_params)
+        if self.use_ratio_yoke:
+            new_phi = new_phi.clone()
+            new_phi[:, 8] = new_phi[:, 2] * new_phi[:, 8]
+            new_phi[:, 9] = new_phi[:, 3] * new_phi[:, 9]
+
+        return new_phi
         
     def _apply_deterministic_loss(self,phi,y):
         M = self.get_total_cost(phi)
@@ -1557,6 +1577,8 @@ class ShipMuonShield():
         def fn_pen(x): 
             return torch.nn.functional.relu(x,inplace=False).pow(2)
         phi = self.add_fixed_params(phi)
+        x_yoke_in = phi[:,8]
+        x_yoke_out = phi[:,9]
         constraints = fn_pen((self.get_total_length(phi)-self.L0)*100)
         wall_gap = 1 #cm
         def get_cavern_bounds(z):
@@ -1571,10 +1593,10 @@ class ShipMuonShield():
         Z_out = torch.cumsum(phi[:,0] + 2*phi[:,1],dim=0)
         Z_in = Z_out - 2*phi[:,1]
         with torch.no_grad(): x_min, y_min = get_cavern_bounds(Z_in)
-        constraints = constraints + fn_pen(phi[:,2]+phi[:,8]*phi[:,2]+phi[:,6]+phi[:,12]-x_min)
+        constraints = constraints + fn_pen(phi[:,2] + x_yoke_in + phi[:,6] + phi[:,12] - x_min)
         constraints = constraints + fn_pen(phi[:,4]+phi[:,10]+Ymgap - y_min)
         with torch.no_grad(): x_min, y_min = get_cavern_bounds(Z_out)
-        constraints = constraints + fn_pen(phi[:,3]+phi[:,9]*phi[:,3]+phi[:,7]+phi[:,13] -x_min)
+        constraints = constraints + fn_pen(phi[:,3] + x_yoke_out + phi[:,7] + phi[:,13] - x_min)
         constraints = constraints + fn_pen(phi[:,5]+phi[:,11]+Ymgap - y_min)
         if self.use_diluted:
             if False:#self.key and not self.key.startswith("stella"):
@@ -1582,8 +1604,8 @@ class ShipMuonShield():
                 constraints = constraints + fn_pen((1-phi[:,9]))
             else:
                 # ∆Xcore,i · (1 + Ryoke/core,i) - ∆Xcore,i+1 · (1 + Ryoke/core,i+1) < 0. (here number are the magnets)
-                t1 = phi[:-1, 2] * (1 + phi[:-1, 8])
-                t2 = phi[1:,  2] * (1 + phi[1:,  8])
+                t1 = phi[:-1, 2] + x_yoke_in[:-1]
+                t2 = phi[1:,  2] + x_yoke_in[1:]
                 delta = fn_pen(t1 - t2)
                 pad = torch.zeros(1, device=delta.device, dtype=delta.dtype)
                 delta = torch.cat([pad, delta])
@@ -1616,6 +1638,8 @@ class ShipMuonShield():
         #phi = torch.from_numpy(phi).float()
         
         phi = self.add_fixed_params(phi)
+        x_yoke_in = phi[:,8]
+        x_yoke_out = phi[:,9]
         
         constraint_values = []
         length_constraint = self.L0 - self.get_total_length(phi)
@@ -1626,13 +1650,13 @@ class ShipMuonShield():
 
         with torch.no_grad():
             x_min_g1, y_min_g1 = get_cavern_bounds(z - 2 * phi[:,1])
-        c1 = x_min_g1 - (phi[:,2] + phi[:,8] * phi[:,2] + phi[:,6] + phi[:,12])
+        c1 = x_min_g1 - (phi[:,2] + x_yoke_in + phi[:,6] + phi[:,12])
         constraint_values.append(c1)
         c2 = y_min_g1 - (phi[:,4] + phi[:,10] + Ymgap)
         constraint_values.append(c2)
         with torch.no_grad():
             x_min_g2, y_min_g2 = get_cavern_bounds(z)
-        c3 = x_min_g2 - (phi[:,3] + phi[:,9] * phi[:,3] + phi[:,7] + phi[:,13])
+        c3 = x_min_g2 - (phi[:,3] + x_yoke_out + phi[:,7] + phi[:,13])
         constraint_values.append(c3)
         c4 = y_min_g2 - (phi[:,5] + phi[:,11] + Ymgap)
         constraint_values.append(c4)
@@ -1785,7 +1809,8 @@ class ShipMuonShieldCuda(ShipMuonShield):
         y = output['y']
         z = output['z']
         particle = output['pdg_id']
-        weight = output['weight']
+        if 'weight' in output: weight = output['weight']
+        else: weight = torch.ones_like(px)
         return torch.stack([px, py, pz, x, y, z, particle, weight])    
 
 if __name__ == '__main__':

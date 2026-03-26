@@ -25,7 +25,7 @@
   "use_B_goal": true,
   "cavern": true,
   "seed": null,
-  "x_margin": 2.1, "y_margin": 3.0,
+  "x_margin": null, "y_margin": null,
   "fields_file": null,
   "muons_file": "/home/hep/lprate/projects/MuonsAndMatter/data/muons/full_sample_after_target.h5",
   "SND": true,
