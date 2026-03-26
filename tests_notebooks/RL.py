@@ -4,8 +4,27 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join('..', 'src')))
 sys.path.append(os.path.abspath(os.path.join('..')))
-from problems import ShipMuonShieldCuda, make_index
+from muons_and_matter.cuda_muons_ship import run_from_params as simulate_muon_shield
 import json
+
+class MuonShieldEnvironment:
+    def __init__(self):
+        self.kwargs = {'NI_from_B': True,
+                       'simulate_fields': False,
+                       "add_cavern": True,
+                       "use_diluted": False}
+    def reset(self):
+        self.muons = sample_x()
+    def step(self, phi):
+        Z = 0.02
+        muons_output = simulate_muon_shield(phi, self.muons, 
+                                            sensitive_plane = {'dz': 0.02, 'dx': 20, 'dy': 20, 'position': Z}, 
+                                            **self.kwargs)
+        self.muons = torch.cat(muons_output['px'], muons_output['py'], muons_output['pz'], 
+                               muons_output['x'], muons_output['y'], muons_output['z'], 
+                               muons_output['pdg_id'], muons_output['weight'], dim=1)
+        
+        return 
 
 n_samples = 0
 dim = 15

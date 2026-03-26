@@ -4,13 +4,15 @@ import matplotlib.pyplot as plt
 import sys
 import os
 from tqdm import trange
+import numpy as np
+import argparse
 
 device = torch.device("cuda:3")
 sys.path.append(os.path.abspath(os.path.join('..', 'src')))
 sys.path.append(os.path.abspath(os.path.join('..')))
 from problems import ShipMuonShieldCuda
 from utils.nets import StochasticTaylor
-from utils import latin_hypercube_sample
+from utils import latin_hypercube_sample, normalize_vector, denormalize_vector
 
 
 def train_hits_classifier(model, phi, x, y, epochs=2000, lr=3e-3, batch_size=8192, device=None, l2_reg=None):
@@ -60,6 +62,10 @@ def train_hits_classifier(model, phi, x, y, epochs=2000, lr=3e-3, batch_size=819
 
 
 
+parser = argparse.ArgumentParser(description="Muon Shield robustness analysis (StochasticTaylor)")
+parser.add_argument('--normalize', action='store_true', help='Normalize phi to [0,1] using bounds (model-space); denormalize only for simulator calls')
+args = parser.parse_args()
+
 dim = 3
 x_dim = 7
 total_n_samples = 500_000_000
@@ -68,6 +74,8 @@ epsilon = 0.2
 N = 30
 n_test = 20
 FIGS_DIR = "outputs/figs"
+
+os.makedirs(FIGS_DIR, exist_ok=True)
 
 def random_sample(muons, n_samples):
     idx = torch.randint(0, muons.shape[0], (n_samples,))
@@ -84,9 +92,19 @@ CONFIG['n_samples'] = total_n_samples
 CONFIG['reduction'] = 'none'
 CONFIG['cost_as_constraint'] = False
 problem = ShipMuonShieldCuda(**CONFIG)
-initial_phi = problem.initial_phi.to(device)
+cpu = torch.device('cpu')
+initial_phi_phys = problem.initial_phi.to(cpu, dtype=torch.get_default_dtype())
+initial_phi_phys_dev = initial_phi_phys.to(device)
 
-bounds = problem.GetBounds(device=torch.device('cpu'))
+bounds = problem.GetBounds(device=cpu).to(dtype=torch.get_default_dtype())
+
+def phi_phys_to_model(phi_phys: torch.Tensor) -> torch.Tensor:
+    return normalize_vector(phi_phys, bounds.to(phi_phys.device)) if args.normalize else phi_phys
+
+def phi_model_to_phys(phi_model: torch.Tensor) -> torch.Tensor:
+    return denormalize_vector(phi_model, bounds.to(phi_model.device)) if args.normalize else phi_model
+
+initial_phi = phi_phys_to_model(initial_phi_phys_dev)
 
 model = StochasticTaylor(
         phi_dim=dim,
@@ -98,12 +116,17 @@ model = StochasticTaylor(
     ).to(device)
 
 if True:    
-    phis = latin_hypercube_sample(N, initial_phi.cpu(), epsilon=epsilon)
+    phis = latin_hypercube_sample(N, initial_phi.detach().cpu(), epsilon=epsilon)
+    if args.normalize:
+        phis = phis.clamp(0.0, 1.0)
+    # Include the initial phi explicitly.
+    phis = torch.cat([initial_phi.detach().cpu().view(1, -1), phis], dim=0)
     m = []
     y = []
     for phi in phis:
         m.append(random_sample(problem.muons, n_samples_train).cpu())
-        y.append(problem(phi, m[-1]))
+        phi_phys = phi_model_to_phys(phi.to(device)).detach().cpu()
+        y.append(problem(phi_phys, m[-1]))
     m = torch.stack(m, dim=0)
     y = torch.stack(y, dim=0)
     losses = train_hits_classifier(model, phis, m, y, epochs=50, lr=3e-3, batch_size=4*16384, device=device)
@@ -119,7 +142,7 @@ else:
     model.load_state_dict(torch.load("hits_classifier.pth", map_location=device))
 
 os.makedirs(FIGS_DIR, exist_ok=True)
-import numpy as np
+
 
 # ============================================================
 # Gradient, Hessian, GN decomposition & eigenanalysis
@@ -133,25 +156,11 @@ H_sur = model.hess_phi(phi0, x0).cpu()            # (1, D, D) or (D, D)
 if H_sur.dim() == 2:
     H_sur = H_sur.unsqueeze(0)
 
-# Decompose: H = GN1 + GN2
-# GN2 = Σ σ''(a_i) b_i b_i^T  (outer-product term)
-# GN1 = Σ σ'(a_i)  C_i        (logit-Hessian term)
-with torch.no_grad():
-    a, b, C = model.get_taylor_coefficients(x0)  # a:(1,S,1), b:(1,S,D), C:(1,S,D,D)
-    p = torch.sigmoid(a)
-    dp = p * (1.0 - p)
-    ddp = dp * (1.0 - 2.0 * p)
-
-    b_outer = torch.einsum('nsi, nsj -> nsij', b, b)
-    H_GN2 = (ddp.unsqueeze(-1) * b_outer).sum(dim=1).cpu()   # (1, D, D)
-    H_GN1 = H_sur - H_GN2
 
 print('\n====== Surrogate analysis at phi0 ======')
 print('phi0:', phi0.view(-1).cpu().tolist())
 print('surrogate grad E[hits]:', sur_grad.view(-1).tolist())
 print('surrogate Hessian:\n', H_sur[0].numpy())
-print('GN-1 (σ\'·H_logit):\n', H_GN1[0].numpy())
-print('GN-2 (σ\'\'·J^T J):\n', H_GN2[0].numpy())
 
 eigenvalues, eigenvectors = torch.linalg.eigh(H_sur[0])
 print('\nHessian eigenvalues:', eigenvalues.tolist())
@@ -159,8 +168,6 @@ for idx, (eigval, eigvec) in enumerate(zip(eigenvalues, eigenvectors.T)):
     print(f'  Eigenvalue {idx}: {eigval.item():.6e}')
     print(f'  Eigenvector {idx}: {eigvec.tolist()}')
 
-eigenvalues_gn1, eigenvectors_gn1 = torch.linalg.eigh(H_GN1[0])
-print('\nGN-1 eigenvalues:', eigenvalues_gn1.tolist())
 
 # ============================================================
 # Error vs distance plot (adapted from stochastic_quadratic_nd)
@@ -183,13 +190,17 @@ def predict_hits_batched_ms(model, phi, x, batch_size=16384, device=device):
 
 
 def true_expected_hits(phi, muons, n_eval):
-    """Evaluate true E[hits] for each phi using problem()."""
+    """Evaluate true E[hits] for each phi using problem().
+
+    Note: `phi` is in model-space if args.normalize is True.
+    """
     if phi.dim() == 1:
         phi = phi.unsqueeze(0)
     results = []
     for i in range(phi.shape[0]):
         m = random_sample(muons, n_eval)
-        hits = problem(phi[i].cpu(), m)  # returns (n_eval,)
+        phi_phys = phi_model_to_phys(phi[i].to(device)).detach().cpu()
+        hits = problem(phi_phys, m)  # returns (n_eval,)
         results.append(hits.float().sum().item())
     return torch.tensor(results)
 
@@ -206,7 +217,7 @@ dist_centres = 0.5 * (dist_edges[:-1] + dist_edges[1:])
 f0_sur = predict_hits_batched_ms(model, phi0, x0).item()
 g_quad = sur_grad.view(-1)
 H_quad = H_sur[0]
-H_quad_gn1 = H_GN1[0]
+
 
 # Collect statistics per distance bin
 keys = ['sur', 'nw', 'gn1']
@@ -222,7 +233,9 @@ for b in trange(n_dist_bins):
     dirs = dirs / dirs.norm(dim=1, keepdim=True).clamp_min(1e-12)
     u = torch.rand(n_per_bin)
     r = (u * (r_hi ** dim - r_lo ** dim) + r_lo ** dim) ** (1.0 / dim)
-    phis_shell = initial_phi.cpu().view(1, -1) + dirs * r.unsqueeze(1)
+    phis_shell = initial_phi.detach().cpu().view(1, -1) + dirs * r.unsqueeze(1)
+    if args.normalize:
+        phis_shell = phis_shell.clamp(0.0, 1.0)
 
     # True E[hits]
     true_Ehits = true_expected_hits(phis_shell, problem.muons, n_eval_true)
@@ -231,14 +244,12 @@ for b in trange(n_dist_bins):
     pred_sur = predict_hits_batched_ms(model, phis_shell, x0)
 
     # Quadratic approximation (full Hessian)
-    dphi = phis_shell - initial_phi.cpu().view(1, -1)
+    dphi = phis_shell - initial_phi.detach().cpu().view(1, -1)
     quad_nw = f0_sur + dphi @ g_quad + 0.5 * (dphi @ H_quad * dphi).sum(dim=1)
 
-    # Quadratic approximation (GN-1)
-    quad_gn1 = f0_sur + dphi @ g_quad + 0.5 * (dphi @ H_quad_gn1 * dphi).sum(dim=1)
 
     denom = true_Ehits.abs().clamp_min(1e-8)
-    preds = {'sur': pred_sur, 'nw': quad_nw, 'gn1': quad_gn1}
+    preds = {'sur': pred_sur, 'nw': quad_nw}
     for k, pred in preds.items():
         e = (pred - true_Ehits).abs() / denom
         err_stats[k]['mean'].append(e.mean().item())
@@ -262,8 +273,8 @@ for k in ['true'] + keys:
         hits_stats[k][s] = np.array(hits_stats[k][s])
 
 # ---- Plot ----
-colors = {'sur': 'tab:blue', 'nw': 'tab:orange', 'gn1': 'tab:green'}
-labels = {'sur': 'Surrogate', 'nw': 'Quadratic (full H)', 'gn1': 'Quadratic (GN-1)'}
+colors = {'sur': 'tab:blue', 'nw': 'tab:orange'}
+labels = {'sur': 'Surrogate', 'nw': 'Quadratic (full H)'}
 markers = {'sur': 'o', 'nw': 's', 'gn1': 'd'}
 
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 9), sharex=True)
@@ -337,7 +348,7 @@ for idx, (eigval, eigvec) in enumerate(zip(eigenvalues, eigenvectors.T)):
     true_alphas = alphas[alpha_true_idx]
     for a in true_alphas:
         dphi = a * eigvec
-        phi_t = (initial_phi.cpu().view(-1) + dphi).view(1, -1)
+        phi_t = (initial_phi.detach().cpu().view(-1) + dphi).view(1, -1)
         true_vals.append(true_expected_hits(phi_t, problem.muons, n_eval_true).item())
 
     ax = axes_eig[idx]
@@ -358,6 +369,7 @@ plt.savefig(os.path.join(FIGS_DIR, 'eigenvector_parabolas_ms.png'))
 plt.show()
 
 
+print('\nAnalysis complete. Figures (error_vs_distance_ms.png, eigenvector_parabolas_ms.png) saved to:', FIGS_DIR)
 
 
 
