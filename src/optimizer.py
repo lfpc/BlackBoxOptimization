@@ -1997,7 +1997,7 @@ class myd3rlpyCallback():
         self.best_reward_subtracting_noise_history=self.train_env.best_reward_subtracting_noise_history.copy()
         self.total_steps_history=self.train_env.total_steps_history.copy()
 
-def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10):
+def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10, return_all_rewards=False):
     rewards = []
     noises = []
     xs=[]
@@ -2020,6 +2020,8 @@ def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10):
         if "added_noise" in info.keys():
             noises.append(info["added_noise"])
         xs.append(info["x"].copy())
+    if return_all_rewards:
+        return np.array(rewards),np.array(noises)
     if len(noises)>0:
         return np.mean(rewards),np.mean(noises),np.mean(xs,axis=0)
     else:
@@ -3873,6 +3875,20 @@ class toy_RL():
                 model.save(f"outputs/{self.WandB['name']}/tqc_model")
             elif self.algorithm=="SB3_SAC":
                 model.save(f"outputs/{self.WandB['name']}/sac_model")
+            trained_agent_rewards, trained_agent_noises = evaluate_policy(model.policy, pretrain_env, deterministic=True, n_eval_episodes=1000, return_all_rewards=True)
+            fig=plt.figure()
+            min_val = min(trained_agent_rewards.min(), (trained_agent_rewards - trained_agent_noises).min())
+            max_val = max(trained_agent_rewards.max(), (trained_agent_rewards - trained_agent_noises).max())
+            bins = np.linspace(min_val, max_val, 20)
+            plt.hist(trained_agent_rewards, bins=bins, alpha=0.6, label="Rewards")
+            plt.hist(trained_agent_rewards-trained_agent_noises, bins=bins, alpha=0.6, label="Rewards subtracting noise")
+            plt.legend()
+            plt.title("Reward distribution (deterministic performance of trained agent)")
+            plt.xlabel("Score")
+            plt.ylabel("Counts")
+            plt.grid(True)
+            plt.savefig(f"outputs/{self.WandB['name']}/reward_distribution.png")
+            plt.close(fig)
         elif self.algorithm=="SAC":
             if not (self.use_warm_baseline and self.warm_baseline_strategy=="replay_buffer"):
                 buffer=None
