@@ -2980,7 +2980,7 @@ def generate_toy_imitation_trajectories(env, warm_baseline, n_episodes=10):
         print(f"Warm baseline reward: {reward}")
     return obs_list, act_list, reward_list
 
-def get_reliable_design(model,env,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05):
+def get_reliable_design(model,env,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05):
     all_rewards=[]
     designs=[]
     for _ in range(n_designs):
@@ -2988,7 +2988,8 @@ def get_reliable_design(model,env,n_designs=1000,n_simulations=100,top_k=100,cva
         obs, _ = env.reset()
         done = False
         while not done:
-            action, _ = model.policy.predict(obs, deterministic=False)
+            action, _ = model.policy.predict(obs, deterministic=True)
+            action+=noise_amplitude*np.random.randn()
             obs, r, done, truncated, info = env.step(action)
         design=obs.copy()
         designs.append(design)
@@ -3001,30 +3002,30 @@ def get_reliable_design(model,env,n_designs=1000,n_simulations=100,top_k=100,cva
                 obs, reward, done, truncated, info = env.step(action)
             rewards.append(reward)
         all_rewards.append(np.array(rewards))
-        #Select top_k designs:
-        mean_scores = np.array([r.mean() for r in all_rewards])
-        top_indices = np.argsort(mean_scores)[-top_k:]
-        top_designs = [designs[i] for i in top_indices]
-        top_rewards = [all_rewards[i] for i in top_indices]
-        #Analyze each design:
-        results = []
-        for design, rewards in zip(top_designs, top_rewards):
-            mean = rewards.mean()
-            #Compute cvar:
-            rewards = np.sort(rewards)
-            k = max(1, int(cvar_alpha * len(rewards)))
-            cvar = rewards[:k].mean()
-            #Compute score with chosen metric:
-            score = mean + cvar
-            results.append({
-                "design": design,
-                "mean": mean,
-                "cvar": cvar,
-                "score": score
-            })
-        #Select best design:
-        best_design = max(results, key=lambda x: x["score"])["design"]
-        return best_design
+    #Select top_k designs:
+    mean_scores = np.array([r.mean() for r in all_rewards])
+    top_indices = np.argsort(mean_scores)[-top_k:]
+    top_designs = [designs[i] for i in top_indices]
+    top_rewards = [all_rewards[i] for i in top_indices]
+    #Analyze each design:
+    results = []
+    for design, rewards in zip(top_designs, top_rewards):
+        mean = rewards.mean()
+        #Compute cvar:
+        rewards = np.sort(rewards)
+        k = max(1, int(cvar_alpha * len(rewards)))
+        cvar = rewards[:k].mean()
+        #Compute score with chosen metric:
+        score = mean + cvar
+        results.append({
+            "design": design,
+            "mean": mean,
+            "cvar": cvar,
+            "score": score
+        })
+    #Select best design:
+    best_design = max(results, key=lambda x: x["score"])["design"]
+    return best_design
 
 class Rastrigin7DMultipleStepEnv(gym.Env):
     def __init__(self):
@@ -3947,7 +3948,7 @@ class toy_RL():
                 bins = np.linspace(min_val, max_val, 20)
                 plt.hist(q, bins=bins, alpha=0.6, label="Return distribution for last action of deterministic trajectory learnt by agent")
             #####Select reliable design:
-            best_design=get_reliable_design(model=model,env=pretrain_env,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05)
+            best_design=get_reliable_design(model=model,env=pretrain_env,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05)
             best_design_rewards, best_design_noises = evaluate_policy(best_design, pretrain_env, deterministic=True, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
             min_val_best_design = min(best_design_rewards.min(), (best_design_rewards - best_design_noises).min())
             max_val_best_design = max(best_design_rewards.max(), (best_design_rewards - best_design_noises).max())
