@@ -2006,7 +2006,9 @@ def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10, return_
         done = False
         total_r = 0
         while not done:
-            if hasattr(policy, "fit_online"):#It means it is from d3rlpy
+            if isinstance(policy, np.ndarray):
+                action=policy[env.steps]
+            elif hasattr(policy, "fit_online"):#It means it is from d3rlpy
                 obs_batch = np.expand_dims(obs, axis=0)
                 action_batch = policy.predict(obs_batch)
                 action = action_batch[0]
@@ -2978,6 +2980,52 @@ def generate_toy_imitation_trajectories(env, warm_baseline, n_episodes=10):
         print(f"Warm baseline reward: {reward}")
     return obs_list, act_list, reward_list
 
+def get_reliable_design(model,env,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05):
+    all_rewards=[]
+    designs=[]
+    for _ in range(n_designs):
+        #Generate a design:
+        obs, _ = env.reset()
+        done = False
+        while not done:
+            action, _ = model.policy.predict(obs, deterministic=False)
+            obs, r, done, truncated, info = env.step(action)
+        design=obs.copy()
+        designs.append(design)
+        rewards=[]
+        #Evaluate the design multiple times
+        for _ in range(n_simulations):
+            obs, _ = env.reset()
+            for action_index in range(env.dim):
+                action=design[action_index]
+                obs, reward, done, truncated, info = env.step(action)
+            rewards.append(reward)
+        all_rewards.append(np.array(rewards))
+        #Select top_k designs:
+        mean_scores = np.array([r.mean() for r in all_rewards])
+        top_indices = np.argsort(mean_scores)[-top_k:]
+        top_designs = [designs[i] for i in top_indices]
+        top_rewards = [all_rewards[i] for i in top_indices]
+        #Analyze each design:
+        results = []
+        for design, rewards in zip(top_designs, top_rewards):
+            mean = rewards.mean()
+            #Compute cvar:
+            rewards = np.sort(rewards)
+            k = max(1, int(cvar_alpha * len(rewards)))
+            cvar = rewards[:k].mean()
+            #Compute score with chosen metric:
+            score = mean + cvar
+            results.append({
+                "design": design,
+                "mean": mean,
+                "cvar": cvar,
+                "score": score
+            })
+        #Select best design:
+        best_design = max(results, key=lambda x: x["score"])["design"]
+        return best_design
+
 class Rastrigin7DMultipleStepEnv(gym.Env):
     def __init__(self):
         super().__init__()
@@ -3876,11 +3924,11 @@ class toy_RL():
             elif self.algorithm=="SB3_SAC":
                 model.save(f"outputs/{self.WandB['name']}/sac_model")
             #Deterministic performance of the trained agent (play several evaluation episodes to obtain a distribution of returns):
-            trained_agent_rewards, trained_agent_noises = evaluate_policy(model.policy, pretrain_env, deterministic=True, n_eval_episodes=1000, return_all_rewards=True)
+            n_eval_episodes=1000
+            trained_agent_rewards, trained_agent_noises = evaluate_policy(model.policy, pretrain_env, deterministic=True, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
             fig=plt.figure()
             min_val = min(trained_agent_rewards.min(), (trained_agent_rewards - trained_agent_noises).min())
             max_val = max(trained_agent_rewards.max(), (trained_agent_rewards - trained_agent_noises).max())
-            bins = np.linspace(min_val, max_val, 20)
             ####Obtain the return distribution learnt by the trained agent for the last action of the deterministic trajectory:
             compute_learnt_distribution=False#True#False
             if compute_learnt_distribution:
@@ -3898,11 +3946,21 @@ class toy_RL():
                 max_val=max(max_val,q.max())
                 bins = np.linspace(min_val, max_val, 20)
                 plt.hist(q, bins=bins, alpha=0.6, label="Return distribution for last action of deterministic trajectory learnt by agent")
-            #####            
-            plt.hist(trained_agent_rewards, bins=bins, alpha=0.6, label="Rewards")
-            plt.hist(trained_agent_rewards-trained_agent_noises, bins=bins, alpha=0.6, label="Rewards subtracting noise")
+            #####Select reliable design:
+            best_design=get_reliable_design(model=model,env=pretrain_env,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05)
+            best_design_rewards, best_design_noises = evaluate_policy(best_design, pretrain_env, deterministic=True, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
+            min_val_best_design = min(best_design_rewards.min(), (best_design_rewards - best_design_noises).min())
+            max_val_best_design = max(best_design_rewards.max(), (best_design_rewards - best_design_noises).max())
+            min_val=min(min_val,min_val_best_design)
+            max_val=max(max_val,max_val_best_design)
+            bins = np.linspace(min_val, max_val, 20)
+            plt.hist(best_design_rewards, bins=bins, alpha=0.6, label="Best design: Rewards")
+            plt.hist(best_design_rewards-best_design_noises, bins=bins, alpha=0.6, label="Best design: Rewards subtracting noise")
+            #####             
+            plt.hist(trained_agent_rewards, bins=bins, alpha=0.6, label="Agent playing deterministically: Rewards")
+            plt.hist(trained_agent_rewards-trained_agent_noises, bins=bins, alpha=0.6, label="Agent playing deterministically: Rewards subtracting noise")
             plt.legend()
-            plt.title("Reward distribution (deterministic performance of trained agent)")
+            plt.title("Reward distribution")
             plt.xlabel("Score")
             plt.ylabel("Counts")
             plt.grid(True)
