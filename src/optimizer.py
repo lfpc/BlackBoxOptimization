@@ -3875,11 +3875,30 @@ class toy_RL():
                 model.save(f"outputs/{self.WandB['name']}/tqc_model")
             elif self.algorithm=="SB3_SAC":
                 model.save(f"outputs/{self.WandB['name']}/sac_model")
+            #Deterministic performance of the trained agent (play several evaluation episodes to obtain a distribution of returns):
             trained_agent_rewards, trained_agent_noises = evaluate_policy(model.policy, pretrain_env, deterministic=True, n_eval_episodes=1000, return_all_rewards=True)
             fig=plt.figure()
             min_val = min(trained_agent_rewards.min(), (trained_agent_rewards - trained_agent_noises).min())
             max_val = max(trained_agent_rewards.max(), (trained_agent_rewards - trained_agent_noises).max())
             bins = np.linspace(min_val, max_val, 20)
+            ####Obtain the return distribution learnt by the trained agent for the last action of the deterministic trajectory:
+            compute_learnt_distribution=False#True#False
+            if compute_learnt_distribution:
+                obs, _ = pretrain_env.reset()
+                for _ in range(pretrain_env.dim-1):
+                    action, _ = model.policy.predict(obs, deterministic=True)
+                    obs, r, done, truncated, info = pretrain_env.step(action)
+                last_action, _ = model.policy.predict(obs, deterministic=True)
+                obs = th.tensor(obs).float().to(model.device)
+                action = th.tensor(last_action).float().to(model.device)
+                with th.no_grad():
+                    quantiles = model.critic(obs.unsqueeze(0), action.unsqueeze(0))
+                q = quantiles.cpu().numpy().reshape(-1) 
+                min_val=min(min_val,q.min())
+                max_val=max(max_val,q.max())
+                bins = np.linspace(min_val, max_val, 20)
+                plt.hist(q, bins=bins, alpha=0.6, label="Return distribution for last action of deterministic trajectory learnt by agent")
+            #####            
             plt.hist(trained_agent_rewards, bins=bins, alpha=0.6, label="Rewards")
             plt.hist(trained_agent_rewards-trained_agent_noises, bins=bins, alpha=0.6, label="Rewards subtracting noise")
             plt.legend()
