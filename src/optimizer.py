@@ -3061,6 +3061,9 @@ class Rastrigin7DMultipleStepEnv(gym.Env):
         self.best_reward_subtracting_noise_history=[]
         self.total_steps_history=[]
 
+        self.DR=True#False#True
+        self.environment_samples=10
+
     def rastrigin(self, x):
         return 10 * self.dim + np.sum(x**2 - 10 * np.cos(0.8 * np.pi * x))
 
@@ -3091,7 +3094,16 @@ class Rastrigin7DMultipleStepEnv(gym.Env):
         done=False
         info = {}
         if self.steps==self.dim:
-            obj=self.rastrigin_shifted(self.obs, self.c+self.delta_c)#obj = self.rastrigin(x)
+            if self.DR:
+                shift_amplitude=0.01
+                objectives=[]
+                for env_index in range(self.environment_samples):
+                    self.delta_c=shift_amplitude*np.random.randn()
+                    obj=self.rastrigin_shifted(self.obs, self.c+self.delta_c)
+                    objectives.append(obj)
+                obj=max(objectives)
+            else:
+                obj=self.rastrigin_shifted(self.obs, self.c)
             violation = self.constraint_violation(self.obs)
             penalty_weight = 100.0
             reward = -(obj + penalty_weight * violation)
@@ -3125,8 +3137,6 @@ class Rastrigin7DMultipleStepEnv(gym.Env):
         self.done = False#TO_DO: Check if can be removed
         self.obs = np.zeros(self.observation_space.shape, dtype=np.float32)
         self.steps=0
-        shift_amplitude=0#0.01
-        self.delta_c=shift_amplitude*np.random.randn()
         return self.obs,{}
 
     def render(self, mode="human"):
