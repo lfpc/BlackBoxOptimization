@@ -1,6 +1,6 @@
 import torch
 from botorch import acquisition, settings
-from src.optimizer import BayesianOptimizer,LGSO,TurboOptimizer,LCSO,GA,CMAES,CEM,RL,toy_RL
+from src.optimizer import BayesianOptimizer,LGSO,TurboOptimizer,LCSO,GA,CMAES,CEM,RL,toy_RL,RL_final
 from src import problems
 from src.models import GP_RBF, GP_BOCK, GP_IBNN
 from utils.acquisition_functions import Custom_LogEI
@@ -10,6 +10,7 @@ import wandb
 import os
 import json
 import sys
+import numpy as np
 
 PROJECTS_DIR = os.getenv('PROJECTS_DIR', default = '~')
 
@@ -21,7 +22,7 @@ parser.add_argument("--cpu",dest = 'cuda', action = 'store_false')
 parser.add_argument("--seed", type=int, default=13)
 parser.add_argument("--maxiter", type=int, default=2000)#1000
 parser.add_argument('--problem', type=str, default='ship_cuda')
-parser.add_argument('--optimizer', type=str, choices=['bayesian', 'turbo', 'cma-es', 'lgso', 'GA', 'toyRL'], default='bayesian')
+parser.add_argument('--optimizer', type=str, choices=['bayesian', 'turbo', 'cma-es', 'lgso', 'GA', 'toyRL', 'RLfinal'], default='bayesian')
 parser.add_argument('--model', type=str, default='gp_rbf')
 parser.add_argument('--name', type=str, default='optimizationtest')
 parser.add_argument('--group', type=str, default='BayesianOptimization')
@@ -120,6 +121,10 @@ elif args.optimizer == 'RL':
 elif args.optimizer == 'toyRL':
     toyRL_dict={}
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimizer, 'config': {**vars(args), **CONFIG, **toyRL_dict}, 'name': args.name}
+elif args.optimizer == 'RLfinal':
+    RL_dict={}
+    RL_dict["training_steps"]=100000
+    WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimizer, 'config': {**vars(args), **CONFIG, **RL_dict}, 'name': args.name}
 elif args.optimizer == 'CMAES':
     CMAES_dict={}
     CMAES_dict["initial_step_size"]=0.00001#0.3#TO_DO: Identify a proper value
@@ -150,7 +155,7 @@ def get_freest_gpu():
     max_idx = mem_free.index(max(mem_free))
     return torch.device(f'cuda:{max_idx}')
 if torch.cuda.is_available() and args.cuda: 
-    if args.optimizer == 'GA' or args.optimizer == 'RL' or args.optimizer == 'toyRL' or args.optimizer == 'CMAES' or args.optimizer == 'CEM':
+    if args.optimizer == 'GA' or args.optimizer == 'RL' or args.optimizer == 'toyRL' or args.optimizer == 'RLfinal' or args.optimizer == 'CMAES' or args.optimizer == 'CEM':
         dev=torch.device('cuda')
     else:
         dev = get_freest_gpu()
@@ -301,6 +306,16 @@ if __name__ == "__main__":
             ###max_steps=RL_dict["max_steps"],
             ###tolerance=RL_dict["tolerance"],
             ###step_scale=RL_dict["step_scale"],
+            device=dev,
+            devices=devices,
+            WandB=WANDB).run_optimization()
+        sys.exit()
+    elif args.optimizer == 'RLfinal':#Reinforcement Learning
+        num_gpus = torch.cuda.device_count()
+        devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
+        RL_final(problem_fn=problem_fn,
+            warm_baseline= np.loadtxt("outputs/optimize_cost_x_4dot2/phi_optm_GA.txt"),
+            training_steps=RL_dict["training_steps"],
             device=dev,
             devices=devices,
             WandB=WANDB).run_optimization()
