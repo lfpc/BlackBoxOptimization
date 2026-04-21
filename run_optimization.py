@@ -124,6 +124,7 @@ elif args.optimizer == 'toyRL':
 elif args.optimizer == 'RLfinal':
     RL_dict={}
     RL_dict["training_steps"]=100000
+    RL_dict["num_envs"]=36#12
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimizer, 'config': {**vars(args), **CONFIG, **RL_dict}, 'name': args.name}
 elif args.optimizer == 'CMAES':
     CMAES_dict={}
@@ -316,6 +317,7 @@ if __name__ == "__main__":
         RL_final(problem_fn=problem_fn,
             warm_baseline= np.loadtxt("outputs/optimize_cost_x_4dot2/phi_optm_GA.txt"),
             training_steps=RL_dict["training_steps"],
+            num_envs=RL_dict["num_envs"],
             device=dev,
             devices=devices,
             WandB=WANDB).run_optimization()

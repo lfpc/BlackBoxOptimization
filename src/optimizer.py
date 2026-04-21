@@ -7,6 +7,7 @@ import torch as th
 import torch.nn.functional as F
 import math
 import torch.multiprocessing as mp
+import multiprocessing
 from tqdm import tqdm
 from scipy.stats.qmc import LatinHypercube
 from matplotlib import pyplot as plt
@@ -33,6 +34,7 @@ from stable_baselines3.sac.policies import SACPolicy
 from stable_baselines3.common.utils import polyak_update
 from sb3_contrib import TQC
 from sb3_contrib.common.utils import quantile_huber_loss
+from stable_baselines3.common.vec_env import SubprocVecEnv
 from imitation.data.types import Trajectory
 from imitation.algorithms import bc
 from imitation.util import logger as imit_logger
@@ -1955,15 +1957,15 @@ class TrainingStatsCallback(BaseCallback):
             while not (done or truncated):
                 action, _ = self.model.predict(obs, deterministic=True)
                 obs, reward, done, truncated, info = self.eval_env.step(action)
-            self.eval_scores.append(reward.item())
+            self.eval_scores.append(float(reward))
             if "added_noise" in info.keys():
                 self.eval_noises.append(info["added_noise"])
             self.eval_xs.append(info["x"])
             self.last_eval_step = self.num_timesteps
             if "added_noise" in info.keys():
-                print(f"Steps played: {self.num_timesteps}, deterministic evaluation reward: {reward.item()}, deterministic reward subtracting noise: {reward.item()-info['added_noise']}, obtained solution: {info['x']}, correct solution: {self.eval_env.c}, distance from obtained solution to correct solution: {np.linalg.norm(self.eval_env.c - info['x'])}")
+                print(f"Steps played: {self.num_timesteps}, deterministic evaluation reward: {float(reward)}, deterministic reward subtracting noise: {float(reward)-info['added_noise']}, obtained solution: {info['x']}, correct solution: {self.eval_env.c}, distance from obtained solution to correct solution: {np.linalg.norm(self.eval_env.c - info['x'])}")
             else:
-                print(f"Steps played: {self.num_timesteps}, deterministic evaluation reward: {reward.item()}, obtained solution: {info['x']}")
+                print(f"Steps played: {self.num_timesteps}, deterministic evaluation reward: {float(reward)}, obtained solution: {info['x']}")
         return True
 
 class myd3rlpyCallback():
@@ -2035,6 +2037,53 @@ def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10, return_
         return np.mean(rewards),np.mean(noises),np.mean(xs,axis=0)
     else:
         return np.mean(rewards),None,np.mean(xs,axis=0)
+
+def evaluate_policy_parallel(policy, problem_fn, devices, num_envs, n_eval_episodes=10, return_all_rewards=False):
+    all_rewards = []
+    all_xs=[]
+    chunk_size = n_eval_episodes // num_envs
+    remainder = n_eval_episodes % num_envs
+    num_evaluations = [chunk_size + 1 if i < remainder else chunk_size for i in range(num_envs)]
+    num_gpus=len(devices)
+    env_devices = [devices[i % num_gpus] for i in range(num_envs)]
+    with multiprocessing.get_context("spawn").Pool(processes=num_envs) as pool:
+        tasks=[(policy,problem_fn,env_devices[i],num_evaluations[i],return_all_rewards) for i in range(num_envs)]
+        results=pool.starmap(eval_worker, tasks)
+        if return_all_rewards:
+            for rewards in results:
+                all_rewards.extend(rewards)
+        else:
+            for rewards, xs in results:
+                all_rewards.extend(rewards)
+                all_xs.extend(xs)
+        pool.close()
+        pool.join()
+    if return_all_rewards:
+        return np.array(all_rewards)
+    return np.mean(all_rewards),np.mean(all_xs)
+
+def eval_worker(policy, problem_fn, device, n_episodes, return_all_rewards):
+    torch.cuda.set_device(device)
+    env = RL_muons_env_final(problem_fn, device)
+    rewards = []
+    xs = []
+    for _ in range(n_episodes):
+        obs, _ = env.reset()
+        done = False
+        total_r = 0
+        while not done:
+            if isinstance(policy, np.ndarray):
+                action=policy[env.index]
+            else:
+                print("Something went wrong")
+                sys.exit()
+            obs, r, done, truncated, info = env.step(action)
+            total_r += float(r)
+        rewards.append(total_r)
+        xs.append(info["x"].copy())
+    if return_all_rewards:
+        return rewards
+    return rewards,xs
 
 def generate_imitation_trajectories(env, warm_baseline, n_episodes=10):
     obs_list, act_list, reward_list = [], [], []
@@ -2108,6 +2157,7 @@ class RL_muons_env_final(gym.Env):
             scaled_obs=(self.obs+1.0)*0.5*(self.high_bounds-self.low_bounds)+self.low_bounds
             phi = torch.tensor(scaled_obs, dtype=torch.float32, device=self.device).unsqueeze(0)
             reward = -torch.log(1.0+self.problem_fn(phi))/10#Consider reward=-log(1+loss)/10 to deal with huge losses
+            reward = float(reward.detach().cpu().item())
             info = {
                 "x": scaled_obs,
             }
@@ -2121,12 +2171,13 @@ class RL_muons_env_final(gym.Env):
         np.random.seed(seed)
 
 class RL_final():
-    def __init__(self,problem_fn,warm_baseline,training_steps,device,devices,WandB):
+    def __init__(self,problem_fn,warm_baseline,training_steps,num_envs,device,devices,WandB):
         self.problem_fn=problem_fn
         low_bounds,high_bounds=self.problem_fn.GetBounds()
         low_bounds,high_bounds=low_bounds.detach().cpu().numpy(),high_bounds.detach().cpu().numpy()
         self.warm_baseline=-1.0+2*(warm_baseline-low_bounds)/(high_bounds-low_bounds)
         self.training_steps=training_steps
+        self.num_envs=num_envs
         self.device=device
         self.devices=devices
         self.WandB=WandB
@@ -2134,7 +2185,16 @@ class RL_final():
         self.algorithm="SB3_TQC"#"SB3_TQC"#"SB3_SAC"
 
     def run_optimization(self):#TO_DO: Should I fix log_std?
-        train_env = RL_muons_env_final(self.problem_fn,self.device)
+        def make_env(rank, problem_fn, devices):
+            def _init():
+                device = devices[rank % len(devices)]
+                torch.cuda.set_device(device)
+                env = RL_muons_env_final(problem_fn, device)
+                return env
+            return _init
+        train_env = SubprocVecEnv([make_env(rank=i, problem_fn=self.problem_fn, devices=self.devices) for i in range(self.num_envs)])
+        #train_env = RL_muons_env_final(self.problem_fn,self.device)#Environment to be used if no parallelization
+
         eval_env = RL_muons_env_final(self.problem_fn,self.device)
 
         eval_freq = max(1, int(0.05 * self.training_steps))
@@ -2165,6 +2225,7 @@ class RL_final():
             act_tensor=act_tensor.unsqueeze(-1)
 
         print(f"Training starts. Algorithm:{self.algorithm}, warm baseline used: {self.use_warm_baseline}.")
+        start_time = time()
 
         callback = TrainingStatsCallback(eval_env=eval_env, eval_freq=eval_freq, verbose=1)
         if self.algorithm=="SB3_TQC":
@@ -2255,12 +2316,27 @@ class RL_final():
             model.save(f"outputs/{self.WandB['name']}/tqc_model")
         elif self.algorithm=="SB3_SAC":
             model.save(f"outputs/{self.WandB['name']}/sac_model")
+        print(f"Training finished. Computation time: {time()-start_time} s")
         #Deterministic performance of the trained agent (play several evaluation episodes to obtain a distribution of returns):
         n_eval_episodes=1000
-        trained_agent_rewards = evaluate_policy(model.policy, pretrain_env, deterministic=True, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
+        start_time = time()
+        GA_solution_rewards = evaluate_policy_parallel(self.warm_baseline, self.problem_fn, self.devices, self.num_envs, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
+        print(f"Rewards of GA solution computed. Computation time: {time()-start_time} s")
+        #Compute deterministic actions:
+        trained_model_deterministic_actions=[]
+        obs, _ = pretrain_env.reset()
+        done = False
+        while not done:
+            action, _ = model.policy.predict(obs, deterministic=True)
+            obs, r, done, truncated, info = pretrain_env.step(action)
+            trained_model_deterministic_actions.append(action)
+        trained_model_deterministic_actions=np.array(trained_model_deterministic_actions)
+        start_time = time()
+        trained_agent_rewards = evaluate_policy_parallel(trained_model_deterministic_actions, self.problem_fn, self.devices, self.num_envs, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
+        print(f"Rewards of trained agent computed. Computation time: {time()-start_time} s")
         fig=plt.figure()
-        min_val = trained_agent_rewards.min()
-        max_val = trained_agent_rewards.max()
+        min_val = min(trained_agent_rewards.min(),GA_solution_rewards.min())
+        max_val = max(trained_agent_rewards.max(),GA_solution_rewards.max())
         ####Obtain the return distribution learnt by the trained agent for the last action of the deterministic trajectory:
         compute_learnt_distribution=False#True#False
         if compute_learnt_distribution:
@@ -2279,8 +2355,12 @@ class RL_final():
             bins = np.linspace(min_val, max_val, 20)
             plt.hist(q, bins=bins, alpha=0.6, label="Return distribution for last action of deterministic trajectory learnt by agent")
         #####Select reliable design:
-        best_design=get_reliable_design(model=model,env=pretrain_env,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05)
-        best_design_rewards = evaluate_policy(best_design, pretrain_env, deterministic=True, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
+        start_time = time()
+        best_design=get_reliable_design_parallel(model=model,problem_fn=self.problem_fn,devices=self.devices,num_envs=self.num_envs,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05)
+        print(f"Best design chosen. Computation time: {time()-start_time} s")
+        start_time = time()
+        best_design_rewards = evaluate_policy_parallel(best_design, self.problem_fn, self.devices, self.num_envs, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
+        print(f"Rewards of best design computed. Computation time: {time()-start_time} s")
         min_val_best_design = best_design_rewards.min()
         max_val_best_design = best_design_rewards.max()
         min_val=min(min_val,min_val_best_design)
@@ -2289,6 +2369,7 @@ class RL_final():
         plt.hist(best_design_rewards, bins=bins, alpha=0.6, label="Best design: Rewards")
         #####             
         plt.hist(trained_agent_rewards, bins=bins, alpha=0.6, label="Agent playing deterministically: Rewards")
+        plt.hist(GA_solution_rewards, bins=bins, alpha=0.6, label="GA solution: Rewards")
         plt.legend()
         plt.title("Reward distribution")
         plt.xlabel("Score")
@@ -3311,6 +3392,79 @@ def get_reliable_design(model,env,noise_amplitude=0.02,n_designs=1000,n_simulati
     #Select best design:
     best_design = max(results, key=lambda x: x["score"])["design"]
     return best_design
+
+def get_reliable_design_parallel(model,problem_fn,devices,num_envs,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05):
+    all_rewards=[]
+    designs=[]
+    env = RL_muons_env_final(problem_fn, devices[0])
+    for design_index in range(n_designs):
+        #Generate a design:
+        design=np.empty(env.dimensions_phi, dtype=np.float32)
+        obs, _ = env.reset()
+        for i in range(env.dimensions_phi):
+            action, _ = model.policy.predict(obs, deterministic=True)
+            action += noise_amplitude * np.random.randn()
+            design[i]=action
+            if i!=env.dimensions_phi-1:
+                obs, r, done, truncated, info = env.step(action)
+        designs.append(design)
+    num_gpus=len(devices)
+    design_chunks = [designs[i * n_designs // num_envs : (i + 1) * n_designs // num_envs] for i in range(num_envs)]
+    env_devices = [devices[i % num_gpus] for i in range(num_envs)]
+    with multiprocessing.get_context("spawn").Pool(processes=num_envs) as pool:
+        tasks=[(env_devices[i],design_chunks[i],problem_fn,n_simulations) for i in range(num_envs)]
+        results=pool.starmap(reliable_design_worker, tasks)
+        for d, r in results:
+            designs.extend(d)
+            all_rewards.extend(r)
+        pool.close()
+        pool.join()
+    #Select top_k designs:
+    mean_scores = np.array([r.mean() for r in all_rewards])
+    top_indices = np.argsort(mean_scores)[-top_k:]
+    top_designs = [designs[i] for i in top_indices]
+    top_rewards = [all_rewards[i] for i in top_indices]
+    #Analyze each design:
+    results = []
+    for design, rewards in zip(top_designs, top_rewards):
+        mean = rewards.mean()
+        #Compute cvar:
+        rewards = np.sort(rewards)
+        k = max(1, int(cvar_alpha * len(rewards)))
+        cvar = rewards[:k].mean()
+        #Compute score with chosen metric:
+        score = mean + cvar
+        results.append({
+            "design": design,
+            "mean": mean,
+            "cvar": cvar,
+            "score": score
+        })
+    #Select best design:
+    best_design = max(results, key=lambda x: x["score"])["design"]
+    return best_design
+
+def reliable_design_worker(device,designs,problem_fn,n_simulations):
+    torch.cuda.set_device(device)
+    env = RL_muons_env_final(problem_fn, device)
+    all_rewards = []
+    for design_index in range(len(designs)):
+        design=designs[design_index]
+        rewards = np.empty(n_simulations, dtype=np.float32)
+        #Evaluate the design multiple times
+        for i in range(n_simulations):
+            obs, _ = env.reset()
+            done = False
+            action_index = 0
+            while not done:
+                action = design[action_index]
+                action_index += 1
+                obs, reward, done, truncated, info = env.step(action)
+            rewards[i] = reward
+        all_rewards.append(rewards)
+        if design_index%10==0:
+            print(f"Worker analyzed {design_index} designs")
+    return designs, all_rewards
 
 class Rastrigin7DMultipleStepEnv(gym.Env):
     def __init__(self):
