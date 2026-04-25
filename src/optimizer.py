@@ -1,5 +1,7 @@
 import os
 import shutil
+import copy
+from datetime import datetime
 import botorch
 import torch
 from torch import nn
@@ -2078,6 +2080,8 @@ def evaluate_policy_parallel(policy, problem_fn, devices, num_envs, folder_path,
         pool.join()
     if return_all_rewards:
         return np.array(all_rewards)
+    if os.path.exists(folder_path):#Remove folder if it exists
+        shutil.rmtree(folder_path)
     return np.mean(all_rewards),np.mean(all_xs)
 
 def eval_worker(policy, problem_fn, device, n_episodes, return_all_rewards, folder_path):
@@ -2202,7 +2206,7 @@ class RL_final():
         self.WandB=WandB
         self.use_warm_baseline=True#False#True
         self.algorithm="SB3_TQC"#"SB3_TQC"#"SB3_SAC"
-        self.folder_path=f"outputs/{self.WandB['name']}/field_map_files"
+        self.folder_path=f"/disk/users/ghijan/MuonShield/field_map_files/{self.WandB['name']}"
 
     def run_optimization(self):#TO_DO: Should I fix log_std?
         def make_env(rank, problem_fn, devices):
@@ -2333,9 +2337,10 @@ class RL_final():
             
         model.learn(total_timesteps=self.training_steps, callback=callback)
         if self.algorithm=="SB3_TQC":
-            model.save(f"outputs/{self.WandB['name']}/tqc_model")
+            model_path=f"outputs/{self.WandB['name']}/tqc_model"
         elif self.algorithm=="SB3_SAC":
-            model.save(f"outputs/{self.WandB['name']}/sac_model")
+            model_path=f"outputs/{self.WandB['name']}/sac_model"
+        model.save(model_path)
         print(f"Training finished. Computation time: {time()-start_time} s")
         #Deterministic performance of the trained agent (play several evaluation episodes to obtain a distribution of returns):
         n_eval_episodes=1000
@@ -2376,7 +2381,7 @@ class RL_final():
             plt.hist(q, bins=bins, alpha=0.6, label="Return distribution for last action of deterministic trajectory learnt by agent")
         #####Select reliable design:
         start_time = time()
-        best_design=get_reliable_design_parallel(model=model,problem_fn=self.problem_fn,devices=self.devices,num_envs=self.num_envs,folder_path=self.folder_path,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05)
+        best_design=get_reliable_design_parallel(model_path=model_path,algo_name=self.algorithm,use_warm_baseline=self.use_warm_baseline,problem_fn=self.problem_fn,devices=self.devices,num_envs=self.num_envs,folder_path=self.folder_path,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05)
         print(f"Best design chosen. Computation time: {time()-start_time} s")
         start_time = time()
         best_design_rewards = evaluate_policy_parallel(best_design, self.problem_fn, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
@@ -3413,51 +3418,35 @@ def get_reliable_design(model,env,noise_amplitude=0.02,n_designs=1000,n_simulati
     best_design = max(results, key=lambda x: x["score"])["design"]
     return best_design
 
-def get_reliable_design_parallel(model,problem_fn,devices,num_envs,folder_path,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05):
+def get_reliable_design_parallel(model_path,algo_name,use_warm_baseline,problem_fn,devices,num_envs,folder_path,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05):
     if os.path.exists(folder_path):#Remove folder if it exists
         shutil.rmtree(folder_path)
     os.makedirs(folder_path)
-    problem_fn.save_field_map=True
-    all_rewards=[]
-    designs=[]
-    env = RL_muons_env_final(problem_fn, devices[0])
-    for design_index in range(n_designs):
-        problem_fn.fields_file=folder_path+"/field_file_"+str(design_index)+".h5"
-        #Generate a design:
-        design=np.empty(env.dimensions_phi, dtype=np.float32)
-        obs, _ = env.reset()
-        for i in range(env.dimensions_phi):
-            action, _ = model.policy.predict(obs, deterministic=True)
-            action += noise_amplitude * np.random.randn()
-            design[i]=action
-            obs, r, done, truncated, info = env.step(action)
-        designs.append(design)
-    problem_fn.save_field_map=False
-    num_gpus=len(devices)
-    design_indices_chunks = [list(range(i * n_designs // num_envs, (i + 1) * n_designs // num_envs)) for i in range(num_envs)]
-    design_chunks = [[designs[j] for j in idx_chunk] for idx_chunk in design_indices_chunks]
-    env_devices = [devices[i % num_gpus] for i in range(num_envs)]
-    with multiprocessing.get_context("spawn").Pool(processes=num_envs) as pool:
-        tasks=[(env_devices[i],design_indices_chunks[i],design_chunks[i],problem_fn,n_simulations,folder_path) for i in range(num_envs)]
-        results=pool.starmap(reliable_design_worker, tasks)
-        for d, r in results:
-            designs.extend(d)
-            all_rewards.extend(r)
-        pool.close()
-        pool.join()
+    num_workers = num_envs
+    num_gpus = len(devices)
+    design_indices_chunks = [list(range(i * n_designs // num_workers, (i + 1) * n_designs // num_workers)) for i in range(num_workers)]
+    env_devices = [devices[i % num_gpus] for i in range(num_workers)]
+    with multiprocessing.get_context("spawn").Pool(processes=num_workers) as pool:
+        tasks = [(env_devices[i],design_indices_chunks[i],model_path,algo_name,use_warm_baseline,problem_fn,n_simulations,folder_path,noise_amplitude)for i in range(num_workers)]
+        results = pool.starmap(reliable_design_worker, tasks)
+    all_designs = []
+    all_rewards = []
+    for d, r in results:
+        all_designs.extend(d)
+        all_rewards.extend(r)
     #Select top_k designs:
     mean_scores = np.array([r.mean() for r in all_rewards])
     top_indices = np.argsort(mean_scores)[-top_k:]
-    top_designs = [designs[i] for i in top_indices]
+    top_designs = [all_designs[i] for i in top_indices]
     top_rewards = [all_rewards[i] for i in top_indices]
     #Analyze each design:
     results = []
     for design, rewards in zip(top_designs, top_rewards):
         mean = rewards.mean()
         #Compute cvar:
-        rewards = np.sort(rewards)
+        rewards_sorted = np.sort(rewards)
         k = max(1, int(cvar_alpha * len(rewards)))
-        cvar = rewards[:k].mean()
+        cvar = rewards_sorted[:k].mean()
         #Compute score with chosen metric:
         score = mean + cvar
         results.append({
@@ -3468,19 +3457,33 @@ def get_reliable_design_parallel(model,problem_fn,devices,num_envs,folder_path,n
         })
     #Select best design:
     best_design = max(results, key=lambda x: x["score"])["design"]
+    if os.path.exists(folder_path):#Remove folder if it exists
+        shutil.rmtree(folder_path)
     return best_design
 
-def reliable_design_worker(device,design_indices,designs,problem_fn,n_simulations,folder_path):
+def reliable_design_worker(device, design_indices, model_path, algo_name, use_warm_baseline, problem_fn, n_simulations, folder_path, noise_amplitude):
     torch.cuda.set_device(device)
+    problem_fn = copy.deepcopy(problem_fn)#Make a deepcopy just in case
+    model = load_model(model_path, device, algo_name, use_warm_baseline)
     env = RL_muons_env_final(problem_fn, device)
     all_rewards = []
-    for i in range(len(designs)):
-        design_index=design_indices[i]
-        problem_fn.fields_file=folder_path+"/field_file_"+str(design_index)+".h5"
-        design=designs[i]
-        rewards = np.empty(n_simulations, dtype=np.float32)
+    designs = []
+    for idx, design_index in enumerate(design_indices):
+        #Generate a design:
+        problem_fn.save_field_map = True
+        problem_fn.fields_file = f"{folder_path}/field_file_{design_index}.h5"
+        design = np.empty(env.dimensions_phi, dtype=np.float32)
+        obs, _ = env.reset()
+        for i in range(env.dimensions_phi):
+            action, _ = model.policy.predict(obs, deterministic=True)
+            action += noise_amplitude * np.random.randn()
+            design[i] = action
+            obs, _, _, _, _ = env.step(action)
+        designs.append(design)
+        problem_fn.save_field_map = False
         #Evaluate the design multiple times
-        for i in range(n_simulations):
+        rewards = np.empty(n_simulations, dtype=np.float32)
+        for j in range(n_simulations):
             obs, _ = env.reset()
             done = False
             action_index = 0
@@ -3488,11 +3491,25 @@ def reliable_design_worker(device,design_indices,designs,problem_fn,n_simulation
                 action = design[action_index]
                 action_index += 1
                 obs, reward, done, truncated, info = env.step(action)
-            rewards[i] = reward
+            rewards[j] = reward
         all_rewards.append(rewards)
-        if i%10==0:
-            print(f"Worker analyzed {i} designs")
+        print(f"Worker analyzed {i}/{len(design_indices)} designs. Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     return designs, all_rewards
+
+def load_model(model_path, device, algo_name, use_warm_baseline):
+    if algo_name=="SB3_TQC":
+        if use_warm_baseline:
+            return CustomTQC.load(model_path, device=device)
+        else:
+            return TQC.load(model_path, device=device)
+    elif algo_name=="SB3_SAC":
+        if use_warm_baseline:
+            return CustomSAC.load(model_path, device=device)
+        else:
+            return SAC.load(model_path, device=device)
+    else:
+        print("Unknown algorithm!")
+        sys.exit()
 
 class Rastrigin7DMultipleStepEnv(gym.Env):
     def __init__(self):
