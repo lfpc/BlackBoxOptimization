@@ -1072,6 +1072,10 @@ class ShipMuonShield():
         self.use_diluted = use_diluted
         self.parallel = parallel
         self.use_ratio_yoke = use_ratio_yoke
+        if not use_ratio_yoke:
+            self.DEFAULT_PHI[:, [8,9]] = self.DEFAULT_PHI[:, [8,9]] * self.DEFAULT_PHI[:, [2,3]]
+            self.idx_mag[8] = 'dX_yokeIn[cm]'
+            self.idx_mag[9] = 'dX_yokeOut[cm]'
         self.cost_as_constraint = cost_as_constraint    
 
         if initial_phi is not None:
