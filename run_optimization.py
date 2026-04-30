@@ -73,7 +73,7 @@ else:
                 CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 63]: ") or 63)
         if 'initial_phi' not in CONFIG:
             if run_in_background:
-                default_phi_name = str('stellatryon_soft_v1')#str('stellatryon_t')
+                default_phi_name = str('stellatryon_TRY4')#str('stellatryon_t')
             else:
                 default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or '')
             print('default_phi_name', default_phi_name)
@@ -314,6 +314,7 @@ if __name__ == "__main__":
     elif args.optimizer == 'RLfinal':#Reinforcement Learning
         num_gpus = torch.cuda.device_count()
         devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
+        problem_fn.RL_multiprocessing=True
         RL_final(problem_fn=problem_fn,
             warm_baseline= np.loadtxt("outputs/optimize_cost_x_4dot2/phi_optm_GA.txt"),
             training_steps=RL_dict["training_steps"],
