@@ -1225,14 +1225,22 @@ class ShipMuonShield():
                 # First Magnets Big
                 bounds_high[1,1] = 500
                 bounds_high[2,1] = 400
-            # SND MAGNET
-            bounds_low[-2,6] = 8+10   # This make it rectangular
+            #Section1: M1,2,3
+            bounds_high[1:3,2] = bounds_high[1:3,3] = 73
+            bounds_high[1:3,4] = bounds_high[1:3,5] = 30
+            bounds_high[1:3,8] = bounds_high[1:3,9] = 4
+            #M4
+            #M5: SND MAGNET
             bounds_low[-2,2] = 20
-            bounds_high[-2,3] = 30
+            bounds_high[-2,2] = 30
+            bounds_low[-2,3] = 30
+            bounds_high[-2,3] = 40
+            bounds_low[-2,6] = 8+10   # This makes it rectangular
             bounds_high[-2,6] = bounds_high[-2,7] = 50
-            # LAST MAGNET
-            bounds_high[-1,2] = 40
-            bounds_high[-1,3] = 50
+            #M6: LAST MAGNET
+            bounds_high[-1,1] = 200
+            bounds_high[-1,2] = 51.6
+            bounds_high[-1,3] = 84
             bounds_high[-1,6] = bounds_high[-1,7] = 90
             
         
