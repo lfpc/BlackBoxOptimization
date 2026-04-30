@@ -921,6 +921,7 @@ class ShipMuonShield():
         self.fields_file = fields_file
         self.save_field_map = False
         self.RL_multiprocessing = False
+        self.new_loss_function = False
 
     def sample_x(self,phi=None, idx = None):
         print('Sampling muons')
@@ -1169,10 +1170,25 @@ class ShipMuonShield():
             loss = loss.sum()*1e6 / self._sum_weights
         elif self.reduction == 'sum':
             loss = loss.sum()
+        if self.new_loss_function:
+            M = self.get_total_cost(phi)
+            rate=loss
+            loss=self.loss_function(rate,M)
+            print(f"Loss: {loss}, cost: {M}, rate: {rate}")
+            return loss
         if self.apply_det_loss:
             loss = loss + self._apply_deterministic_loss(phi, loss)
         return loss
 
+    def loss_function(self, R, C,
+                  R0=40e3,#60e3,
+                  C0=1E6,
+                  alpha=3.5,
+                  ):
+        rate_penalty = np.exp(alpha*(R/R0 -1)) 
+        cost_penalty = C/C0
+        L = rate_penalty + cost_penalty
+        return L
 
     def GetBounds(self,device = torch.device('cpu')):
         z_gap = (10,50)

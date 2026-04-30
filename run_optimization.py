@@ -255,6 +255,7 @@ if __name__ == "__main__":
     elif args.problem == 'ship_cuda':
         CONFIG.pop('results_dir', None)
         problem_fn = problems.ShipMuonShieldCuda(parallel=args.parallel, **CONFIG)
+        problem_fn.new_loss_function=True
     phi_bounds = CONFIG.get('phi_bounds',None) 
     dimensions = CONFIG.get('dimensions_phi')
     if phi_bounds is None: phi_bounds = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_bounds
