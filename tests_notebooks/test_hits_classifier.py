@@ -1,4 +1,3 @@
-import torch
 import matplotlib.pyplot as plt
 import sys
 import os
@@ -6,17 +5,18 @@ sys.path.append(os.path.abspath(os.path.join('..', 'src')))
 sys.path.append(os.path.abspath(os.path.join('..')))
 from problems import ThreeHump_stochastic_hits, Rosenbrock_stochastic_hits, HelicalValley_stochastic_hits, ShipMuonShieldCuda, Quadratic_stochastic_hits
 from utils import normalize_vector, denormalize_vector, get_freest_gpu
-from utils.nets import Classifier, DeepONetClassifier, QuadraticModel, ParametricNWDeepONet
+from utils.nets import Classifier, DeepONetClassifier, QuadraticModel
 import torch
 from tqdm import trange
 import json
 import numpy as np
 import argparse
-from time import time
+from scipy.optimize import minimize as scipy_minimize
 from scipy.stats.qmc import LatinHypercube
 
 
 dev = get_freest_gpu()
+cpu = torch.device('cpu')
 #torch.set_default_dtype(torch.float64)
 
 parser = argparse.ArgumentParser()
@@ -43,6 +43,9 @@ parser.add_argument(
          "'hess' = torch.func.hessian, 'hvp' = build Hessian via (damped) HVP columns")
 parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
 parser.add_argument('--plot', action='store_true', help='Display plots interactively after saving')
+parser.add_argument('--load_model', action='store_true', help='Whether to load a pre-trained surrogate model instead of training from scratch')
+parser.add_argument('--model_name', type=str, default = 'classifier_hits', help='Name of the model to load (alternative to --load_model)')
+
 args = parser.parse_args()
 
 torch.manual_seed(args.seed)
@@ -87,7 +90,7 @@ elif args.problem == 'MuonShield':
     CONFIG.pop("data_treatment", None)
     CONFIG.pop('results_dir', None)
     CONFIG['dimensions_phi'] = dim
-    CONFIG['initial_phi'] = ShipMuonShieldCuda.params['stellatryon_v2']
+    CONFIG['initial_phi'] = ShipMuonShieldCuda.params['stellatryon_v3']
     CONFIG['n_samples'] = n_samples
     CONFIG['reduction'] = 'none'
     CONFIG['cost_as_constraint'] = False
@@ -104,7 +107,7 @@ elif args.problem == 'Quadratic':
 
 print(f"Using problem {args.problem} with dim {dim} and x_dim {x_dim}, samples_phi = {samples_phi}")
 
-bounds = problem.GetBounds(device=torch.device('cpu'))
+bounds = problem.GetBounds(device=cpu)
 
 
 class Sampler():
@@ -113,11 +116,11 @@ class Sampler():
                  epsilon:float = 0.2,
                  initial_phi:torch.tensor = None,
                  seed:int = 42,
-                second_order:bool = False
+                 second_order:bool = False
                  ):
         
-        self.bounds = bounds
-        initial_phi = normalize_vector(initial_phi, self.bounds)
+        self.bounds = bounds.to(device=cpu, dtype=torch.get_default_dtype())
+        initial_phi = normalize_vector(initial_phi.to(device=cpu, dtype=torch.get_default_dtype()), self.bounds)
         self._current_phi = torch.nn.Parameter(initial_phi.detach().clone())
         self.epsilon = epsilon
         self.lhs_sampler = LatinHypercube(d=initial_phi.size(-1), seed=seed)
@@ -131,18 +134,14 @@ class Sampler():
         """Draw samples in a hypercube of side 2*epsilon around current_phi."""
         perturb = self.lhs_sampler.random(samples_phi)
         with torch.no_grad():
-            perturb = (2*torch.from_numpy(perturb).to(dtype=torch.get_default_dtype()) - 1.0) * self.epsilon
-            if self.second_order:
-                perturb_small = self.lhs_sampler.random(samples_phi//2)
-                perturb_small = (2*torch.from_numpy(perturb_small).to(dtype=torch.get_default_dtype()) - 1.0) * self.epsilon/2
-                perturb = torch.cat([perturb[:samples_phi//2], perturb_small], dim=0)
-            phis = (self._current_phi.unsqueeze(0).cpu() + perturb).clamp(0.0,1.0)
+            perturb = (2 * torch.from_numpy(perturb).to(device=cpu, dtype=self._current_phi.dtype) - 1.0) * self.epsilon
+            phis = (self._current_phi.unsqueeze(0) + perturb).clamp(0.0, 1.0)
         return phis
     def sample_phi_uniform(self, samples_phi:int = 10):
         """Draw samples uniformly within the bounds around current_phi."""
         with torch.no_grad():
-            perturb = (torch.rand(samples_phi, self._current_phi.size(-1)) * 2 - 1) * self.epsilon
-            phis = (self._current_phi.unsqueeze(0).cpu() + perturb).clamp(0.0,1.0)
+            perturb = (torch.rand(samples_phi, self._current_phi.size(-1), device=cpu, dtype=self._current_phi.dtype) * 2 - 1) * self.epsilon
+            phis = (self._current_phi.unsqueeze(0) + perturb).clamp(0.0, 1.0)
         return phis
     def sample_x(self, phi, n_samples = None):
         """Sample x from the true model for given phi."""
@@ -158,6 +157,19 @@ SAMPLER = Sampler(true_model=problem,
                   seed=args.seed,
                   second_order=args.second_order)
 
+@torch.no_grad()
+def simulate(phi,x = None, n_samples:int = None):
+    if phi.dim() == 1:
+        phi = phi.view(1,-1)
+    phi = phi.cpu()
+    if x is None:
+        x = SAMPLER.sample_x(phi, n_samples=n_samples)
+    else:
+        x = x.cpu().to(torch.get_default_dtype())
+    phi = denormalize_vector(phi, SAMPLER.bounds).detach().cpu()
+    y = problem(phi,x)
+    return x,y
+
 class Metrics:
     """Helper to compute surrogate diagnostics for train/validation splits."""
 
@@ -166,6 +178,27 @@ class Metrics:
         self.surrogate_model = surrogate_model
         self.device = surrogate_model.device
         self.bounds = bounds.to(self.device)
+        self.bounds_cpu = bounds.to(cpu)
+
+    def _prepare_true_inputs(self, phi, x):
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        phi_cpu = phi.to(cpu, dtype=torch.get_default_dtype())
+        x_cpu = x.to(cpu, dtype=torch.get_default_dtype())
+        if x_cpu.dim() == 2:
+            x_cpu = x_cpu.unsqueeze(0)
+        if x_cpu.shape[0] == 1 and phi_cpu.shape[0] > 1:
+            x_cpu = x_cpu.expand(phi_cpu.shape[0], -1, -1)
+        return phi_cpu, x_cpu
+
+    def true_objective(self, phi, x, reduction='mean'):
+        phi_cpu, x_cpu = self._prepare_true_inputs(phi, x)
+        phi_denorm = denormalize_vector(phi_cpu, self.bounds_cpu)
+        hit_probs = self.true_model.probability_of_hit(phi_denorm, x_cpu)
+        if reduction == 'sum':
+            return hit_probs.sum(dim=1).mean()
+        return hit_probs.mean()
+
     def compute_batched_metrics(self, phi, x, y, batch_size):
         """
         Compute batched metrics for a given phi, x, y using streaming/batches to save GPU memory.
@@ -180,13 +213,13 @@ class Metrics:
         total_elements = 0
         pred_hits = torch.zeros(num_phi, dtype=torch.float32)
         diff_sum = 0.0
-        phi_denorm = denormalize_vector(phi.detach(), self.bounds).cpu()
+        phi_denorm = denormalize_vector(phi.detach().cpu(), self.bounds_cpu)
 
         for start in range(0, num_samples_x, per_phi_batch):
             end = min(start + per_phi_batch, num_samples_x)
             x_batch = x[:, start:end].to(self.device)
             y_batch = y[:, start:end].float().to(self.device)
-            logits = self.surrogate_model.model(phi, x_batch)
+            logits = self.surrogate_model.forward_logits(phi, x_batch)
             batch_loss = self.surrogate_model.loss_fn(logits, y_batch)
             elems = logits.numel()  # num_phi * batch_len
             loss_sum += batch_loss.item() * elems
@@ -210,13 +243,17 @@ class Metrics:
         Compute grad_cosine and newton_cosine for the first phi and x.
         Returns: dict with 'grad_cosine', 'newton_cosine'.
         """
-        phi0 = phi.detach().clone().to(self.device).requires_grad_(True)
-        phi0_denorm = denormalize_vector(phi0, self.bounds)
-        grad_sur = torch.func.grad(self.surrogate_objective)(phi0, x[0])
-        grad_real = self.true_model.gradient(phi0_denorm, analytic = False).squeeze()
+        phi0_sur = phi.detach().clone().to(self.device).requires_grad_(True)
+        x0_dev = x[0].to(self.device)
+        x0_cpu = x[0].to(cpu)
+        grad_sur = torch.func.grad(self.surrogate_objective)(phi0_sur, x0_dev)
+        phi0_true = phi.detach().clone().to(cpu).requires_grad_(True)
+        true_objective = lambda phi_local: self.true_objective(phi_local, x0_cpu)
+        grad_real = torch.func.grad(true_objective)(phi0_true).to(self.device)
         grad_cosine = self.cosine_similarity(grad_sur, grad_real)
-        surrogate_hessian = self.surrogate_hessian_from_hvp(phi0, x[0].unsqueeze(0), damping=1e-3)
-        real_hessian = self.true_model.hessian(phi0_denorm, analytic=False).squeeze().to(self.device)
+        surrogate_hessian = self.surrogate_hessian_from_hvp(phi0_sur, x0_dev, damping=1e-3)
+        real_hessian = torch.func.hessian(true_objective)(phi0_true).to(self.device)
+        real_hessian = 0.5 * (real_hessian + real_hessian.T)
         step_sur = self._newton_step(grad_sur, surrogate_hessian)
         step_real = self._newton_step(grad_real, real_hessian)
         newton_cosine = self.cosine_similarity(step_sur, step_real)
@@ -237,12 +274,12 @@ class Metrics:
         pred_probs_list, real_probs_list = [], []
         num_samples_x = x.size(1)
         num_samples_phi = phi.size(0)
+        per_phi_batch = max(1, self.surrogate_model.batch_size // max(num_samples_phi, 1))
         phi = phi.to(self.device)
-        phi_denorm = denormalize_vector(phi.detach(), self.bounds).cpu()
-        batch_size = self.surrogate_model.batch_size
+        phi_denorm = denormalize_vector(phi.detach().cpu(), self.bounds_cpu)
         with torch.no_grad():
-            for start in range(0, num_samples_x, batch_size//num_samples_phi):
-                end = min(start + batch_size//num_samples_phi, num_samples_x)
+            for start in range(0, num_samples_x, per_phi_batch):
+                end = min(start + per_phi_batch, num_samples_x)
                 x_batch = x[:, start:end].to(self.device)
                 p = self.surrogate_model.predict_proba(phi, x_batch).cpu()
                 pred_probs_list.append(p)
@@ -275,10 +312,16 @@ class Metrics:
         return torch.tensor(mean_preds).numpy(), torch.tensor(frac_positives).numpy()   
     
     def surrogate_objective(self,phi, x):
-        total = 0.0
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)
+        if x.dim() == 2:
+            x = x.unsqueeze(0)
+        if x.shape[0] == 1 and phi.shape[0] > 1:
+            x = x.expand(phi.shape[0], -1, -1)
+        total = torch.zeros((), device=phi.device, dtype=torch.get_default_dtype())
         for x_batch in x.split(self.surrogate_model.batch_size, dim=1):
-            p = self.surrogate_model.predict_proba(phi.view(1, -1), x_batch.unsqueeze(0))
-            total = total + self.n_hits(p.to(phi.device))
+            p = self.surrogate_model.predict_proba(phi, x_batch)
+            total = total + self.n_hits(p)
         return total / x.size(1)
 
     def surrogate_hessian_from_hvp(self,phi, x, damping=0.0):
@@ -289,6 +332,10 @@ class Metrics:
         This is O(d) HVPs; OK for small d (<= ~50).
         """
         phi = phi.detach().requires_grad_(True)
+        if x.dim() == 2:
+            x = x.unsqueeze(0)
+        if x.shape[0] == 1 and phi.dim() == 1:
+            x = x.expand(1, -1, -1)
         d = phi.numel()
         H = torch.zeros((d, d), device=phi.device, dtype=phi.dtype)
 
@@ -317,7 +364,7 @@ class Metrics:
 
     @torch.no_grad()
     def _probability_gap(self, phi, x, pred_probs):
-        phi = denormalize_vector(phi.detach().cpu(), self.bounds)
+        phi = denormalize_vector(phi.detach().cpu(), self.bounds_cpu)
         real_probs = self.true_model.probability_of_hit(phi, x)
         diff = torch.abs(pred_probs.detach().cpu() - real_probs)
         diff_per_phi = diff.view(diff.size(0), -1).mean(dim=1)
@@ -325,6 +372,8 @@ class Metrics:
 
     @staticmethod
     def cosine_similarity(vec_a, vec_b, eps=1e-10):
+        vec_a = vec_a.reshape(-1)
+        vec_b = vec_b.reshape(-1).to(vec_a.device)
         denom = (torch.linalg.norm(vec_a) * torch.linalg.norm(vec_b)).clamp_min(eps)
         return (torch.dot(vec_a, vec_b) / denom).item()
 
@@ -353,77 +402,36 @@ class Metrics:
         step = -torch.linalg.solve(hess, grad)
         return step
 
-    def gain_newton(self, phi0, newton_step, eta, x_samp):
+    def gain_newton_true(self, phi0, newton_step, eta, x_samp):
         """
-        Computes f(phi0) - f(phi0 + eta * newton_step) using the surrogate objective.
-        Positive gain means improvement (objective decreased).
+        Computes the gain in total expected hits using a fixed X sample.
         """
         with torch.no_grad():
-            f0 = self.surrogate_objective(phi0, x_samp)
             phi1 = (phi0 + eta * newton_step).clamp(0.0, 1.0)
-            f1 = self.surrogate_objective(phi1, x_samp)
+            f0 = self.true_objective(phi0, x_samp, reduction='sum')
+            f1 = self.true_objective(phi1, x_samp, reduction='sum')
             return (f0 - f1).item()
 
-    def gain_gradient(self, phi0, grad, eta, x_samp):
+    def gain_gradient_true(self, phi0, grad, eta, x_samp):
         """
-        Computes f(phi0) - f(phi0 - eta * grad) using the surrogate objective.
-        Positive gain means improvement (objective decreased).
-        """
-        with torch.no_grad():
-            f0 = self.surrogate_objective(phi0, x_samp)
-            phi1 = (phi0 - eta * grad).clamp(0.0, 1.0)
-            f1 = self.surrogate_objective(phi1, x_samp)
-            return (f0 - f1).item()
-
-    def gain_newton_true(self, phi0, newton_step, eta, n_samples=None):
-        """
-        Computes true_f(phi0) - true_f(phi0 + eta * newton_step) using simulation.
-        """
-        with torch.no_grad():
-            phi0_denorm = denormalize_vector(phi0.unsqueeze(0), self.bounds).cpu()
-            phi1 = (phi0 + eta * newton_step).clamp(0.0, 1.0)
-            phi1_denorm = denormalize_vector(phi1.unsqueeze(0), self.bounds).cpu()
-            _, y0 = simulate(phi0.unsqueeze(0), n_samples=n_samples)
-            _, y1 = simulate(phi1.unsqueeze(0), n_samples=n_samples)
-            f0 = y0.float().mean().item()
-            f1 = y1.float().mean().item()
-            return f0 - f1
-
-    def gain_gradient_true(self, phi0, grad, eta, n_samples=None):
-        """
-        Computes true_f(phi0) - true_f(phi0 - eta * grad) using simulation.
+        Computes the gain in total expected hits using a fixed X sample.
         """
         with torch.no_grad():
             phi1 = (phi0 - eta * grad).clamp(0.0, 1.0)
-            _, y0 = simulate(phi0.unsqueeze(0), n_samples=n_samples)
-            _, y1 = simulate(phi1.unsqueeze(0), n_samples=n_samples)
-            f0 = y0.float().mean().item()
-            f1 = y1.float().mean().item()
-            return f0 - f1
+            f0 = self.true_objective(phi0, x_samp, reduction='sum')
+            f1 = self.true_objective(phi1, x_samp, reduction='sum')
+            return (f0 - f1).item()
 
-@torch.no_grad()
-def simulate(phi, n_samples:int = None):
-    if phi.dim() == 1:
-        phi = phi.view(1,-1)
-    x = SAMPLER.sample_x(phi, n_samples=n_samples)
-    phi = denormalize_vector(phi, SAMPLER.bounds).detach().cpu()
-    y = problem(phi,x)
-    return x,y
-
-def get_local_data(n_samples_phi:int = 10, n_samples_x:int = None, sampling = 'lhs'):
-    if sampling == 'lhs':
-        phis = SAMPLER.sample_phi(samples_phi=n_samples_phi)
-    elif sampling == 'uniform':
-        phis = SAMPLER.sample_phi_uniform(samples_phi=n_samples_phi)
-    xs = []
-    ys = []
-    for phi in phis:
-        x,y = simulate(phi, n_samples=n_samples_x)
-        xs.append(x.detach().cpu())
-        ys.append(y.detach().cpu())
-    xs = torch.stack(xs)
-    ys = torch.stack(ys)
-    return phis, xs, ys
+    def gain_direction_true(self, phi0, direction, eta, x_samp):
+        """
+        Computes the gain in total expected hits using a fixed X sample.
+        Positive gain means improvement (objective decreased).
+        """
+        with torch.no_grad():
+            phi1 = (phi0 + eta * direction).clamp(0.0, 1.0)
+            f0 = self.true_objective(phi0, x_samp, reduction='sum')
+            f1 = self.true_objective(phi1, x_samp, reduction='sum')
+            return (f0 - f1).item()
 
 
 
@@ -444,16 +452,19 @@ class BinaryClassifierModel:
                  model:str = 'mlp',
                  activation:str = 'relu',
                  device: str = 'cuda'):
-        self.device = device
+        self.device = torch.device(device)
+        self.model_name = model
         if model == 'mlp':
-            self.model = Classifier(phi_dim,x_dim, 128, activation=activation).to(self.device)
+            self.model = Classifier(phi_dim,x_dim, 128).to(self.device)
         elif model == 'deeponet':
             layers = [[128,128],[128,128]]#[[256,128,128],[128,128]]
             self.model = DeepONetClassifier(phi_dim,x_dim, layers = layers, layer_norm=False, p=128, activation=activation).to(self.device)
         elif model == 'quadratic':
             self.model = QuadraticModel(phi_dim, x_dim,trunk_layers=[128,128], layer_norm=False, p=128).to(self.device)
         elif model == 'NW':
-            self.model = ParametricNWDeepONet(phi_dim,x_dim, layers = [[256,128,128],[128,128]], layer_norm=False, p=128,num_experts=32).to(self.device)
+            raise ValueError("NW model is not available in this workspace.")
+        else:
+            raise ValueError(f"Unsupported model '{model}'")
         
         self.n_epochs = n_epochs
         self.batch_size = batch_size
@@ -463,13 +474,26 @@ class BinaryClassifierModel:
         self.step_lr = step_lr
         self.loss_fn = torch.nn.BCEWithLogitsLoss()
         self.metrics = None  # To be set externally
+    def forward_logits(self, phi, x):
+        phi = phi.to(self.device)
+        x = x.to(self.device)
+        if self.model_name == 'mlp':
+            if x.dim() == 2:
+                x = x.unsqueeze(0)
+            expanded_phi = phi.unsqueeze(1).expand(-1, x.size(1), -1)
+            inputs = torch.cat([expanded_phi, x], dim=-1)
+            return self.model(inputs).squeeze(-1)
+        return self.model(phi, x)
     def get_model_pred(self, phi, x = None):
+        phi = phi.to(self.device)
         n_hits = torch.zeros(phi.size(0), device=self.device)
-        if x is None: x = SAMPLER.sample_x(phi).to(self.device)
+        if x is None:
+            x = SAMPLER.sample_x(phi.detach().cpu())
         num_samples_x = x.size(1)
         num_samples_phi = phi.size(0)
-        for start in range(0, num_samples_x, self.batch_size//num_samples_phi):
-            x_batch = x[:, start:start + self.batch_size//num_samples_phi].detach()
+        per_phi_batch = max(1, self.batch_size // max(num_samples_phi, 1))
+        for start in range(0, num_samples_x, per_phi_batch):
+            x_batch = x[:, start:start + per_phi_batch].detach()
             y_pred = self.predict_proba(phi,x_batch)
             n_hits = n_hits + self.metrics.n_hits(y_pred)
         return n_hits / x.size(1)
@@ -481,6 +505,7 @@ class BinaryClassifierModel:
         phi = phi.to(self.device)
         num_samples_x = x.size(1)
         num_samples_phi = phi.size(0)
+        per_phi_batch = max(1, self.batch_size // max(num_samples_phi, 1))
         indices = torch.arange(num_samples_x)
 
         train_metrics = {'loss': [], 'hits_error': [], 'prob_gap': []}
@@ -491,13 +516,13 @@ class BinaryClassifierModel:
         for epoch in pbar:
             average_loss = 0.0
             shuffled_indices = indices[torch.randperm(num_samples_x)]
-            for start in range(0, num_samples_x, self.batch_size//num_samples_phi):
-                end = min(start + self.batch_size//num_samples_phi, num_samples_x)
+            for start in range(0, num_samples_x, per_phi_batch):
+                end = min(start + per_phi_batch, num_samples_x)
                 batch_idx = shuffled_indices[start:end]
                 y_batch = y[:, batch_idx].float().to(self.device)
                 x_batch = x[:, batch_idx].to(self.device)
                 self.optimizer.zero_grad()
-                y_pred_logits = self.model(phi, x_batch)
+                y_pred_logits = self.forward_logits(phi, x_batch)
                 loss = self.loss_fn(y_pred_logits, y_batch)
                 assert not torch.isnan(loss), "Loss is NaN, check your model and data."
                 loss.backward()
@@ -527,12 +552,14 @@ class BinaryClassifierModel:
         """
         Predicts the probability of Y=1 for each given `phi` and `x`.
         """
-        phi = phi.to(self.device)
         self.model.eval()
-        #phi = self.normalize_params(phi)
-        return torch.sigmoid(self.model(phi, x.to(self.device)))
+        return torch.sigmoid(self.forward_logits(phi, x))
     def normalize_params(self, params):
         return normalize_vector(params, self.bounds_phi)
+    def save(self, path):
+        torch.save(self.model.state_dict(), path)
+    def load(self, path):
+        self.model.load_state_dict(torch.load(path, map_location=self.device))
 
 initial_phi = normalize_vector(initial_phi, bounds)
 X_initial, Y_initial = simulate(initial_phi.unsqueeze(0), n_samples=args.n_samples)
@@ -558,56 +585,58 @@ surrogate_model = BinaryClassifierModel(
 
 metrics = Metrics(bounds, problem, surrogate_model)
 surrogate_model.metrics = metrics 
-train_metrics, val_metrics, grad_metrics = surrogate_model.fit(
+if args.load_model:
+    surrogate_model.load(os.path.join(outputs_dir,args.model_name+'.pt'))
+else:
+    train_metrics, val_metrics, grad_metrics = surrogate_model.fit(
     training_phis, x_training, y_training,
     val_phis=validation_phis, val_x=x_validation, val_y=y_validation)
+    surrogate_model.save(os.path.join(outputs_dir, args.model_name+'.pt'))
+    
+    # --- Plotting training/validation loss and metrics ---
+    epochs = range(1, len(train_metrics['loss']) + 1)
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
 
+    # First subplot: Loss
+    ax1.plot(epochs, train_metrics['loss'], label='Train Loss', color='blue')
+    ax1.plot(epochs, val_metrics['loss'], label='Validation Loss', color='orange')
+    ax1.set_ylabel('Loss')
+    ax1.set_title('Training and Validation Loss')
+    ax1.legend()
+    ax1.grid(True, linestyle='--', alpha=0.6)
 
+    # Second subplot: hits_error and prob_gap (twin y-axes)
+    color1 = 'tab:blue'
+    color2 = 'tab:green'
+    ax2.plot(epochs, train_metrics['hits_error'], label='Train Hits Error', color=color1, linestyle='-')
+    ax2.set_ylabel('Hits Error', color=color1)
+    ax2.tick_params(axis='y', labelcolor=color1)
+    ax2b = ax2.twinx()
+    ax2b.plot(epochs, train_metrics['prob_gap'], label='Train Prob Gap', color=color2, linestyle='-')
+    ax2b.set_ylabel('Prob Gap', color=color2)
+    ax2b.tick_params(axis='y', labelcolor=color2)
+    ax2.plot(epochs, val_metrics['hits_error'], label='Val Hits Error', color=color1, linestyle='--')
+    ax2b.plot(epochs, val_metrics['prob_gap'], label='Val Prob Gap', color=color2, linestyle='--')
+    ax2.set_xlabel('Epoch')
+    ax2.set_title('Hits Error and Probability Gap')
+    lines1, labels1 = ax2.get_legend_handles_labels()
+    lines2, labels2 = ax2b.get_legend_handles_labels()
+    ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
 
-# --- Plotting training/validation loss and metrics ---
-epochs = range(1, len(train_metrics['loss']) + 1)
-fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+    # Third subplot: Cosine similarities
+    ax3.plot(epochs, grad_metrics['grad_cosine'], label='Grad Cosine', color='purple', marker='o')
+    ax3.plot(epochs, grad_metrics['newton_cosine'], label='Newton Step Cosine', color='red', marker='x')
+    ax3.set_ylabel('Cosine Similarity')
+    ax3.set_xlabel('Epoch')
+    ax3.set_title('Cosine Similarities (Grad & Newton Step)')
+    ax3.legend()
+    ax3.grid(True, linestyle='--', alpha=0.6)
 
-# First subplot: Loss
-ax1.plot(epochs, train_metrics['loss'], label='Train Loss', color='blue')
-ax1.plot(epochs, val_metrics['loss'], label='Validation Loss', color='orange')
-ax1.set_ylabel('Loss')
-ax1.set_title('Training and Validation Loss')
-ax1.legend()
-ax1.grid(True, linestyle='--', alpha=0.6)
-
-# Second subplot: hits_error and prob_gap (twin y-axes)
-color1 = 'tab:blue'
-color2 = 'tab:green'
-ax2.plot(epochs, train_metrics['hits_error'], label='Train Hits Error', color=color1, linestyle='-')
-ax2.set_ylabel('Hits Error', color=color1)
-ax2.tick_params(axis='y', labelcolor=color1)
-ax2b = ax2.twinx()
-ax2b.plot(epochs, train_metrics['prob_gap'], label='Train Prob Gap', color=color2, linestyle='-')
-ax2b.set_ylabel('Prob Gap', color=color2)
-ax2b.tick_params(axis='y', labelcolor=color2)
-ax2.plot(epochs, val_metrics['hits_error'], label='Val Hits Error', color=color1, linestyle='--')
-ax2b.plot(epochs, val_metrics['prob_gap'], label='Val Prob Gap', color=color2, linestyle='--')
-ax2.set_xlabel('Epoch')
-ax2.set_title('Hits Error and Probability Gap')
-lines1, labels1 = ax2.get_legend_handles_labels()
-lines2, labels2 = ax2b.get_legend_handles_labels()
-ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
-
-# Third subplot: Cosine similarities
-ax3.plot(epochs, grad_metrics['grad_cosine'], label='Grad Cosine', color='purple', marker='o')
-ax3.plot(epochs, grad_metrics['newton_cosine'], label='Newton Step Cosine', color='red', marker='x')
-ax3.set_ylabel('Cosine Similarity')
-ax3.set_xlabel('Epoch')
-ax3.set_title('Cosine Similarities (Grad & Newton Step)')
-ax3.legend()
-ax3.grid(True, linestyle='--', alpha=0.6)
-
-fig.tight_layout()
-plt.savefig('outputs/figs/train_val_metrics.png')
-if args.plot:
-    plt.show()
-plt.close(fig)
+    fig.tight_layout()
+    plt.savefig('outputs/figs/train_val_metrics.png')
+    if args.plot:
+        plt.show()
+    plt.close(fig)
 
 # Get predicted and real probabilities for training and validation sets
 pred_probs_train, real_probs_train = metrics.get_probs(training_phis, x_training)
@@ -697,26 +726,52 @@ if args.plot:
 plt.close()
 print("Plots saved.")
 
+eval_x_cpu = SAMPLER.sample_x(initial_phi.unsqueeze(0), n_samples=args.n_samples).squeeze(0).cpu()
+eval_x_dev = eval_x_cpu.to(dev)
+phi0_cpu = initial_phi.detach().clone().cpu()
+phi0_dev = phi0_cpu.to(dev)
 
-
-
-print("Plots saved.")
-x_samp = SAMPLER.sample_x(initial_phi.unsqueeze(0), n_samples=args.n_samples).squeeze(0)
-surrogate_objective = lambda phi: metrics.surrogate_objective(phi, x_samp)
-surrogate_grad = torch.func.grad(surrogate_objective)(initial_phi)
+surrogate_objective = lambda phi: metrics.surrogate_objective(phi, eval_x_dev)
+surrogate_grad = torch.func.grad(surrogate_objective)(phi0_dev)
 
 dev = metrics.surrogate_model.device
-surrogate_hessian = metrics.surrogate_hessian_from_hvp(initial_phi.to(dev), x_samp.unsqueeze(0).to(dev), damping=1e-3)
+surrogate_hessian = metrics.surrogate_hessian_from_hvp(phi0_dev, eval_x_dev, damping=1e-3)
 
 surrogate_step = metrics._newton_step(surrogate_grad.to(surrogate_hessian.device), surrogate_hessian)
 
+phi0 = phi0_dev.detach().cpu().numpy().copy()
+search_bounds = [
+    (max(0.0, float(phi0[d] - 2.0 * epsilon)), min(1.0, float(phi0[d] + 2.0 * epsilon)))
+    for d in range(dim)
+]
+
+def surrogate_objective_and_grad(phi_np):
+    phi_t = torch.tensor(phi_np, dtype=torch.get_default_dtype(), device=dev)
+    value = surrogate_objective(phi_t)
+    grad = torch.func.grad(surrogate_objective)(phi_t)
+    return value.item(), grad.detach().cpu().numpy().copy()
+
+res_sur = scipy_minimize(
+    surrogate_objective_and_grad,
+    phi0,
+    jac=True,
+    bounds=search_bounds,
+    method='L-BFGS-B',
+    options={'maxiter': 500, 'ftol': 1e-15, 'gtol': 1e-12},
+)
+surrogate_min_phi = torch.tensor(res_sur.x, dtype=torch.get_default_dtype(), device=dev)
+surrogate_min_direction = surrogate_min_phi - phi0_dev
+
 cos_step_surrogate = metrics.cosine_similarity(surrogate_grad.to(surrogate_hessian.device), surrogate_step)
 print(f"Cosine between surrogate gradient and surrogate Newton step: {cos_step_surrogate}")
+print("Surrogate direct minimum:", surrogate_min_phi.detach().cpu())
+print(f"Surrogate direct minimum objective: {surrogate_objective(surrogate_min_phi).item():.6f}")
 
 if args.problem != 'MuonShield':
-    # real gradient / hessian from the true problem (use analytic=False for fairness)
-    real_gradient = problem.gradient(denormalize_vector(initial_phi.unsqueeze(0), bounds), analytic=False).squeeze()
-    real_hessian = problem.hessian(denormalize_vector(initial_phi.unsqueeze(0), bounds), analytic=False).squeeze()
+    true_objective = lambda phi: metrics.true_objective(phi, eval_x_cpu)
+    real_gradient = torch.func.grad(true_objective)(phi0_cpu.clone().requires_grad_(True)).to(dev)
+    real_hessian = torch.func.hessian(true_objective)(phi0_cpu.clone().requires_grad_(True)).to(dev)
+    real_hessian = 0.5 * (real_hessian + real_hessian.T)
 
     print("Real Gradient:", real_gradient)
     print("Surrogate Gradient:", surrogate_grad)
@@ -737,60 +792,64 @@ if args.problem != 'MuonShield':
     print("Cosine between real and surrogate gradients:", metrics.cosine_similarity(real_gradient.to(surrogate_grad.device), surrogate_grad))
     print(f"Cosine between real step and surrogate step: {cos_between_steps}")
 
-# --- Gain analysis for gradient and Newton steps across step sizes ---
+# --- Gain analysis for gradient, Newton, and direct surrogate-minimum steps ---
 print('\n' + '=' * 50)
-print("Gain analysis (surrogate and true objectives)")
+print("Gain analysis (true objective only)")
 print('=' * 50)
+x0_true_hits = metrics.true_objective(phi0_dev, eval_x_cpu, reduction='sum').item()
+print(f"Objective at x0 (true total hits on fixed X): {x0_true_hits:.6f}")
 etas = [1e-4, 1e-3, 0.01, 0.1, 1.0, 10.0]
-gains_newton_sur = []
-gains_grad_sur = []
 gains_newton_true = []
 gains_grad_true = []
+gains_direct_true = []
 
-phi0_dev = initial_phi.to(dev)
-grad_dev = surrogate_grad.to(dev)
-step_dev = surrogate_step.to(dev)
-x_samp_dev = x_samp.to(dev)
+phi0 = phi0_dev
+grad = surrogate_grad.to(dev)
+step = surrogate_step.to(dev)
+
+def format_point(point):
+    return np.array2string(point.detach().cpu().numpy(), precision=4, floatmode='fixed')
 
 for eta in etas:
-    gn_s = metrics.gain_newton(phi0_dev, step_dev, eta, x_samp_dev)
-    gg_s = metrics.gain_gradient(phi0_dev, grad_dev, eta, x_samp_dev)
-    gains_newton_sur.append(gn_s)
-    gains_grad_sur.append(gg_s)
-    gn_t = metrics.gain_newton_true(initial_phi, surrogate_step.cpu(), eta, n_samples=args.n_samples)
-    gg_t = metrics.gain_gradient_true(initial_phi, surrogate_grad.cpu(), eta, n_samples=args.n_samples)
+    phi1_newton = (phi0 + eta * step).clamp(0.0, 1.0)
+    phi1_grad = (phi0 - eta * grad).clamp(0.0, 1.0)
+    phi1_direct = (phi0 + eta * surrogate_min_direction).clamp(0.0, 1.0)
+
+    gn_t = metrics.gain_newton_true(phi0, surrogate_step, eta, eval_x_cpu)
+    gg_t = metrics.gain_gradient_true(phi0, surrogate_grad, eta, eval_x_cpu)
+    gd_t = metrics.gain_direction_true(phi0, surrogate_min_direction, eta, eval_x_cpu)
     gains_newton_true.append(gn_t)
     gains_grad_true.append(gg_t)
-    print(f"eta={eta:.0e}  | Sur Newton={gn_s:.6f}  Sur Grad={gg_s:.6f}  | True Newton={gn_t:.6f}  True Grad={gg_t:.6f}")
+    gains_direct_true.append(gd_t)
+    print(
+        f"eta={eta:.0e}  | Gain Newton={gn_t:.6f}"
+        f"  | Gain Grad={gg_t:.6f}"
+        f"  | Gain Direct={gd_t:.6f}"
+    )
+    print(
+        f"            x1 Newton={format_point(phi1_newton)}"
+        f"  | x1 Grad={format_point(phi1_grad)}"
+        f"  | x1 Direct={format_point(phi1_direct)}"
+    )
 
 # --- Gain comparison plot ---
-fig, (ax_sur, ax_true) = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+fig, ax_true = plt.subplots(1, 1, figsize=(8, 5))
 eta_labels = [f"{e:.0e}" for e in etas]
 x_pos = np.arange(len(etas))
-width = 0.35
+width = 0.24
 
-ax_sur.bar(x_pos - width/2, gains_newton_sur, width, label='Newton step', color='C0')
-ax_sur.bar(x_pos + width/2, gains_grad_sur, width, label='Gradient step', color='C1')
-ax_sur.axhline(0.0, color='k', linewidth=1, linestyle='--', alpha=0.6)
-ax_sur.set_xticks(x_pos)
-ax_sur.set_xticklabels(eta_labels)
-ax_sur.set_xlabel('Step size (eta)')
-ax_sur.set_ylabel('Gain  (f(x0) - f(x1))')
-ax_sur.set_title('Gain — Surrogate Objective')
-ax_sur.legend()
-ax_sur.grid(True, axis='y', linestyle='--', alpha=0.4)
-
-ax_true.bar(x_pos - width/2, gains_newton_true, width, label='Newton step', color='C0')
-ax_true.bar(x_pos + width/2, gains_grad_true, width, label='Gradient step', color='C1')
+ax_true.bar(x_pos - width, gains_newton_true, width, label='Newton step', color='C0')
+ax_true.bar(x_pos, gains_grad_true, width, label='Gradient step', color='C1')
+ax_true.bar(x_pos + width, gains_direct_true, width, label='Direct surrogate minimum', color='C2')
 ax_true.axhline(0.0, color='k', linewidth=1, linestyle='--', alpha=0.6)
 ax_true.set_xticks(x_pos)
 ax_true.set_xticklabels(eta_labels)
 ax_true.set_xlabel('Step size (eta)')
-ax_true.set_title('Gain — True Objective (Simulation)')
+ax_true.set_title('Gain — True Total Hits (Fixed X)')
 ax_true.legend()
 ax_true.grid(True, axis='y', linestyle='--', alpha=0.4)
 
-fig.suptitle('Gain Comparison: Newton vs Gradient Step')
+fig.suptitle('True-Total-Hits Gain Comparison on a Fixed X Sample')
 plt.tight_layout()
 plt.savefig('outputs/figs/gain_comparison_lcso.png')
 if args.plot:

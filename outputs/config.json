@@ -1,0 +1,38 @@
+{
+  "data_treatment": {
+    "save_data": false
+  },
+  "sensitive_plane": [
+    {
+      "dz": 0.02,
+      "dx": 4.2,
+      "dy": 6,
+      "position": 82
+    },
+    {
+      "dz": 0.02,
+      "dx": 0.4,
+      "dy": 0.4,
+      "position": 20.5
+    }
+  ],
+  "n_samples": 0,
+  "loss_fn": "hits",
+  "apply_det_loss": true, 
+  "cost_loss_fn": "exponential",
+  "reduction": "sum",
+  "fSC_mag": false,
+  "uniform_fields": false,
+  "use_B_goal": true,
+  "cavern": true,
+  "seed": null,
+  "x_margin": 2.2,
+  "y_margin": 3.0,
+  "fields_file": null,
+  "muons_file": "/disk/users/ghijan/full_sample_after_target.h5",
+  "SND": false,
+  "use_diluted": true,
+  "SmearBeamRadius": 0.0,
+  "cost_as_constraint": false,
+  "n_steps": 5000
+}

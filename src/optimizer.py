@@ -15,7 +15,9 @@ from tqdm import tqdm
 from scipy.stats.qmc import LatinHypercube
 from matplotlib import pyplot as plt
 from pickle import dump,  load
-import wandb
+try: import wandb
+except ImportError:
+    print("wandb not found, proceeding without it. Install with `pip install wandb`")
 from os.path import join, exists
 from scipy.optimize import minimize, Bounds as ScipyBounds, NonlinearConstraint
 from scipy.spatial.distance import pdist
@@ -153,7 +155,7 @@ class LCSO(OptimizerClass):
                  epsilon:float = 0.2,
                  initial_phi:torch.tensor = None,
                  history:tuple = (),
-                 WandB:dict = {'name': 'LGSOptimization'},
+                 WandB:dict = {'name': 'LCSOptimization'},
                  device = torch.device('cpu'),
                  outputs_dir = 'outputs',
                  resume:bool = False,

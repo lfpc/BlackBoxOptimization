@@ -1,7 +1,7 @@
 import torch
 import botorch
 import gpytorch
-from utils.nets import IBNN_ReLU, Classifier, DeepONetClassifier#, ParametricNWDeepONet
+from utils.nets import IBNN_ReLU, Classifier, DeepONetClassifier
 from tqdm import trange
 from matplotlib import pyplot as plt
 from utils import HDF5Dataset, normalize_vector
@@ -216,8 +216,6 @@ class BinaryClassifierModel:
             self.model = Classifier(phi_dim,x_dim, 128).to(self.device)
         elif model == 'deeponet':
             self.model = DeepONetClassifier(phi_dim,x_dim, layers = [[256,128,128],[128,128]], layer_norm=False, p=128).to(self.device)
-        elif model == 'NW':
-            self.model = ParametricNWDeepONet(phi_dim,x_dim, layers = [[256,128,128],[128,128]], layer_norm=False, p=128,num_experts=32).to(self.device)
         self.n_epochs = n_epochs
         self.gen_epoch = 0
         self.batch_size = batch_size

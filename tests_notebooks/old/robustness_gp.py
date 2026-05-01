@@ -2,8 +2,8 @@ import torch
 import matplotlib.pyplot as plt
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join('..', 'src')))
-sys.path.append(os.path.abspath(os.path.join('..')))
+sys.path.append(os.path.abspath(os.path.join('../..', 'src')))
+sys.path.append(os.path.abspath(os.path.join('../..')))
 from models import BinaryClassifierModel, GP_RBF
 from optimizer import LCSO, denormalize_vector, normalize_vector
 from problems import ThreeHump_stochastic_hits, Rosenbrock_stochastic_hits, HelicalValley_stochastic_hits, ShipMuonShieldCuda

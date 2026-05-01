@@ -311,3 +311,14 @@ class HDF5Dataset(torch.utils.data.IterableDataset):
         
         # 5. Clean up
         h5_file.close()
+
+from scipy.stats.qmc import LatinHypercube
+def latin_hypercube_sample(samples_phi:int, phi_init:torch.tensor,epsilon:float = 0.2):
+        """Draw samples in a hypercube of side 2*epsilon around current_phi."""
+        lhs_sampler = LatinHypercube(d=phi_init.shape[-1], seed=42)
+        perturb = lhs_sampler.random(samples_phi)
+        with torch.no_grad():
+            perturb = (2*torch.from_numpy(perturb).to(dtype=torch.get_default_dtype()) - 1.0) * epsilon
+            phis = (phi_init.unsqueeze(0).cpu() + perturb)
+        phis = torch.cat([phi_init.view(1, -1),phis], dim=0)  # Include phi_init as the last sample
+        return phis
