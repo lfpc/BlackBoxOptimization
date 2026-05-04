@@ -1634,7 +1634,7 @@ class ShipMuonShieldCuda(ShipMuonShield):
                                         n_steps=self.n_steps,
                                         SmearBeamRadius=self.SmearBeamRadius,
                                         fSC_mag = self.fSC_mag,
-                                        simulate_fields = not self.uniform_fields,
+                                        simulate_fields = not self.uniform_fields if field_map_file == None else False,
                                         field_map_file = self.fields_file,
                                         save_field_map = self.save_field_map,
                                         RL_multiprocessing = self.RL_multiprocessing,
