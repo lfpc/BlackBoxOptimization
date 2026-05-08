@@ -794,7 +794,10 @@ class ShipMuonShield():
             make_index(6, list(range(1,10)) + [14])
         ),
         "robustness": (
-            make_index(1, [1,2,14]) 
+            make_index(1, [1,2,14])+
+            make_index(2, [1,2,14])+
+            make_index(3, [1,2,14])+
+            make_index(4, [1,2,14]) 
         ),
         "piet_idx": (
             make_index(1, [1,2,4,3,6,7]) +
@@ -868,9 +871,9 @@ class ShipMuonShield():
                  ) -> None:
         
         if x_margin is None:
-            x_margin = sensitive_plane[1]['dx'] / 2 + 0.01
+            x_margin = sensitive_plane[-1]['dx'] / 2 + 0.01
         if y_margin is None:
-            y_margin = sensitive_plane[1]['dy'] / 2 + 0.01
+            y_margin = sensitive_plane[-1]['dy'] / 2 + 0.01
 
         self.x_margin = x_margin
         self.y_margin = y_margin
@@ -1142,8 +1145,8 @@ class ShipMuonShield():
             ])
             volume += compute_solid_volume(corners)
         M_iron = 4*volume*density    
-        C_iron = M_iron*(iron_material_data["material_cost(CHF/kg)"]
-                     +  iron_material_data["manufacturing_cost(CHF/kg)"])
+        C_iron = M_iron*(iron_material_data["material_cost(oo/kg)"]
+                     +  iron_material_data["manufacturing_cost(oo/kg)"])
         return C_iron.detach()
     def get_total_cost(self,phi):
         try:
@@ -1222,11 +1225,11 @@ class ShipMuonShield():
             dX_bounds = (10, 85)
             gap_bounds = (8, 30)
             inner_gap_bounds = (0., 30.)
-            yoke_bounds = (1,10)
+            yoke_bounds = (1,10) if self.use_ratio_yoke else (dX_bounds[0], dX_bounds[1]*3)
         else:
             dX_bounds = (5, 250)
             gap_bounds = (2, 150)
-            yoke_bounds = (0.99,3)
+            yoke_bounds = (0.99,3) if self.use_ratio_yoke else (dX_bounds[0], dX_bounds[1]*3)
             inner_gap_bounds = (0., 150.)
 
         bounds_low = torch.tensor([[z_gap[0],magnet_lengths[0], 
@@ -1251,11 +1254,16 @@ class ShipMuonShield():
         if inverted_polarity.any():
             bounds_low[inverted_polarity, 14] = -NI_bounds[1]
             bounds_high[inverted_polarity, 14] = -NI_bounds[0]
-            if not self.use_diluted:
+            if not self.use_diluted and self.use_ratio_yoke:
                 bounds_low[inverted_polarity, 8] = 1.0 / yoke_bounds[1]
                 bounds_high[inverted_polarity, 8] = 1.0 / yoke_bounds[0]
                 bounds_low[inverted_polarity, 9] = 1.0 / yoke_bounds[1]
                 bounds_high[inverted_polarity, 9] = 1.0 / yoke_bounds[0]
+            elif not self.use_diluted:
+                bounds_low[inverted_polarity, 8] = yoke_bounds[0]/3
+                bounds_high[inverted_polarity, 8] = yoke_bounds[1]/3
+                bounds_low[inverted_polarity, 9] = yoke_bounds[0]/3
+                bounds_high[inverted_polarity, 9] = yoke_bounds[1]/3
 
         if self.use_diluted:
             if self.n_magnets <7:
@@ -1312,10 +1320,10 @@ class ShipMuonShield():
             bounds_high[1,6] = 150
             bounds_low[1,7] = 1.0
             bounds_high[1,7] = 4
-            bounds_low[1,8] = 1.0
-            bounds_high[1,8] = 4
-            bounds_low[1,9] = 1.0
-            bounds_high[1,9] = 4
+            bounds_low[1,8] = 1.0 if self.use_ratio_yoke else 5
+            bounds_high[1,8] = 4 if self.use_ratio_yoke else 250
+            bounds_low[1,9] = 1.0 if self.use_ratio_yoke else 5
+            bounds_high[1,9] = 4 if self.use_ratio_yoke else 250
         bounds_low = apply_index(bounds_low, self.params_idx).flatten()
         bounds_high = apply_index(bounds_high, self.params_idx).flatten()
         bounds = torch.stack([bounds_low, bounds_high])

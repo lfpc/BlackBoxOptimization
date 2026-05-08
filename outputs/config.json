@@ -20,6 +20,7 @@
   "loss_fn": "hits",
   "apply_det_loss": true, 
   "cost_loss_fn": "exponential",
+  "use_ratio_yoke": true,
   "reduction": "sum",
   "fSC_mag": false,
   "uniform_fields": false,
