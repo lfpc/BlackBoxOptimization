@@ -2,7 +2,7 @@
 USER_NAME=$(whoami)
 export PROJECTS_DIR="$(dirname "$PWD")"
 PROJECT_DIR="/home/hep/$USER_NAME/MuonShieldProject"
-CONTAINER_PATH="/disk/users/lprate/containers/snoopy_geant_cuda.sif"
+CONTAINER_PATH="/disk/users/lprate/containers/MuonsAndMatterContainer.sif"
 PYTHON_SCRIPT_DIR="$PROJECT_DIR/BlackBoxOptimization"
 
 nvidia-smi
