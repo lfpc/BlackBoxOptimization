@@ -21,7 +21,8 @@ class GP_RBF(botorch.models.SingleTaskGP):
         super().__init__(X,Y,outcome_transform = botorch.models.transforms.Standardize(m=1),**kwargs)
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self)
         if use_scipy:
-            botorch.fit.fit_gpytorch_mll(mll)
+            with gpytorch.settings.cholesky_jitter(1e-4):
+                botorch.fit.fit_gpytorch_mll(mll)
         else:
             botorch.fit.fit_gpytorch_mll(mll,optimizer=botorch.optim.fit.fit_gpytorch_mll_torch, options=options)
         return self
