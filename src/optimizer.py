@@ -39,7 +39,7 @@ from stable_baselines3.sac.policies import SACPolicy
 from stable_baselines3.common.utils import polyak_update
 from sb3_contrib import TQC
 from sb3_contrib.common.utils import quantile_huber_loss
-from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv,DummyVecEnv
 from imitation.data.types import Trajectory
 from imitation.algorithms import bc
 from imitation.util import logger as imit_logger
@@ -137,6 +137,8 @@ class OptimizerClass():
                         'min_loss':min_loss.item()}
                 if hasattr(self, 'trust_radius'):
                     log['trust_radius'] = self.trust_radius
+                if hasattr(self, 'lam'):
+                    log['evaluations']=self.evaluations
                 if save_history:
                     with open(join(self.outputs_dir,f'history.pkl'), "wb") as f:
                         dump(self.history, f)
@@ -2173,7 +2175,7 @@ class RL_muons_env_final(gym.Env):
         return self.obs, {}
 
     def step(self, action):
-        self.obs[self.index]=action
+        self.obs[self.index]=action.item()
         self.index+=1
         terminated = (self.index >= self.dimensions_phi)
         reward = 0.0
@@ -2344,6 +2346,7 @@ class RL_final():
             model_path=f"outputs/{self.WandB['name']}/sac_model"
         model.save(model_path)
         print(f"Training finished. Computation time: {time()-start_time} s")
+        train_env.close()
         #Deterministic performance of the trained agent (play several evaluation episodes to obtain a distribution of returns):
         n_eval_episodes=1000
         start_time = time()
@@ -3495,7 +3498,7 @@ def reliable_design_worker(device, design_indices, model_path, algo_name, use_wa
                 obs, reward, done, truncated, info = env.step(action)
             rewards[j] = reward
         all_rewards.append(rewards)
-        print(f"Worker analyzed {i}/{len(design_indices)} designs. Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Worker analyzed {idx+1}/{len(design_indices)} designs. Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     return designs, all_rewards
 
 def load_model(model_path, device, algo_name, use_warm_baseline):
@@ -4622,6 +4625,7 @@ class CMAESOptimizer(OptimizerClass):
             self.lam = 4 + int(3 * np.log(self.N))
         else:
             self.lam = pop_size
+        self.evaluations=0
             
         # Number of parents (mu) - usually half of lambda
         self.mu = int(self.lam / 2)
@@ -4690,6 +4694,7 @@ class CMAESOptimizer(OptimizerClass):
         for i in range(self.lam):
             val = self.true_model(offspring[i])
             scores.append(val)
+        self.evaluations+=self.lam
             
         scores = torch.tensor(scores, device=self.device).view(-1, 1)
         
