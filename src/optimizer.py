@@ -39,7 +39,7 @@ from stable_baselines3.sac.policies import SACPolicy
 from stable_baselines3.common.utils import polyak_update
 from sb3_contrib import TQC
 from sb3_contrib.common.utils import quantile_huber_loss
-from stable_baselines3.common.vec_env import SubprocVecEnv,DummyVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv,DummyVecEnv,VecMonitor
 from imitation.data.types import Trajectory
 from imitation.algorithms import bc
 from imitation.util import logger as imit_logger
@@ -2058,8 +2058,9 @@ def evaluate_policy_parallel(policy, problem_fn, devices, num_envs, folder_path,
         shutil.rmtree(folder_path)
     os.makedirs(folder_path)
     #Play an episode to compute and save the magnetic field:
-    problem_fn.save_field_map=True
-    problem_fn.fields_file=folder_path+"/field_file_"+"policy"+".h5"
+    if not problem_fn.uniform_fields:
+        problem_fn.save_field_map=True
+        problem_fn.fields_file=folder_path+"/field_file_"+"policy"+".h5"
     obs, _ = env.reset()
     done = False
     while not done:
@@ -2069,7 +2070,8 @@ def evaluate_policy_parallel(policy, problem_fn, devices, num_envs, folder_path,
             print("Something went wrong")
             sys.exit()
         obs, r, done, truncated, info = env.step(action)
-    problem_fn.save_field_map=False
+    if not problem_fn.uniform_fields:
+        problem_fn.save_field_map=False
     with multiprocessing.get_context("spawn").Pool(processes=num_envs) as pool:
         tasks=[(policy,problem_fn,env_devices[i],num_evaluations[i],return_all_rewards,folder_path) for i in range(num_envs)]
         results=pool.starmap(eval_worker, tasks)
@@ -2091,7 +2093,8 @@ def evaluate_policy_parallel(policy, problem_fn, devices, num_envs, folder_path,
 def eval_worker(policy, problem_fn, device, n_episodes, return_all_rewards, folder_path):
     torch.cuda.set_device(device)
     env = RL_muons_env_final(problem_fn, device)
-    problem_fn.fields_file=folder_path+"/field_file_"+"policy"+".h5"
+    if not problem_fn.uniform_fields:
+        problem_fn.fields_file=folder_path+"/field_file_"+"policy"+".h5"
     rewards = []
     xs = []
     for _ in range(n_episodes):
@@ -2198,12 +2201,13 @@ class RL_muons_env_final(gym.Env):
         np.random.seed(seed)
 
 class RL_final():
-    def __init__(self,problem_fn,warm_baseline,training_steps,num_envs,device,devices,WandB):
+    def __init__(self,problem_fn,warm_baseline,training_steps,SB3_num_envs,num_envs,device,devices,WandB):
         self.problem_fn=problem_fn
         low_bounds,high_bounds=self.problem_fn.GetBounds()
         low_bounds,high_bounds=low_bounds.detach().cpu().numpy(),high_bounds.detach().cpu().numpy()
         self.warm_baseline=-1.0+2*(warm_baseline-low_bounds)/(high_bounds-low_bounds)
         self.training_steps=training_steps
+        self.SB3_num_envs=SB3_num_envs
         self.num_envs=num_envs
         self.device=device
         self.devices=devices
@@ -2220,8 +2224,10 @@ class RL_final():
                 env = RL_muons_env_final(problem_fn, device)
                 return env
             return _init
-        train_env = SubprocVecEnv([make_env(rank=i, problem_fn=self.problem_fn, devices=self.devices) for i in range(self.num_envs)])
+        train_env = SubprocVecEnv([make_env(rank=i, problem_fn=self.problem_fn, devices=self.devices) for i in range(self.SB3_num_envs)],start_method="spawn")
         #train_env = RL_muons_env_final(self.problem_fn,self.device)#Environment to be used if no parallelization
+        if isinstance(train_env, SubprocVecEnv):
+            train_env = VecMonitor(train_env)
 
         eval_env = RL_muons_env_final(self.problem_fn,self.device)
 
@@ -2347,6 +2353,54 @@ class RL_final():
         model.save(model_path)
         print(f"Training finished. Computation time: {time()-start_time} s")
         train_env.close()
+
+        print(f"Best evaluation achieved during training: x={callback.best_x}, f(x)={callback.best_reward:.4f}")
+
+        fig=plt.figure()
+        plt.plot(callback.episode_rewards,marker='o')
+        plt.xlabel("Episode")
+        plt.ylabel("Loss")
+        plt.title(f"Loss per training episode ({self.algorithm})")
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/training_loss.png")
+        plt.close(fig)
+
+        fig=plt.figure()
+        x_vals = 100 * np.linspace(1/len(callback.eval_scores), 1, len(callback.eval_scores))
+        plt.plot(x_vals,callback.eval_scores,marker='o',label='Deterministic loss')
+        if self.use_warm_baseline:
+            plt.axhline(y=reward_list[-1],linestyle='--',color='black',label='Warm baseline loss')
+        plt.xlabel(f"Training % ({self.training_steps} steps)")
+        plt.ylabel("Loss")
+        plt.title(f"Periodic deterministic evaluations ({self.algorithm})")
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/deterministic_loss.png")
+        plt.close(fig)
+
+        fig=plt.figure()
+        plt.plot(callback.total_steps_history,callback.best_reward_history,marker='o',label="Best training loss")
+        plt.xlabel("Training steps")
+        plt.ylabel("Loss")
+        plt.title(f"Best training evaluation ({self.algorithm})")
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/best_training_loss.png")
+        plt.close(fig)
+
+        fig=plt.figure()
+        plt.plot(model.supervised_losses,marker='o',label="Supervised loss")
+        plt.plot(model.actor_losses,marker='o',label="Original actor loss")
+        plt.plot([model.supervised_losses[i]+model.actor_losses[i] for i in range(len(model.supervised_losses))],marker='o',label="Total actor loss")
+        plt.plot(model.critic_losses,marker='o',label="Critic loss")
+        plt.xlabel("Training steps")
+        plt.ylabel("Loss")
+        plt.title(f"Training losses ({self.algorithm})")
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/training_losses.png")
+        plt.close(fig)
+
         #Deterministic performance of the trained agent (play several evaluation episodes to obtain a distribution of returns):
         n_eval_episodes=1000
         start_time = time()
@@ -2406,53 +2460,6 @@ class RL_final():
         plt.ylabel("Counts")
         plt.grid(True)
         plt.savefig(f"outputs/{self.WandB['name']}/reward_distribution.png")
-        plt.close(fig)
-
-        print(f"Best evaluation achieved during training: x={callback.best_x}, f(x)={callback.best_reward:.4f}")
-
-        fig=plt.figure()
-        plt.plot(callback.episode_rewards,marker='o')
-        plt.xlabel("Episode")
-        plt.ylabel("Loss")
-        plt.title(f"Loss per training episode ({self.algorithm})")
-        plt.grid(True)
-        plt.savefig(f"outputs/{self.WandB['name']}/training_loss.png")
-        plt.close(fig)
-
-        fig=plt.figure()
-        x_vals = 100 * np.linspace(1/len(callback.eval_scores), 1, len(callback.eval_scores))
-        plt.plot(x_vals,callback.eval_scores,marker='o',label='Deterministic loss')
-        if self.use_warm_baseline:
-            plt.axhline(y=reward_list[-1],linestyle='--',color='black',label='Warm baseline loss')
-        plt.xlabel(f"Training % ({self.training_steps} steps)")
-        plt.ylabel("Loss")
-        plt.title(f"Periodic deterministic evaluations ({self.algorithm})")
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(f"outputs/{self.WandB['name']}/deterministic_loss.png")
-        plt.close(fig)
-
-        fig=plt.figure()
-        plt.plot(callback.total_steps_history,callback.best_reward_history,marker='o',label="Best training loss")
-        plt.xlabel("Training steps")
-        plt.ylabel("Loss")
-        plt.title(f"Best training evaluation ({self.algorithm})")
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(f"outputs/{self.WandB['name']}/best_training_loss.png")
-        plt.close(fig)
-
-        fig=plt.figure()
-        plt.plot(model.supervised_losses,marker='o',label="Supervised loss")
-        plt.plot(model.actor_losses,marker='o',label="Original actor loss")
-        plt.plot([model.supervised_losses[i]+model.actor_losses[i] for i in range(len(model.supervised_losses))],marker='o',label="Total actor loss")
-        plt.plot(model.critic_losses,marker='o',label="Critic loss")
-        plt.xlabel("Training steps")
-        plt.ylabel("Loss")
-        plt.title(f"Training losses ({self.algorithm})")
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(f"outputs/{self.WandB['name']}/training_losses.png")
         plt.close(fig)
 
         return callback.best_x,callback.best_reward
@@ -3475,8 +3482,9 @@ def reliable_design_worker(device, design_indices, model_path, algo_name, use_wa
     designs = []
     for idx, design_index in enumerate(design_indices):
         #Generate a design:
-        problem_fn.save_field_map = True
-        problem_fn.fields_file = f"{folder_path}/field_file_{design_index}.h5"
+        if not problem_fn.uniform_fields:
+            problem_fn.save_field_map = True
+            problem_fn.fields_file = f"{folder_path}/field_file_{design_index}.h5"
         design = np.empty(env.dimensions_phi, dtype=np.float32)
         obs, _ = env.reset()
         for i in range(env.dimensions_phi):
@@ -3485,7 +3493,8 @@ def reliable_design_worker(device, design_indices, model_path, algo_name, use_wa
             design[i] = action
             obs, _, _, _, _ = env.step(action)
         designs.append(design)
-        problem_fn.save_field_map = False
+        if not problem_fn.uniform_fields:
+            problem_fn.save_field_map = False
         #Evaluate the design multiple times
         rewards = np.empty(n_simulations, dtype=np.float32)
         for j in range(n_simulations):

@@ -124,7 +124,12 @@ elif args.optimizer == 'toyRL':
 elif args.optimizer == 'RLfinal':
     RL_dict={}
     RL_dict["training_steps"]=100000
-    RL_dict["num_envs"]=36#12
+    if CONFIG['uniform_fields']:
+        RL_dict["SB3_num_envs"]=24#OK
+        RL_dict["num_envs"]=24#OK
+    else:
+        RL_dict["SB3_num_envs"]=24#TO_DO
+        RL_dict["num_envs"]=24#TO_DO#36#12
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimizer, 'config': {**vars(args), **CONFIG, **RL_dict}, 'name': args.name}
 elif args.optimizer == 'CMAES':
     CMAES_dict={}
@@ -156,7 +161,7 @@ def get_freest_gpu():
     max_idx = mem_free.index(max(mem_free))
     return torch.device(f'cuda:{max_idx}')
 if torch.cuda.is_available() and args.cuda: 
-    if args.optimizer == 'GA' or args.optimizer == 'RL' or args.optimizer == 'toyRL' or args.optimizer == 'RLfinal' or args.optimizer == 'CMAES' or args.optimizer == 'CEM':
+    if args.optimizer == 'GA' or args.optimizer == 'RL' or args.optimizer == 'toyRL' or args.optimizer == 'RLfinal' or args.optimizer == 'CMAES' or args.optimizer == 'CEM' or args.optimizer == 'cma-es' or args.optimizer == 'bayesian':
         dev=torch.device('cuda')
     else:
         dev = get_freest_gpu()
@@ -237,7 +242,8 @@ def main(model,problem_fn,dimensions_phi,max_iter,N_initial_points,phi_bounds, m
 
 
 if __name__ == "__main__":
-    
+    import multiprocessing as mp
+    mp.set_start_method("spawn", force=True)
     
     config_file = os.path.join(OUTPUTS_DIR,'config.json')
     with open(config_file, 'r') as f:
@@ -319,6 +325,7 @@ if __name__ == "__main__":
         RL_final(problem_fn=problem_fn,
             warm_baseline= np.loadtxt("outputs/optimize_cost_x_4dot2/phi_optm_GA.txt"),
             training_steps=RL_dict["training_steps"],
+            SB3_num_envs=RL_dict["SB3_num_envs"],
             num_envs=RL_dict["num_envs"],
             device=dev,
             devices=devices,
