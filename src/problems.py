@@ -1399,15 +1399,15 @@ class ShipMuonShield():
                 new_phi = new_phi.index_put(
                     (torch.tensor([1]), torch.tensor([5])),
                     new_phi[1, 4]
-                )                
+                )       
+            new_phi = new_phi.view(self.n_magnets, self.n_params)
+            if self.use_ratio_yoke:
+                new_phi = new_phi.clone()
+                new_phi[:, 8] = new_phi[:, 2] * new_phi[:, 8]
+                new_phi[:, 9] = new_phi[:, 3] * new_phi[:, 9]         
         else:
             new_phi = phi
-
         new_phi = new_phi.view(self.n_magnets, self.n_params)
-        if self.use_ratio_yoke:
-            new_phi = new_phi.clone()
-            new_phi[:, 8] = new_phi[:, 2] * new_phi[:, 8]
-            new_phi[:, 9] = new_phi[:, 3] * new_phi[:, 9]
 
         return new_phi
         
@@ -1452,15 +1452,11 @@ class ShipMuonShield():
                 X_yoke_out = phi[:,3] * (1 + phi[:,9]/phi[:,3]) + phi[:,7]
                 X_yoke_in =  phi[:,2] * (1 + phi[:,8]/phi[:,2]) + phi[:,6]
                 constraints[2:] += fn_pen(X_yoke_out[1:-1] - X_yoke_in[2:])
-                print("X_yoke_out: ", X_yoke_out)
-                print("X_yoke_in: ", X_yoke_in)
             elif self.key.endswith("soft"):
                 print("soft Constraints")
                 X_yoke_out = phi[:,3] * (1 + phi[:,9]/phi[:,3]) + phi[:,7]
                 X_yoke_in =  phi[:,2] * (1 + phi[:,8]/phi[:,2]) + phi[:,6]
                 constraints[-1] +=  fn_pen(X_yoke_out[1:].max() - X_yoke_out[-1])
-                print("X_yoke_out: ", X_yoke_out)
-                print("X_yoke_in: ", X_yoke_in)
         if self.cost_as_constraint:
             M = self.get_total_cost(phi)
             constraints = constraints + fn_pen(M - self.W0)
