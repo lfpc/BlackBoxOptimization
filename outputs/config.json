@@ -8,12 +8,6 @@
       "dx": 4.2,
       "dy": 6,
       "position": 82
-    },
-    {
-      "dz": 0.02,
-      "dx": 0.4,
-      "dy": 0.4,
-      "position": 20.5
     }
   ],
   "n_samples": 0,
