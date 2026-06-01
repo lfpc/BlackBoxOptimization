@@ -1939,7 +1939,7 @@ class TrainingStatsCallback(BaseCallback):
         self.total_steps_history=[]
 
     def _on_step(self) -> bool:
-        self.total_steps+=1
+        self.total_steps+=self.training_env.num_envs
         #Detect episode end:
         infos = self.locals.get("infos", [])
         for info in infos:
@@ -2045,7 +2045,7 @@ def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10, return_
     else:
         return np.mean(rewards),None,np.mean(xs,axis=0)
 
-def evaluate_policy_parallel(policy, problem_fn, devices, num_envs, folder_path, n_eval_episodes=10, return_all_rewards=False):
+def evaluate_policy_parallel(policy, problem_fn, low_bounds, high_bounds, devices, num_envs, folder_path, n_eval_episodes=10, return_all_rewards=False):
     all_rewards = []
     all_xs=[]
     chunk_size = n_eval_episodes // num_envs
@@ -2053,7 +2053,7 @@ def evaluate_policy_parallel(policy, problem_fn, devices, num_envs, folder_path,
     num_evaluations = [chunk_size + 1 if i < remainder else chunk_size for i in range(num_envs)]
     num_gpus=len(devices)
     env_devices = [devices[i % num_gpus] for i in range(num_envs)]
-    env = RL_muons_env_final(problem_fn, devices[0])
+    env = RL_muons_env_final(problem_fn,low_bounds,high_bounds, devices[0])
     if os.path.exists(folder_path):#Remove folder if it exists
         shutil.rmtree(folder_path)
     os.makedirs(folder_path)
@@ -2073,7 +2073,7 @@ def evaluate_policy_parallel(policy, problem_fn, devices, num_envs, folder_path,
     if not problem_fn.uniform_fields:
         problem_fn.save_field_map=False
     with multiprocessing.get_context("spawn").Pool(processes=num_envs) as pool:
-        tasks=[(policy,problem_fn,env_devices[i],num_evaluations[i],return_all_rewards,folder_path) for i in range(num_envs)]
+        tasks=[(policy,problem_fn,low_bounds,high_bounds,env_devices[i],num_evaluations[i],return_all_rewards,folder_path) for i in range(num_envs)]
         results=pool.starmap(eval_worker, tasks)
         if return_all_rewards:
             for rewards in results:
@@ -2090,9 +2090,9 @@ def evaluate_policy_parallel(policy, problem_fn, devices, num_envs, folder_path,
         shutil.rmtree(folder_path)
     return np.mean(all_rewards),np.mean(all_xs)
 
-def eval_worker(policy, problem_fn, device, n_episodes, return_all_rewards, folder_path):
+def eval_worker(policy, problem_fn, low_bounds,high_bounds, device, n_episodes, return_all_rewards, folder_path):
     torch.cuda.set_device(device)
-    env = RL_muons_env_final(problem_fn, device)
+    env = RL_muons_env_final(problem_fn,low_bounds,high_bounds,device)
     if not problem_fn.uniform_fields:
         problem_fn.fields_file=folder_path+"/field_file_"+"policy"+".h5"
     rewards = []
@@ -2153,13 +2153,12 @@ class CustomPolicy(ActorCriticPolicy):
         )
 
 class RL_muons_env_final(gym.Env):
-    def __init__(self, problem_fn, device):
+    def __init__(self, problem_fn, low_bounds, high_bounds, device):
         super().__init__()
         self.problem_fn=problem_fn
         self.device=device
         self.dimensions_phi=self.problem_fn.dimensions_phi
-        self.low_bounds,self.high_bounds=self.problem_fn.GetBounds()
-        self.low_bounds,self.high_bounds=self.low_bounds.detach().cpu().numpy(),self.high_bounds.detach().cpu().numpy()
+        self.low_bounds,self.high_bounds=low_bounds,high_bounds
         self.observation_space = gym.spaces.Box(
             low=np.array([-1.0 for _ in range(self.dimensions_phi)]),
             high=np.array([1.0 for _ in range(self.dimensions_phi)]),
@@ -2202,10 +2201,23 @@ class RL_muons_env_final(gym.Env):
 
 class RL_final():
     def __init__(self,problem_fn,warm_baseline,training_steps,SB3_num_envs,num_envs,device,devices,WandB):
+        print("Warm baseline:")
+        print(warm_baseline)
         self.problem_fn=problem_fn
         low_bounds,high_bounds=self.problem_fn.GetBounds()
         low_bounds,high_bounds=low_bounds.detach().cpu().numpy(),high_bounds.detach().cpu().numpy()
-        self.warm_baseline=-1.0+2*(warm_baseline-low_bounds)/(high_bounds-low_bounds)
+
+        global_range = high_bounds - low_bounds
+        desired_radius = 0.1 * global_range
+        radius = np.minimum(
+            desired_radius,
+            np.minimum(warm_baseline - low_bounds,high_bounds - warm_baseline)
+        )
+        radius = np.maximum(radius, 1e-3*global_range)
+        self.low_bounds=np.maximum(warm_baseline-radius,low_bounds)
+        self.high_bounds=np.minimum(warm_baseline+radius,high_bounds)
+
+        self.warm_baseline=-1.0+2*(warm_baseline-self.low_bounds)/(high_bounds-self.low_bounds)
         self.training_steps=training_steps
         self.SB3_num_envs=SB3_num_envs
         self.num_envs=num_envs
@@ -2217,21 +2229,21 @@ class RL_final():
         self.folder_path=f"/disk/users/ghijan/MuonShield/field_map_files/{self.WandB['name']}"
 
     def run_optimization(self):#TO_DO: Should I fix log_std?
-        def make_env(rank, problem_fn, devices):
+        def make_env(rank, problem_fn, low_bounds,high_bounds, devices):
             def _init():
                 device = devices[rank % len(devices)]
                 torch.cuda.set_device(device)
-                env = RL_muons_env_final(problem_fn, device)
+                env = RL_muons_env_final(problem_fn, low_bounds, high_bounds, device)
                 return env
             return _init
-        train_env = SubprocVecEnv([make_env(rank=i, problem_fn=self.problem_fn, devices=self.devices) for i in range(self.SB3_num_envs)],start_method="spawn")
+        train_env = SubprocVecEnv([make_env(rank=i, problem_fn=self.problem_fn, low_bounds=self.low_bounds, high_bounds=self.high_bounds, devices=self.devices) for i in range(self.SB3_num_envs)],start_method="spawn")
         #train_env = RL_muons_env_final(self.problem_fn,self.device)#Environment to be used if no parallelization
         if isinstance(train_env, SubprocVecEnv):
             train_env = VecMonitor(train_env)
 
-        eval_env = RL_muons_env_final(self.problem_fn,self.device)
+        eval_env = RL_muons_env_final(self.problem_fn,self.low_bounds,self.high_bounds,self.device)
 
-        eval_freq = max(1, int(0.05 * self.training_steps))
+        eval_freq = max(1, int(0.0125 * self.training_steps))
 
         policy_kwargs = dict(
             net_arch={"pi":[128,128], "qf":[128,128]},
@@ -2239,7 +2251,7 @@ class RL_final():
         )
 
         if self.use_warm_baseline:
-            pretrain_env = RL_muons_env_final(self.problem_fn,self.device)#TO_DO: Can I avoid using pretrain_env or eval_env?
+            pretrain_env = RL_muons_env_final(self.problem_fn,self.low_bounds,self.high_bounds,self.device)#TO_DO: Can I avoid using pretrain_env or eval_env?
 
             obs_list, act_list, reward_list = generate_imitation_trajectories_final(pretrain_env, self.warm_baseline, n_episodes=1)                    
 
@@ -2277,15 +2289,15 @@ class RL_final():
                     gamma=0.99,                 
                     train_freq=64,         
                     gradient_steps=64,
-                    buffer_size=100000,
-                    learning_starts=10000,
+                    buffer_size=20000,#100000,
+                    learning_starts=0,#10000,
                     ent_coef="auto",           
                     tau=0.005,                 
                     verbose=1,
                     policy_kwargs=policy_kwargs,
                     device=self.device,
                     #TQC-specific params:
-                    top_quantiles_to_drop_per_net=2,
+                    top_quantiles_to_drop_per_net=1,#2
                 )
             else:
                 model = TQC(
@@ -2401,10 +2413,23 @@ class RL_final():
         plt.savefig(f"outputs/{self.WandB['name']}/training_losses.png")
         plt.close(fig)
 
+        if self.use_warm_baseline:                        
+            fig=plt.figure()
+            x_vals = 100 * np.linspace(1/len(callback.eval_xs), 1, len(callback.eval_xs))
+            designs=[-1.0+2*(callback.eval_xs[i]-eval_env.low_bounds)/(eval_env.high_bounds-eval_env.low_bounds) for i in range(len(callback.eval_xs))] 
+            distances=[np.linalg.norm(self.warm_baseline - designs[i]) for i in range(len(designs))]
+            plt.plot(x_vals,distances,marker='o')
+            plt.xlabel(f"Training % ({self.training_steps} steps)")
+            plt.ylabel("Distance")
+            plt.title(f"Euclidean distance from deterministic solution to warm baseline ({self.algorithm})")
+            plt.grid(True)
+            plt.savefig(f"outputs/{self.WandB['name']}/distance.png")
+            plt.close(fig)
+
         #Deterministic performance of the trained agent (play several evaluation episodes to obtain a distribution of returns):
         n_eval_episodes=1000
         start_time = time()
-        GA_solution_rewards = evaluate_policy_parallel(self.warm_baseline, self.problem_fn, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
+        GA_solution_rewards = evaluate_policy_parallel(self.warm_baseline, self.problem_fn, self.low_bounds, self.high_bounds, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
         print(f"Rewards of GA solution computed. Computation time: {time()-start_time} s")
         #Compute deterministic actions:
         trained_model_deterministic_actions=[]
@@ -2416,8 +2441,22 @@ class RL_final():
             trained_model_deterministic_actions.append(action)
         trained_model_deterministic_actions=np.array(trained_model_deterministic_actions)
         start_time = time()
-        trained_agent_rewards = evaluate_policy_parallel(trained_model_deterministic_actions, self.problem_fn, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
+        trained_agent_rewards = evaluate_policy_parallel(trained_model_deterministic_actions, self.problem_fn, self.low_bounds, self.high_bounds, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
         print(f"Rewards of trained agent computed. Computation time: {time()-start_time} s")
+        if self.use_warm_baseline:
+            min_val = min(trained_agent_rewards.min(),GA_solution_rewards.min())
+            max_val = max(trained_agent_rewards.max(),GA_solution_rewards.max())
+            bins=np.linspace(min_val, max_val, 20)
+            fig=plt.figure()
+            plt.hist(trained_agent_rewards, bins=bins, alpha=0.6, label="Agent playing deterministically: Rewards")
+            plt.hist(GA_solution_rewards, bins=bins, alpha=0.6, label="GA solution: Rewards")
+            plt.legend()
+            plt.title("Reward distribution")
+            plt.xlabel("Score")
+            plt.ylabel("Counts")
+            plt.grid(True)
+            plt.savefig(f"outputs/{self.WandB['name']}/reward_distribution_provisional.png")
+            plt.close(fig)
         fig=plt.figure()
         min_val = min(trained_agent_rewards.min(),GA_solution_rewards.min())
         max_val = max(trained_agent_rewards.max(),GA_solution_rewards.max())
@@ -2440,10 +2479,10 @@ class RL_final():
             plt.hist(q, bins=bins, alpha=0.6, label="Return distribution for last action of deterministic trajectory learnt by agent")
         #####Select reliable design:
         start_time = time()
-        best_design=get_reliable_design_parallel(model_path=model_path,algo_name=self.algorithm,use_warm_baseline=self.use_warm_baseline,problem_fn=self.problem_fn,devices=self.devices,num_envs=self.num_envs,folder_path=self.folder_path,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05)
+        best_design=get_reliable_design_parallel(model_path=model_path,algo_name=self.algorithm,use_warm_baseline=self.use_warm_baseline,problem_fn=self.problem_fn,low_bounds=self.low_bounds,high_bounds=self.high_bounds,devices=self.devices,num_envs=self.num_envs,folder_path=self.folder_path,noise_amplitude=0.02,n_designs=500,n_simulations=100,top_k=100,cvar_alpha=0.05)
         print(f"Best design chosen. Computation time: {time()-start_time} s")
         start_time = time()
-        best_design_rewards = evaluate_policy_parallel(best_design, self.problem_fn, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
+        best_design_rewards = evaluate_policy_parallel(best_design, self.problem_fn, self.low_bounds, self.high_bounds, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
         print(f"Rewards of best design computed. Computation time: {time()-start_time} s")
         min_val_best_design = best_design_rewards.min()
         max_val_best_design = best_design_rewards.max()
@@ -3430,7 +3469,7 @@ def get_reliable_design(model,env,noise_amplitude=0.02,n_designs=1000,n_simulati
     best_design = max(results, key=lambda x: x["score"])["design"]
     return best_design
 
-def get_reliable_design_parallel(model_path,algo_name,use_warm_baseline,problem_fn,devices,num_envs,folder_path,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05):
+def get_reliable_design_parallel(model_path,algo_name,use_warm_baseline,problem_fn,low_bounds,high_bounds,devices,num_envs,folder_path,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05):
     if os.path.exists(folder_path):#Remove folder if it exists
         shutil.rmtree(folder_path)
     os.makedirs(folder_path)
@@ -3439,7 +3478,7 @@ def get_reliable_design_parallel(model_path,algo_name,use_warm_baseline,problem_
     design_indices_chunks = [list(range(i * n_designs // num_workers, (i + 1) * n_designs // num_workers)) for i in range(num_workers)]
     env_devices = [devices[i % num_gpus] for i in range(num_workers)]
     with multiprocessing.get_context("spawn").Pool(processes=num_workers) as pool:
-        tasks = [(env_devices[i],design_indices_chunks[i],model_path,algo_name,use_warm_baseline,problem_fn,n_simulations,folder_path,noise_amplitude)for i in range(num_workers)]
+        tasks = [(env_devices[i],design_indices_chunks[i],model_path,algo_name,use_warm_baseline,problem_fn,low_bounds,high_bounds,n_simulations,folder_path,noise_amplitude)for i in range(num_workers)]
         results = pool.starmap(reliable_design_worker, tasks)
     all_designs = []
     all_rewards = []
@@ -3473,11 +3512,11 @@ def get_reliable_design_parallel(model_path,algo_name,use_warm_baseline,problem_
         shutil.rmtree(folder_path)
     return best_design
 
-def reliable_design_worker(device, design_indices, model_path, algo_name, use_warm_baseline, problem_fn, n_simulations, folder_path, noise_amplitude):
+def reliable_design_worker(device, design_indices, model_path, algo_name, use_warm_baseline, problem_fn, low_bounds, high_bounds, n_simulations, folder_path, noise_amplitude):
     torch.cuda.set_device(device)
     problem_fn = copy.deepcopy(problem_fn)#Make a deepcopy just in case
     model = load_model(model_path, device, algo_name, use_warm_baseline)
-    env = RL_muons_env_final(problem_fn, device)
+    env = RL_muons_env_final(problem_fn, low_bounds, high_bounds, device)
     all_rewards = []
     designs = []
     for idx, design_index in enumerate(design_indices):
