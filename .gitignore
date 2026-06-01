@@ -4,6 +4,7 @@ wandb/
 *.log
 outputs/*
 !outputs/config.json
+!outputs/config_5M.json
 plots/
 tests_notebooks/*.png
 tests_notebooks/*.pkl
