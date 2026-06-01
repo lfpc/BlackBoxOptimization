@@ -73,7 +73,10 @@ else:
                 CONFIG['dimensions_phi'] = int(input("Enter number of dimensions [default: 63]: ") or 63)
         if 'initial_phi' not in CONFIG:
             if run_in_background:
-                default_phi_name = str('stellatryon_TRY4')#str('stellatryon_t')
+                if args.optimizer == 'RLfinal':
+                    default_phi_name = str('stellatryon_TRY4')
+                else:
+                    default_phi_name = str('stellatryon_soft_v1_cheaper')#str('stellatryon_soft_v1')
             else:
                 default_phi_name = str(input("Enter name of initial phi [default: see DEFAULT_PHI of Ship class]: ") or '')
             print('default_phi_name', default_phi_name)
@@ -123,7 +126,7 @@ elif args.optimizer == 'toyRL':
     WANDB = {'project': 'MuonShieldOptimization', 'group': args.optimizer, 'config': {**vars(args), **CONFIG, **toyRL_dict}, 'name': args.name}
 elif args.optimizer == 'RLfinal':
     RL_dict={}
-    RL_dict["training_steps"]=100000
+    RL_dict["training_steps"]=1000000
     if CONFIG['uniform_fields']:
         RL_dict["SB3_num_envs"]=24#OK
         RL_dict["num_envs"]=24#OK
@@ -261,7 +264,7 @@ if __name__ == "__main__":
     elif args.problem == 'ship_cuda':
         CONFIG.pop('results_dir', None)
         problem_fn = problems.ShipMuonShieldCuda(parallel=args.parallel, **CONFIG)
-        problem_fn.new_loss_function=True
+        #problem_fn.new_loss_function=True
     phi_bounds = CONFIG.get('phi_bounds',None) 
     dimensions = CONFIG.get('dimensions_phi')
     if phi_bounds is None: phi_bounds = problem_fn.GetBounds(device=dev); WANDB['config']['phi_bounds'] = phi_bounds
@@ -323,7 +326,7 @@ if __name__ == "__main__":
         devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
         problem_fn.RL_multiprocessing=True
         RL_final(problem_fn=problem_fn,
-            warm_baseline= np.loadtxt("outputs/optimize_cost_x_4dot2/phi_optm_GA.txt"),
+            warm_baseline= np.loadtxt("outputs/GA_RLfinal/phi_optm_GA.txt"),
             training_steps=RL_dict["training_steps"],
             SB3_num_envs=RL_dict["SB3_num_envs"],
             num_envs=RL_dict["num_envs"],
