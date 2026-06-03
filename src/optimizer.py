@@ -2205,17 +2205,21 @@ class RL_final():
         print(warm_baseline)
         self.problem_fn=problem_fn
         low_bounds,high_bounds=self.problem_fn.GetBounds()
-        low_bounds,high_bounds=low_bounds.detach().cpu().numpy(),high_bounds.detach().cpu().numpy()
-
-        global_range = high_bounds - low_bounds
-        desired_radius = 0.1 * global_range
-        radius = np.minimum(
-            desired_radius,
-            np.minimum(warm_baseline - low_bounds,high_bounds - warm_baseline)
-        )
-        radius = np.maximum(radius, 1e-3*global_range)
-        self.low_bounds=np.maximum(warm_baseline-radius,low_bounds)
-        self.high_bounds=np.minimum(warm_baseline+radius,high_bounds)
+        self.low_bounds,self.high_bounds=low_bounds.detach().cpu().numpy(),high_bounds.detach().cpu().numpy()
+        self.use_warm_baseline=True#False#True
+        if self.use_warm_baseline:
+            self.shrink_action_space=True##False#True
+            self.supervised_loss=False#False#True
+        if self.use_warm_baseline and self.shrink_action_space:
+            global_range = self.high_bounds - self.low_bounds
+            desired_radius = 0.1 * global_range
+            radius = np.minimum(
+                desired_radius,
+                np.minimum(warm_baseline - self.low_bounds,self.high_bounds - warm_baseline)
+            )
+            radius = np.maximum(radius, 1e-3*global_range)
+            self.low_bounds=np.maximum(warm_baseline-radius,self.low_bounds)
+            self.high_bounds=np.minimum(warm_baseline+radius,self.high_bounds)
 
         self.warm_baseline=-1.0+2*(warm_baseline-self.low_bounds)/(high_bounds-self.low_bounds)
         self.training_steps=training_steps
@@ -2224,9 +2228,8 @@ class RL_final():
         self.device=device
         self.devices=devices
         self.WandB=WandB
-        self.use_warm_baseline=True#False#True
         self.algorithm="SB3_TQC"#"SB3_TQC"#"SB3_SAC"
-        self.folder_path=f"/disk/users/ghijan/MuonShield/field_map_files/{self.WandB['name']}"
+        self.folder_path=f"/disk/gfs_lhcb/ghijan/MuonShield/field_map_files/{self.WandB['name']}"
 
     def run_optimization(self):#TO_DO: Should I fix log_std?
         def make_env(rank, problem_fn, low_bounds,high_bounds, devices):
@@ -2249,90 +2252,102 @@ class RL_final():
             net_arch={"pi":[128,128], "qf":[128,128]},
             activation_fn=torch.nn.ReLU
         )
-
+        aux_env = RL_muons_env_final(self.problem_fn,self.low_bounds,self.high_bounds,self.device)#TO_DO: Can I avoid using aux_env or eval_env?
+        
         if self.use_warm_baseline:
-            pretrain_env = RL_muons_env_final(self.problem_fn,self.low_bounds,self.high_bounds,self.device)#TO_DO: Can I avoid using pretrain_env or eval_env?
+            obs_list, act_list, reward_list = generate_imitation_trajectories_final(aux_env, self.warm_baseline, n_episodes=1)                    
+            if self.supervised_loss:
 
-            obs_list, act_list, reward_list = generate_imitation_trajectories_final(pretrain_env, self.warm_baseline, n_episodes=1)                    
 
-            #Convert trajectories into training tensors:
-            obs_tensor, act_tensor, ret_tensor = [], [], []
-            for i in range(len(act_list)):
-                obs_tensor.append(torch.tensor(obs_list[i], dtype=torch.float32).unsqueeze(0))   
-                act_tensor.append(torch.tensor(act_list[i], dtype=torch.float32).unsqueeze(0))
-                ret_tensor.append(torch.tensor(reward_list[i], dtype=torch.float32).unsqueeze(0))
-            obs_tensor = torch.cat(obs_tensor, dim=0)
-            act_tensor = torch.cat(act_tensor, dim=0)
-            ret_tensor = torch.cat(ret_tensor, dim=0)
-            obs_tensor = obs_tensor.to(self.device)
-            act_tensor = act_tensor.to(self.device)
-            ret_tensor = ret_tensor.to(self.device)
+                #Convert trajectories into training tensors:
+                obs_tensor, act_tensor, ret_tensor = [], [], []
+                for i in range(len(act_list)):
+                    obs_tensor.append(torch.tensor(obs_list[i], dtype=torch.float32).unsqueeze(0))   
+                    act_tensor.append(torch.tensor(act_list[i], dtype=torch.float32).unsqueeze(0))
+                    ret_tensor.append(torch.tensor(reward_list[i], dtype=torch.float32).unsqueeze(0))
+                obs_tensor = torch.cat(obs_tensor, dim=0)
+                act_tensor = torch.cat(act_tensor, dim=0)
+                ret_tensor = torch.cat(ret_tensor, dim=0)
+                obs_tensor = obs_tensor.to(self.device)
+                act_tensor = act_tensor.to(self.device)
+                ret_tensor = ret_tensor.to(self.device)
 
-            act_tensor=act_tensor.unsqueeze(-1)
+                act_tensor=act_tensor.unsqueeze(-1)
 
-        print(f"Training starts. Algorithm:{self.algorithm}, warm baseline used: {self.use_warm_baseline}.")
+        print(f"Training starts. Algorithm:{self.algorithm}, warm baseline used: {self.use_warm_baseline}, supervised loss used: {self.supervised_loss}, action space shrinked: {self.shrink_action_space}.")
         start_time = time()
 
         callback = TrainingStatsCallback(eval_env=eval_env, eval_freq=eval_freq, verbose=1)
+        learning_rate=3e-4
+        batch_size=512
+        gamma=0.99
+        train_freq=64
+        gradient_steps=64
+        buffer_size=20000#100000
+        learning_starts=0#10000
+        ent_coef="auto"
+        tau=0.005
+        verbose=1
         if self.algorithm=="SB3_TQC":
             policy_kwargs=dict(
                 n_critics=2,          
                 n_quantiles=25,       
                 **policy_kwargs     
             )
-            if self.use_warm_baseline:
+            top_quantiles_to_drop_per_net=1#2
+            if self.use_warm_baseline and self.supervised_loss:
                 model = CustomTQC(
                     policy="MlpPolicy",
                     env=train_env,
-                    learning_rate=3e-4,
-                    batch_size=512,
-                    gamma=0.99,                 
-                    train_freq=64,         
-                    gradient_steps=64,
-                    buffer_size=20000,#100000,
-                    learning_starts=0,#10000,
-                    ent_coef="auto",           
-                    tau=0.005,                 
-                    verbose=1,
+                    learning_rate=learning_rate,
+                    batch_size=batch_size,
+                    gamma=gamma,                 
+                    train_freq=train_freq,         
+                    gradient_steps=gradient_steps,
+                    buffer_size=buffer_size,
+                    learning_starts=learning_starts,
+                    ent_coef=ent_coef,           
+                    tau=tau,                 
+                    verbose=verbose,
                     policy_kwargs=policy_kwargs,
                     device=self.device,
                     #TQC-specific params:
-                    top_quantiles_to_drop_per_net=1,#2
+                    top_quantiles_to_drop_per_net=top_quantiles_to_drop_per_net,
                 )
             else:
                 model = TQC(
                     policy="MlpPolicy",
                     env=train_env,
-                    learning_rate=3e-4,
-                    batch_size=512,
-                    gamma=0.99,                 
-                    train_freq=64,          
-                    gradient_steps=64,
-                    buffer_size=100000,
-                    learning_starts=10000,
-                    ent_coef="auto",           
-                    tau=0.005,                 
-                    verbose=1,
+                    learning_rate=learning_rate,
+                    batch_size=batch_size,
+                    gamma=gamma,                 
+                    train_freq=train_freq,          
+                    gradient_steps=gradient_steps,
+                    buffer_size=buffer_size,
+                    learning_starts=learning_starts,
+                    ent_coef=ent_coef,           
+                    tau=tau,                 
+                    verbose=verbose,
                     policy_kwargs=policy_kwargs,
                     device=self.device,
                     #TQC-specific params:
-                    top_quantiles_to_drop_per_net=2,
+                    top_quantiles_to_drop_per_net=top_quantiles_to_drop_per_net,
                 )
         elif self.algorithm=="SB3_SAC":
-            if self.use_warm_baseline:
+            if self.use_warm_baseline and self.supervised_loss:
                 model = CustomSAC(
                     policy="MlpPolicy",
                     env=train_env,
-                    learning_rate=3e-4,
-                    batch_size=512,
-                    gamma=0.99,              
-                    train_freq=64,            
-                    gradient_steps=64,
-                    buffer_size=100000,
-                    learning_starts=10000,
-                    ent_coef="auto",           
-                    tau=0.005,                 
-                    verbose=1,
+                    learning_rate=learning_rate,
+                    batch_size=batch_size,
+                    gamma=gamma,              
+                    train_freq=train_freq,            
+                    gradient_steps=gradient_steps,
+                    buffer_size=buffer_size,
+                    learning_starts=learning_starts,
+                    ent_coef=ent_coef,           
+                    tau=tau,                 
+                    verbose=verbose,
                     policy_kwargs=policy_kwargs,
                     device=self.device,
                 )
@@ -2340,21 +2355,21 @@ class RL_final():
                 model = SAC(
                     policy="MlpPolicy",
                     env=train_env,
-                    learning_rate=3e-4,
-                    batch_size=512,
-                    gamma=0.99,                 
-                    train_freq=64,  
-                    gradient_steps=64,
-                    buffer_size=100000,
-                    learning_starts=10000,
-                    ent_coef="auto",           
-                    tau=0.005,                 
-                    verbose=1,
+                    learning_rate=learning_rate,
+                    batch_size=batch_size,
+                    gamma=gamma,                 
+                    train_freq=train_freq,  
+                    gradient_steps=gradient_steps,
+                    buffer_size=buffer_size,
+                    learning_starts=learning_starts,
+                    ent_coef=ent_coef,           
+                    tau=tau,                 
+                    verbose=verbose,
                     policy_kwargs=policy_kwargs,
                     device=self.device,
                 )
 
-        if self.use_warm_baseline:
+        if self.use_warm_baseline and self.supervised_loss:
             model.set_expert_data(obs_tensor,act_tensor)
             
         model.learn(total_timesteps=self.training_steps, callback=callback)
@@ -2380,8 +2395,7 @@ class RL_final():
         fig=plt.figure()
         x_vals = 100 * np.linspace(1/len(callback.eval_scores), 1, len(callback.eval_scores))
         plt.plot(x_vals,callback.eval_scores,marker='o',label='Deterministic loss')
-        if self.use_warm_baseline:
-            plt.axhline(y=reward_list[-1],linestyle='--',color='black',label='Warm baseline loss')
+        plt.axhline(y=reward_list[-1],linestyle='--',color='black',label='GA solution loss')
         plt.xlabel(f"Training % ({self.training_steps} steps)")
         plt.ylabel("Loss")
         plt.title(f"Periodic deterministic evaluations ({self.algorithm})")
@@ -2413,18 +2427,17 @@ class RL_final():
         plt.savefig(f"outputs/{self.WandB['name']}/training_losses.png")
         plt.close(fig)
 
-        if self.use_warm_baseline:                        
-            fig=plt.figure()
-            x_vals = 100 * np.linspace(1/len(callback.eval_xs), 1, len(callback.eval_xs))
-            designs=[-1.0+2*(callback.eval_xs[i]-eval_env.low_bounds)/(eval_env.high_bounds-eval_env.low_bounds) for i in range(len(callback.eval_xs))] 
-            distances=[np.linalg.norm(self.warm_baseline - designs[i]) for i in range(len(designs))]
-            plt.plot(x_vals,distances,marker='o')
-            plt.xlabel(f"Training % ({self.training_steps} steps)")
-            plt.ylabel("Distance")
-            plt.title(f"Euclidean distance from deterministic solution to warm baseline ({self.algorithm})")
-            plt.grid(True)
-            plt.savefig(f"outputs/{self.WandB['name']}/distance.png")
-            plt.close(fig)
+        fig=plt.figure()
+        x_vals = 100 * np.linspace(1/len(callback.eval_xs), 1, len(callback.eval_xs))
+        designs=[-1.0+2*(callback.eval_xs[i]-eval_env.low_bounds)/(eval_env.high_bounds-eval_env.low_bounds) for i in range(len(callback.eval_xs))] 
+        distances=[np.linalg.norm(self.warm_baseline - designs[i]) for i in range(len(designs))]
+        plt.plot(x_vals,distances,marker='o')
+        plt.xlabel(f"Training % ({self.training_steps} steps)")
+        plt.ylabel("Distance")
+        plt.title(f"Euclidean distance from deterministic solution to GA solution ({self.algorithm})")
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/distance.png")
+        plt.close(fig)
 
         #Deterministic performance of the trained agent (play several evaluation episodes to obtain a distribution of returns):
         n_eval_episodes=1000
@@ -2433,40 +2446,42 @@ class RL_final():
         print(f"Rewards of GA solution computed. Computation time: {time()-start_time} s")
         #Compute deterministic actions:
         trained_model_deterministic_actions=[]
-        obs, _ = pretrain_env.reset()
+        obs, _ = aux_env.reset()
         done = False
         while not done:
             action, _ = model.policy.predict(obs, deterministic=True)
-            obs, r, done, truncated, info = pretrain_env.step(action)
+            obs, r, done, truncated, info = aux_env.step(action)
             trained_model_deterministic_actions.append(action)
         trained_model_deterministic_actions=np.array(trained_model_deterministic_actions)
         start_time = time()
         trained_agent_rewards = evaluate_policy_parallel(trained_model_deterministic_actions, self.problem_fn, self.low_bounds, self.high_bounds, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
         print(f"Rewards of trained agent computed. Computation time: {time()-start_time} s")
-        if self.use_warm_baseline:
-            min_val = min(trained_agent_rewards.min(),GA_solution_rewards.min())
-            max_val = max(trained_agent_rewards.max(),GA_solution_rewards.max())
-            bins=np.linspace(min_val, max_val, 20)
-            fig=plt.figure()
-            plt.hist(trained_agent_rewards, bins=bins, alpha=0.6, label="Agent playing deterministically: Rewards")
-            plt.hist(GA_solution_rewards, bins=bins, alpha=0.6, label="GA solution: Rewards")
-            plt.legend()
-            plt.title("Reward distribution")
-            plt.xlabel("Score")
-            plt.ylabel("Counts")
-            plt.grid(True)
-            plt.savefig(f"outputs/{self.WandB['name']}/reward_distribution_provisional.png")
-            plt.close(fig)
+
+        min_val = min(trained_agent_rewards.min(),GA_solution_rewards.min())
+        max_val = max(trained_agent_rewards.max(),GA_solution_rewards.max())
+        bins=np.linspace(min_val, max_val, 20)
+        fig=plt.figure()
+        plt.hist(trained_agent_rewards, bins=bins, alpha=0.6, label="Agent playing deterministically: Rewards")
+        plt.hist(GA_solution_rewards, bins=bins, alpha=0.6, label="GA solution: Rewards")
+        plt.legend()
+        plt.title("Reward distribution")
+        plt.xlabel("Score")
+        plt.ylabel("Counts")
+        plt.grid(True)
+        plt.savefig(f"outputs/{self.WandB['name']}/GA_RL_reward_distribution.png")
+        plt.close(fig)
+
+        """
         fig=plt.figure()
         min_val = min(trained_agent_rewards.min(),GA_solution_rewards.min())
         max_val = max(trained_agent_rewards.max(),GA_solution_rewards.max())
         ####Obtain the return distribution learnt by the trained agent for the last action of the deterministic trajectory:
         compute_learnt_distribution=False#True#False
         if compute_learnt_distribution:
-            obs, _ = pretrain_env.reset()
-            for _ in range(pretrain_env.dimensions_phi-1):
+            obs, _ = aux_env.reset()
+            for _ in range(aux_env.dimensions_phi-1):
                 action, _ = model.policy.predict(obs, deterministic=True)
-                obs, r, done, truncated, info = pretrain_env.step(action)
+                obs, r, done, truncated, info = aux_env.step(action)
             last_action, _ = model.policy.predict(obs, deterministic=True)
             obs = th.tensor(obs).float().to(model.device)
             action = th.tensor(last_action).float().to(model.device)
@@ -2500,7 +2515,7 @@ class RL_final():
         plt.grid(True)
         plt.savefig(f"outputs/{self.WandB['name']}/reward_distribution.png")
         plt.close(fig)
-
+        """
         return callback.best_x,callback.best_reward
 
 class RL():

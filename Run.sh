@@ -49,6 +49,7 @@ pip install --target "$LOCAL_LIBRARIES_DIR" --no-deps cma cross-entropy-method g
 nohup apptainer exec --nv \
   -B /cvmfs \
   -B /disk/users/$USER_NAME \
+  -B /disk/gfs_lhcb/$USER_NAME \
   -B /home/hep/$USER_NAME \
   -B "$LOCAL_LIBRARIES_DIR" \
   $CONTAINER_PATH \
