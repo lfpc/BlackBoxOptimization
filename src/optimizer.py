@@ -2231,6 +2231,10 @@ class RL_final():
         self.algorithm="SB3_TQC"#"SB3_TQC"#"SB3_SAC"
         self.folder_path=f"/disk/gfs_lhcb/ghijan/MuonShield/field_map_files/{self.WandB['name']}"
 
+        if self.algorithm=="SB3_TQC":#Optimization objective is (1-beta)*mean+beta*cvar_alpha
+            self.beta=0.5
+            self.alpha=0.2
+
     def run_optimization(self):#TO_DO: Should I fix log_std?
         def make_env(rank, problem_fn, low_bounds,high_bounds, devices):
             def _init():
@@ -2308,6 +2312,8 @@ class RL_final():
                 device=self.device,
                 #TQC-specific params:
                 top_quantiles_to_drop_per_net=top_quantiles_to_drop_per_net,
+                alpha=self.alpha,
+                beta=self.beta,
             )
             if self.use_warm_baseline and self.supervised_loss:
                 model.supervised_loss=self.supervised_loss
@@ -3908,6 +3914,8 @@ class CustomSAC(SAC):
 class CustomTQC(TQC):
     def __init__(self, *args, alpha, beta, **kwargs):
         super().__init__(*args, **kwargs)
+        self.alpha=alpha
+        self.beta=beta
         self.supervised_loss=False
 
     def set_expert_data(self, obs_tensor, act_tensor):
@@ -3999,9 +4007,19 @@ class CustomTQC(TQC):
             self.critic.optimizer.step()
 
             # Compute actor loss
-            qf_pi = self.critic(replay_data.observations, actions_pi).mean(dim=2).mean(dim=1, keepdim=True)
-            actor_loss = (ent_coef * log_prob - qf_pi).mean()
+            ###Code I modified:{
+            #qf_pi = self.critic(replay_data.observations, actions_pi).mean(dim=2).mean(dim=1, keepdim=True)
+            #actor_loss = (ent_coef * log_prob - qf_pi).mean()
+            #actor_losses.append(actor_loss.item())
+            quantiles_pi = self.critic(replay_data.observations, actions_pi)
+            mean_q = quantiles_pi.mean(dim=2).mean(dim=1, keepdim=True)
+            quantiles_pi, _ = th.sort(quantiles_pi, dim=2)
+            n_cvar = max(1, int(self.alpha * quantiles_pi.shape[2]))
+            cvar_q = quantiles_pi[:, :, :n_cvar].mean(dim=2).mean(dim=1, keepdim=True)
+            risk_q = (1 - self.beta) * mean_q + self.beta * cvar_q
+            actor_loss = (ent_coef * log_prob - risk_q).mean()
             actor_losses.append(actor_loss.item())
+            ###}
 
             ###Code I added:{
             self.critic_losses.append(critic_loss.item())
@@ -4011,7 +4029,7 @@ class CustomTQC(TQC):
                 expert_actions = self.expert_act[batch_steps]
                 # MSE imitation loss
                 expert_loss = F.mse_loss(actions_pi, expert_actions) 
-                expert_loss=expert_loss*math.exp(-2.0 * self.num_timesteps / self._total_timesteps)
+                expert_loss=expert_loss*math.exp(-2.0 * self.num_timesteps / self._total_timesteps
 
                 self.supervised_losses.append(expert_loss.item())
 
