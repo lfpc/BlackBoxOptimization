@@ -4029,7 +4029,7 @@ class CustomTQC(TQC):
                 expert_actions = self.expert_act[batch_steps]
                 # MSE imitation loss
                 expert_loss = F.mse_loss(actions_pi, expert_actions) 
-                expert_loss=expert_loss*math.exp(-2.0 * self.num_timesteps / self._total_timesteps
+                expert_loss=expert_loss*math.exp(-2.0 * self.num_timesteps / self._total_timesteps)
 
                 self.supervised_losses.append(expert_loss.item())
 
