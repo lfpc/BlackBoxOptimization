@@ -2209,7 +2209,7 @@ class RL_final():
         self.use_warm_baseline=True#False#True
         if self.use_warm_baseline:
             self.shrink_action_space=True##False#True
-            self.supervised_loss=False#False#True
+            self.supervised_loss=True#False#True
         if self.use_warm_baseline and self.shrink_action_space:
             global_range = self.high_bounds - self.low_bounds
             desired_radius = 0.1 * global_range
@@ -2221,7 +2221,7 @@ class RL_final():
             self.low_bounds=np.maximum(warm_baseline-radius,self.low_bounds)
             self.high_bounds=np.minimum(warm_baseline+radius,self.high_bounds)
 
-        self.warm_baseline=-1.0+2*(warm_baseline-self.low_bounds)/(high_bounds-self.low_bounds)
+        self.warm_baseline=-1.0+2*(warm_baseline-self.low_bounds)/(self.high_bounds-self.low_bounds)
         self.training_steps=training_steps
         self.SB3_num_envs=SB3_num_envs
         self.num_envs=num_envs
@@ -2254,25 +2254,21 @@ class RL_final():
         )
         aux_env = RL_muons_env_final(self.problem_fn,self.low_bounds,self.high_bounds,self.device)#TO_DO: Can I avoid using aux_env or eval_env?
         
-        if self.use_warm_baseline:
-            obs_list, act_list, reward_list = generate_imitation_trajectories_final(aux_env, self.warm_baseline, n_episodes=1)                    
-            if self.supervised_loss:
-
-
-                #Convert trajectories into training tensors:
-                obs_tensor, act_tensor, ret_tensor = [], [], []
-                for i in range(len(act_list)):
-                    obs_tensor.append(torch.tensor(obs_list[i], dtype=torch.float32).unsqueeze(0))   
-                    act_tensor.append(torch.tensor(act_list[i], dtype=torch.float32).unsqueeze(0))
-                    ret_tensor.append(torch.tensor(reward_list[i], dtype=torch.float32).unsqueeze(0))
-                obs_tensor = torch.cat(obs_tensor, dim=0)
-                act_tensor = torch.cat(act_tensor, dim=0)
-                ret_tensor = torch.cat(ret_tensor, dim=0)
-                obs_tensor = obs_tensor.to(self.device)
-                act_tensor = act_tensor.to(self.device)
-                ret_tensor = ret_tensor.to(self.device)
-
-                act_tensor=act_tensor.unsqueeze(-1)
+        obs_list, act_list, reward_list = generate_imitation_trajectories_final(aux_env, self.warm_baseline, n_episodes=1)                    
+        if self.use_warm_baseline and self.supervised_loss:
+            #Convert trajectories into training tensors:
+            obs_tensor, act_tensor, ret_tensor = [], [], []
+            for i in range(len(act_list)):
+                obs_tensor.append(torch.tensor(obs_list[i], dtype=torch.float32).unsqueeze(0))   
+                act_tensor.append(torch.tensor(act_list[i], dtype=torch.float32).unsqueeze(0))
+                ret_tensor.append(torch.tensor(reward_list[i], dtype=torch.float32).unsqueeze(0))
+            obs_tensor = torch.cat(obs_tensor, dim=0)
+            act_tensor = torch.cat(act_tensor, dim=0)
+            ret_tensor = torch.cat(ret_tensor, dim=0)
+            obs_tensor = obs_tensor.to(self.device)
+            act_tensor = act_tensor.to(self.device)
+            ret_tensor = ret_tensor.to(self.device)
+            act_tensor=act_tensor.unsqueeze(-1)
 
         print(f"Training starts. Algorithm:{self.algorithm}, warm baseline used: {self.use_warm_baseline}, supervised loss used: {self.supervised_loss}, action space shrinked: {self.shrink_action_space}.")
         start_time = time()
@@ -2295,44 +2291,27 @@ class RL_final():
                 **policy_kwargs     
             )
             top_quantiles_to_drop_per_net=1#2
+            model = CustomTQC(
+                policy="MlpPolicy",
+                env=train_env,
+                learning_rate=learning_rate,
+                batch_size=batch_size,
+                gamma=gamma,                 
+                train_freq=train_freq,         
+                gradient_steps=gradient_steps,
+                buffer_size=buffer_size,
+                learning_starts=learning_starts,
+                ent_coef=ent_coef,           
+                tau=tau,                 
+                verbose=verbose,
+                policy_kwargs=policy_kwargs,
+                device=self.device,
+                #TQC-specific params:
+                top_quantiles_to_drop_per_net=top_quantiles_to_drop_per_net,
+            )
             if self.use_warm_baseline and self.supervised_loss:
-                model = CustomTQC(
-                    policy="MlpPolicy",
-                    env=train_env,
-                    learning_rate=learning_rate,
-                    batch_size=batch_size,
-                    gamma=gamma,                 
-                    train_freq=train_freq,         
-                    gradient_steps=gradient_steps,
-                    buffer_size=buffer_size,
-                    learning_starts=learning_starts,
-                    ent_coef=ent_coef,           
-                    tau=tau,                 
-                    verbose=verbose,
-                    policy_kwargs=policy_kwargs,
-                    device=self.device,
-                    #TQC-specific params:
-                    top_quantiles_to_drop_per_net=top_quantiles_to_drop_per_net,
-                )
-            else:
-                model = TQC(
-                    policy="MlpPolicy",
-                    env=train_env,
-                    learning_rate=learning_rate,
-                    batch_size=batch_size,
-                    gamma=gamma,                 
-                    train_freq=train_freq,          
-                    gradient_steps=gradient_steps,
-                    buffer_size=buffer_size,
-                    learning_starts=learning_starts,
-                    ent_coef=ent_coef,           
-                    tau=tau,                 
-                    verbose=verbose,
-                    policy_kwargs=policy_kwargs,
-                    device=self.device,
-                    #TQC-specific params:
-                    top_quantiles_to_drop_per_net=top_quantiles_to_drop_per_net,
-                )
+                model.supervised_loss=self.supervised_loss
+
         elif self.algorithm=="SB3_SAC":
             if self.use_warm_baseline and self.supervised_loss:
                 model = CustomSAC(
@@ -2415,10 +2394,11 @@ class RL_final():
         plt.close(fig)
 
         fig=plt.figure()
-        plt.plot(model.supervised_losses,marker='o',label="Supervised loss")
         plt.plot(model.actor_losses,marker='o',label="Original actor loss")
-        plt.plot([model.supervised_losses[i]+model.actor_losses[i] for i in range(len(model.supervised_losses))],marker='o',label="Total actor loss")
         plt.plot(model.critic_losses,marker='o',label="Critic loss")
+        if self.use_warm_baseline and self.supervised_loss:
+            plt.plot(model.supervised_losses,marker='o',label="Supervised loss")
+            plt.plot([model.supervised_losses[i]+model.actor_losses[i] for i in range(len(model.supervised_losses))],marker='o',label="Total actor loss")
         plt.xlabel("Training steps")
         plt.ylabel("Loss")
         plt.title(f"Training losses ({self.algorithm})")
@@ -3926,6 +3906,10 @@ class CustomSAC(SAC):
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
 class CustomTQC(TQC):
+    def __init__(self, *args, alpha, beta, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.supervised_loss=False
+
     def set_expert_data(self, obs_tensor, act_tensor):
         self.expert_obs = obs_tensor.to(self.device)
         self.expert_act = act_tensor.to(self.device)
@@ -4020,17 +4004,18 @@ class CustomTQC(TQC):
             actor_losses.append(actor_loss.item())
 
             ###Code I added:{
-            batch_steps = self.infer_step_from_obs_batch(replay_data.observations)
-            expert_actions = self.expert_act[batch_steps]
-            # MSE imitation loss
-            expert_loss = F.mse_loss(actions_pi, expert_actions) 
-            expert_loss=expert_loss*math.exp(-2.0 * self.num_timesteps / self._total_timesteps)
-
             self.critic_losses.append(critic_loss.item())
             self.actor_losses.append(actor_loss.item())
-            self.supervised_losses.append(expert_loss.item())
+            if self.supervised_loss:
+                batch_steps = self.infer_step_from_obs_batch(replay_data.observations)
+                expert_actions = self.expert_act[batch_steps]
+                # MSE imitation loss
+                expert_loss = F.mse_loss(actions_pi, expert_actions) 
+                expert_loss=expert_loss*math.exp(-2.0 * self.num_timesteps / self._total_timesteps)
 
-            actor_loss+=expert_loss
+                self.supervised_losses.append(expert_loss.item())
+
+                actor_loss+=expert_loss
             ###}
 
             # Optimize the actor
