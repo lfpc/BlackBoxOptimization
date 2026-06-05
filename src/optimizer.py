@@ -2212,7 +2212,7 @@ class RL_final():
             self.supervised_loss=True#False#True
         if self.use_warm_baseline and self.shrink_action_space:
             global_range = self.high_bounds - self.low_bounds
-            desired_radius = 0.1 * global_range
+            desired_radius = 0.02 * global_range
             radius = np.minimum(
                 desired_radius,
                 np.minimum(warm_baseline - self.low_bounds,self.high_bounds - warm_baseline)
