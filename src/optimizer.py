@@ -3917,13 +3917,13 @@ class CustomTQC(TQC):
         self.alpha=alpha
         self.beta=beta
         self.supervised_loss=False
+        self.actor_losses=[]
+        self.critic_losses=[]
+        self.supervised_losses=[]
 
     def set_expert_data(self, obs_tensor, act_tensor):
         self.expert_obs = obs_tensor.to(self.device)
         self.expert_act = act_tensor.to(self.device)
-        self.actor_losses=[]
-        self.critic_losses=[]
-        self.supervised_losses=[]
 
     def infer_step_from_obs_batch(self, obs_batch):
         step = (obs_batch != 0).sum(dim=1)
