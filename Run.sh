@@ -59,5 +59,5 @@ nohup apptainer exec --nv \
     source ./set_env.sh
     cd $PYTHON_SCRIPT_DIR
     python3 -V
-    CUDA_VISIBLE_DEVICES=$CUDA_DEVICE python3 run_optimization.py --optimizer $OPT_METHOD --name $RESULTS_NAME
+    CUDA_VISIBLE_DEVICES=$CUDA_DEVICE python3 run_optimization.py --optimizer $OPT_METHOD --name $RESULTS_NAME  --config_file outputs/config_50M.json
   " > "$LOG_FILE" 2>&1 &

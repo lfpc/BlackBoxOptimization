@@ -326,7 +326,7 @@ if __name__ == "__main__":
         devices = [torch.device(f'cuda:{i}') for i in range(num_gpus)]
         problem_fn.RL_multiprocessing=True
         RL_final(problem_fn=problem_fn,
-            warm_baseline= np.loadtxt("outputs/GA_RLfinal/phi_optm_GA.txt"),
+            warm_baseline= np.loadtxt("outputs/GA_RLfinal_50M/phi_optm_GA.txt"),#np.loadtxt("outputs/GA_RLfinal/phi_optm_GA.txt"),
             training_steps=RL_dict["training_steps"],
             SB3_num_envs=RL_dict["SB3_num_envs"],
             num_envs=RL_dict["num_envs"],
