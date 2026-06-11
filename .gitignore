@@ -5,6 +5,7 @@ wandb/
 outputs/*
 !outputs/config.json
 !outputs/config_5M.json
+!outputs/config_50M.json
 plots/
 tests_notebooks/*.png
 tests_notebooks/*.pkl

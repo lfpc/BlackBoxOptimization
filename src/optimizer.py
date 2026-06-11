@@ -30,9 +30,11 @@ from utils import normalize_vector, denormalize_vector
 from time import time
 import random
 import csv
+from typing import NamedTuple
 import gymnasium as gym
 from stable_baselines3 import PPO,SAC
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.utils import get_schedule_fn
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.sac.policies import SACPolicy
@@ -47,12 +49,16 @@ from imitation.util import logger as imit_logger
 import d3rlpy
 from d3rlpy.models import IQNQFunctionFactory
 from d3rlpy.metrics import EnvironmentEvaluator
-from d3rlpy.dataset.replay_buffer import ReplayBuffer,FIFOBuffer
+#from d3rlpy.dataset.replay_buffer import ReplayBuffer,FIFOBuffer
 from d3rlpy.dataset import Episode
 from d3rlpy.preprocessing import MinMaxActionScaler
 from d3rlpy.models.encoders import VectorEncoderFactory
 import h5py
 import cma
+
+from RL.encoders import DeepSetEncoder
+from cuda_muons_ship import run_from_params as simulate_muon_shield
+from src.problems import PROJECTS_DIR
 
 class OptimizerClass():
     '''Mother class for optimizers'''
@@ -2045,7 +2051,7 @@ def evaluate_policy(policy, env, deterministic=True, n_eval_episodes=10, return_
     else:
         return np.mean(rewards),None,np.mean(xs,axis=0)
 
-def evaluate_policy_parallel(policy, problem_fn, low_bounds, high_bounds, devices, num_envs, folder_path, n_eval_episodes=10, return_all_rewards=False):
+def evaluate_policy_parallel(policy, problem_fn,env_type, low_bounds, high_bounds, devices, num_envs, folder_path, n_eval_episodes=10, return_all_rewards=False):
     all_rewards = []
     all_xs=[]
     chunk_size = n_eval_episodes // num_envs
@@ -2053,7 +2059,7 @@ def evaluate_policy_parallel(policy, problem_fn, low_bounds, high_bounds, device
     num_evaluations = [chunk_size + 1 if i < remainder else chunk_size for i in range(num_envs)]
     num_gpus=len(devices)
     env_devices = [devices[i % num_gpus] for i in range(num_envs)]
-    env = RL_muons_env_final(problem_fn,low_bounds,high_bounds, devices[0])
+    env = env_type(problem_fn,low_bounds,high_bounds, devices[0])
     if os.path.exists(folder_path):#Remove folder if it exists
         shutil.rmtree(folder_path)
     os.makedirs(folder_path)
@@ -2073,7 +2079,7 @@ def evaluate_policy_parallel(policy, problem_fn, low_bounds, high_bounds, device
     if not problem_fn.uniform_fields:
         problem_fn.save_field_map=False
     with multiprocessing.get_context("spawn").Pool(processes=num_envs) as pool:
-        tasks=[(policy,problem_fn,low_bounds,high_bounds,env_devices[i],num_evaluations[i],return_all_rewards,folder_path) for i in range(num_envs)]
+        tasks=[(policy,problem_fn,env_type,low_bounds,high_bounds,env_devices[i],num_evaluations[i],return_all_rewards,folder_path) for i in range(num_envs)]
         results=pool.starmap(eval_worker, tasks)
         if return_all_rewards:
             for rewards in results:
@@ -2090,9 +2096,9 @@ def evaluate_policy_parallel(policy, problem_fn, low_bounds, high_bounds, device
         shutil.rmtree(folder_path)
     return np.mean(all_rewards),np.mean(all_xs)
 
-def eval_worker(policy, problem_fn, low_bounds,high_bounds, device, n_episodes, return_all_rewards, folder_path):
+def eval_worker(policy, problem_fn, env_type, low_bounds,high_bounds, device, n_episodes, return_all_rewards, folder_path):
     torch.cuda.set_device(device)
-    env = RL_muons_env_final(problem_fn,low_bounds,high_bounds,device)
+    env = env_type(problem_fn,low_bounds,high_bounds,device)
     if not problem_fn.uniform_fields:
         problem_fn.fields_file=folder_path+"/field_file_"+"policy"+".h5"
     rewards = []
@@ -2199,6 +2205,112 @@ class RL_muons_env_final(gym.Env):
     def seed(self, seed=None):
         np.random.seed(seed)
 
+class RL_simulate_muons_env(gym.Env):
+    def __init__(self, problem_fn, low_bounds, high_bounds, device, latent_dim=32):
+        super().__init__()
+        self.problem_fn=problem_fn
+        self.device=device
+        self.dimensions_phi=self.problem_fn.dimensions_phi
+        self.low_bounds,self.high_bounds=low_bounds,high_bounds
+        self.action_space = gym.spaces.Box(
+            low=-1.0, high=1.0, shape=(1,), dtype=np.float32
+        )
+        self.obs_dim = latent_dim
+        self.encoder = DeepSetEncoder(input_dim=8, hidden_dim=32, output_dim=latent_dim).to(self.device)
+        self.observation_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.obs_dim,), dtype=np.float32)
+        self.params_idx=self.problem_fn.params_idx
+
+    def reset(self, *, seed=None, options=None):
+        if seed is not None:
+            np.random.seed(seed)
+        self.index=0
+        self.magnet_index=1#Magnet index starts in 1
+        self.design_params=np.zeros(self.dimensions_phi, dtype=np.float32)
+        self.muons = self.problem_fn.sample_x().to(self.device)
+        with torch.no_grad():
+            self.obs = self.encoder(self.muons.unsqueeze(0)).squeeze(0).cpu().numpy().astype(np.float32)
+        return self.obs, {}
+    
+    def compute_loss(self, phi, muons):
+        loss=muons
+        loss = self.problem_fn._blackbox_loss(*loss)
+        if self.problem_fn.reduction == 'mean':
+            loss = loss.sum()*1e6 / self.problem_fn._sum_weights
+        elif self.problem_fn.reduction == 'sum':
+            loss = loss.sum()
+        if self.problem_fn.new_loss_function:
+            M = self.problem_fn.get_total_cost(phi)
+            rate=loss
+            loss=self.problem_fn.loss_function(rate,M)
+            print(f"Loss: {loss}, cost: {M}, rate: {rate}")
+            return loss
+        if self.problem_fn.apply_det_loss:
+            loss = loss + self.problem_fn._apply_deterministic_loss(phi, loss)
+        return loss
+
+    def step(self, action):#TO_DO: Assign reward (muon rate) after every magnet simulation instead of just at the end?
+        self.design_params[self.index]=action.item()
+        self.index+=1
+        terminated = (self.index >= self.dimensions_phi)
+
+        if self.index==self.dimensions_phi or self.magnet_index!=self.params_idx[self.index][0]:
+            scaled_phi=(self.design_params+1.0)*0.5*(self.high_bounds-self.low_bounds)+self.low_bounds
+            phi = torch.tensor(scaled_phi, dtype=torch.float32, device=self.device)
+            phi_fixed_params_added = self.problem_fn.add_fixed_params(phi)
+            if terminated:
+                relevant_phi=phi_fixed_params_added
+            else:
+                relevant_phi=phi_fixed_params_added[0:self.magnet_index]
+            if terminated:
+                sens_plane=self.problem_fn.sensitive_plane
+            else:
+                Z=(relevant_phi[:,:2].sum() + 2)/100 #2cm between magnet and z plane
+                Z=Z.item()
+                sens_plane = {'dz': 0.02, 'dx': 20, 'dy': 20, 'position': Z}
+            
+            muons_output = simulate_muon_shield(relevant_phi.detach().cpu().numpy(), 
+                    self.muons,
+                    sensitive_plane = sens_plane,
+                    n_steps=self.problem_fn.n_steps,
+                    SmearBeamRadius=self.problem_fn.SmearBeamRadius,
+                    fSC_mag = self.problem_fn.fSC_mag,
+                    simulate_fields = not self.problem_fn.uniform_fields if self.problem_fn.fields_file == None else False,
+                    field_map_file = self.problem_fn.fields_file,
+                    save_field_map = self.problem_fn.save_field_map,
+                    RL_multiprocessing = self.problem_fn.RL_multiprocessing,
+                    NI_from_B = self.problem_fn.use_B_goal,
+                    use_diluted = self.problem_fn.use_diluted,
+                    add_cavern = self.problem_fn.cavern,
+                    SND = self.problem_fn.SND,
+                    return_all = self.problem_fn.reduction=='none',
+                    histogram_dir = os.path.join(PROJECTS_DIR, 'MuonsAndMatter/cuda_muons/data'),
+                    seed = self.problem_fn.seed)
+
+            if 'weight' in muons_output: weight = muons_output['weight']
+            else: weight = torch.ones_like(px)
+            self.muons = torch.stack((muons_output['px'], muons_output['py'], muons_output['pz'], 
+                               muons_output['x'], muons_output['y'], muons_output['z'], 
+                               muons_output['pdg_id'], weight),dim=1).to(self.device)
+            self.magnet_index+=1
+            with torch.no_grad():
+                self.obs = self.encoder(self.muons.unsqueeze(0)).squeeze(0).cpu().numpy().astype(np.float32)
+    
+        reward = 0.0
+        info = {"index":self.index-1}
+        if terminated:
+            aux=self.compute_loss(phi,self.muons.T)
+            reward = -torch.log(1.0+aux)/10#Consider reward=-log(1+loss)/10 to deal with huge losses
+            reward = float(reward.detach().cpu().item())
+            info["x"] = scaled_phi
+            print(f"Reward: {reward}")
+            print("Final obs:")
+            print(phi)
+        truncated = False
+        return self.obs, reward, terminated, truncated, info
+
+    def seed(self, seed=None):
+        np.random.seed(seed)
+
 class RL_final():
     def __init__(self,problem_fn,warm_baseline,training_steps,SB3_num_envs,num_envs,device,devices,WandB):
         print("Warm baseline:")
@@ -2235,20 +2347,25 @@ class RL_final():
             self.beta=0.0#0.5
             self.alpha=0.2
 
+        self.env_type=RL_muons_env_final#RL_simulate_muons_env#RL_muons_env_final
+        if self.env_type is RL_simulate_muons_env:
+            self.SB3_num_envs=len(self.devices)
+            self.num_envs=len(self.devices)
+
     def run_optimization(self):#TO_DO: Should I fix log_std?
         def make_env(rank, problem_fn, low_bounds,high_bounds, devices):
             def _init():
                 device = devices[rank % len(devices)]
                 torch.cuda.set_device(device)
-                env = RL_muons_env_final(problem_fn, low_bounds, high_bounds, device)
+                env = self.env_type(problem_fn, low_bounds, high_bounds, device)
                 return env
             return _init
         train_env = SubprocVecEnv([make_env(rank=i, problem_fn=self.problem_fn, low_bounds=self.low_bounds, high_bounds=self.high_bounds, devices=self.devices) for i in range(self.SB3_num_envs)],start_method="spawn")
-        #train_env = RL_muons_env_final(self.problem_fn,self.device)#Environment to be used if no parallelization
+        #train_env = self.env_type(self.problem_fn,self.device)#Environment to be used if no parallelization
         if isinstance(train_env, SubprocVecEnv):
             train_env = VecMonitor(train_env)
 
-        eval_env = RL_muons_env_final(self.problem_fn,self.low_bounds,self.high_bounds,self.device)
+        eval_env = self.env_type(self.problem_fn,self.low_bounds,self.high_bounds,self.device)
 
         eval_freq = max(1, int(0.0125 * self.training_steps))
 
@@ -2256,7 +2373,7 @@ class RL_final():
             net_arch={"pi":[128,128], "qf":[128,128]},
             activation_fn=torch.nn.ReLU
         )
-        aux_env = RL_muons_env_final(self.problem_fn,self.low_bounds,self.high_bounds,self.device)#TO_DO: Can I avoid using aux_env or eval_env?
+        aux_env = self.env_type(self.problem_fn,self.low_bounds,self.high_bounds,self.device)#TO_DO: Can I avoid using aux_env or eval_env?
         
         obs_list, act_list, reward_list = generate_imitation_trajectories_final(aux_env, self.warm_baseline, n_episodes=1)                    
         if self.use_warm_baseline and self.supervised_loss:
@@ -2312,6 +2429,8 @@ class RL_final():
                 device=self.device,
                 #TQC-specific params:
                 top_quantiles_to_drop_per_net=top_quantiles_to_drop_per_net,
+                replay_buffer_class=CustomReplayBuffer if self.env_type is RL_simulate_muons_env else ReplayBuffer,
+                env_type=self.env_type,
                 alpha=self.alpha,
                 beta=self.beta,
             )
@@ -2356,7 +2475,7 @@ class RL_final():
 
         if self.use_warm_baseline and self.supervised_loss:
             model.set_expert_data(obs_tensor,act_tensor)
-            
+
         model.learn(total_timesteps=self.training_steps, callback=callback)
         if self.algorithm=="SB3_TQC":
             model_path=f"outputs/{self.WandB['name']}/tqc_model"
@@ -2428,7 +2547,7 @@ class RL_final():
         #Deterministic performance of the trained agent (play several evaluation episodes to obtain a distribution of returns):
         n_eval_episodes=1000
         start_time = time()
-        GA_solution_rewards = evaluate_policy_parallel(self.warm_baseline, self.problem_fn, self.low_bounds, self.high_bounds, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
+        GA_solution_rewards = evaluate_policy_parallel(self.warm_baseline, self.problem_fn, self.env_type, self.low_bounds, self.high_bounds, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
         print(f"Rewards of GA solution computed. Computation time: {time()-start_time} s. Mean reward: {GA_solution_rewards.mean()}")
         #Compute deterministic actions:
         trained_model_deterministic_actions=[]
@@ -2440,7 +2559,7 @@ class RL_final():
             trained_model_deterministic_actions.append(action)
         trained_model_deterministic_actions=np.array(trained_model_deterministic_actions)
         start_time = time()
-        trained_agent_rewards = evaluate_policy_parallel(trained_model_deterministic_actions, self.problem_fn, self.low_bounds, self.high_bounds, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
+        trained_agent_rewards = evaluate_policy_parallel(trained_model_deterministic_actions, self.problem_fn, self.env_type, self.low_bounds, self.high_bounds, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
         print(f"Rewards of trained agent computed. Computation time: {time()-start_time} s. Mean reward: {trained_agent_rewards.mean()}")
 
         min_val = min(trained_agent_rewards.min(),GA_solution_rewards.min())
@@ -2480,10 +2599,10 @@ class RL_final():
             plt.hist(q, bins=bins, alpha=0.6, label="Return distribution for last action of deterministic trajectory learnt by agent")
         #####Select reliable design:
         start_time = time()
-        best_design=get_reliable_design_parallel(model_path=model_path,algo_name=self.algorithm,use_warm_baseline=self.use_warm_baseline,problem_fn=self.problem_fn,low_bounds=self.low_bounds,high_bounds=self.high_bounds,devices=self.devices,num_envs=self.num_envs,folder_path=self.folder_path,noise_amplitude=0.02,n_designs=500,n_simulations=100,top_k=100,cvar_alpha=0.05)
+        best_design=get_reliable_design_parallel(model_path=model_path,algo_name=self.algorithm,use_warm_baseline=self.use_warm_baseline,problem_fn=self.problem_fn,env_type=self.env_type,low_bounds=self.low_bounds,high_bounds=self.high_bounds,devices=self.devices,num_envs=self.num_envs,folder_path=self.folder_path,noise_amplitude=0.02,n_designs=500,n_simulations=100,top_k=100,cvar_alpha=0.05)
         print(f"Best design chosen. Computation time: {time()-start_time} s")
         start_time = time()
-        best_design_rewards = evaluate_policy_parallel(best_design, self.problem_fn, self.low_bounds, self.high_bounds, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
+        best_design_rewards = evaluate_policy_parallel(best_design, self.problem_fn, self.env_type, self.low_bounds, self.high_bounds, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
         print(f"Rewards of best design computed. Computation time: {time()-start_time} s")
         min_val_best_design = best_design_rewards.min()
         max_val_best_design = best_design_rewards.max()
@@ -3405,7 +3524,7 @@ def generate_imitation_trajectories_final(env, warm_baseline, n_episodes=10):
                 action = warm_baseline.copy()
             elif type(env)==Rastrigin7DMultipleStepEnv:
                 action = warm_baseline.copy()[env.steps]
-            elif type(env)==RL_muons_env_final:
+            elif type(env)==RL_muons_env_final or type(env)==RL_simulate_muons_env:
                 action = warm_baseline.copy()[env.index]
             else:
                 print("Unknown env!")
@@ -3470,7 +3589,7 @@ def get_reliable_design(model,env,noise_amplitude=0.02,n_designs=1000,n_simulati
     best_design = max(results, key=lambda x: x["score"])["design"]
     return best_design
 
-def get_reliable_design_parallel(model_path,algo_name,use_warm_baseline,problem_fn,low_bounds,high_bounds,devices,num_envs,folder_path,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05):
+def get_reliable_design_parallel(model_path,algo_name,use_warm_baseline,problem_fn,env_type,low_bounds,high_bounds,devices,num_envs,folder_path,noise_amplitude=0.02,n_designs=1000,n_simulations=100,top_k=100,cvar_alpha=0.05):
     if os.path.exists(folder_path):#Remove folder if it exists
         shutil.rmtree(folder_path)
     os.makedirs(folder_path)
@@ -3479,7 +3598,7 @@ def get_reliable_design_parallel(model_path,algo_name,use_warm_baseline,problem_
     design_indices_chunks = [list(range(i * n_designs // num_workers, (i + 1) * n_designs // num_workers)) for i in range(num_workers)]
     env_devices = [devices[i % num_gpus] for i in range(num_workers)]
     with multiprocessing.get_context("spawn").Pool(processes=num_workers) as pool:
-        tasks = [(env_devices[i],design_indices_chunks[i],model_path,algo_name,use_warm_baseline,problem_fn,low_bounds,high_bounds,n_simulations,folder_path,noise_amplitude)for i in range(num_workers)]
+        tasks = [(env_devices[i],design_indices_chunks[i],model_path,algo_name,use_warm_baseline,problem_fn,env_type,low_bounds,high_bounds,n_simulations,folder_path,noise_amplitude)for i in range(num_workers)]
         results = pool.starmap(reliable_design_worker, tasks)
     all_designs = []
     all_rewards = []
@@ -3513,11 +3632,11 @@ def get_reliable_design_parallel(model_path,algo_name,use_warm_baseline,problem_
         shutil.rmtree(folder_path)
     return best_design
 
-def reliable_design_worker(device, design_indices, model_path, algo_name, use_warm_baseline, problem_fn, low_bounds, high_bounds, n_simulations, folder_path, noise_amplitude):
+def reliable_design_worker(device, design_indices, model_path, algo_name, use_warm_baseline, problem_fn, env_type, low_bounds, high_bounds, n_simulations, folder_path, noise_amplitude):
     torch.cuda.set_device(device)
     problem_fn = copy.deepcopy(problem_fn)#Make a deepcopy just in case
     model = load_model(model_path, device, algo_name, use_warm_baseline)
-    env = RL_muons_env_final(problem_fn, low_bounds, high_bounds, device)
+    env = env_type(problem_fn, low_bounds, high_bounds, device)
     all_rewards = []
     designs = []
     for idx, design_index in enumerate(design_indices):
@@ -3911,8 +4030,57 @@ class CustomSAC(SAC):
         if len(ent_coef_losses) > 0:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
+class CustomReplayBufferSamples(NamedTuple):
+    observations: th.Tensor
+    actions: th.Tensor
+    next_observations: th.Tensor
+    dones: th.Tensor
+    rewards: th.Tensor
+    steps: th.Tensor
+    discounts: th.Tensor | None = None
+
+class CustomReplayBuffer(ReplayBuffer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.steps = np.zeros(
+            (self.buffer_size, self.n_envs),
+            dtype=np.int32
+        )
+
+    def add(self, obs, next_obs, action, reward, done, infos):
+        for env_idx in range(self.n_envs):
+            self.steps[self.pos, env_idx] = infos[env_idx].get("step", -1)
+        super().add(obs, next_obs, action, reward, done, infos)
+
+    def _get_samples(self, batch_inds, env=None):
+        env_indices = np.random.randint(
+            0,
+            high=self.n_envs,
+            size=(len(batch_inds),)
+        )
+        if self.optimize_memory_usage:
+            next_obs = self._normalize_obs(self.observations[(batch_inds + 1) % self.buffer_size,env_indices,:],env,)
+        else:
+            next_obs = self._normalize_obs(self.next_observations[batch_inds,env_indices,:],env,)
+        data = (self._normalize_obs(self.observations[batch_inds, env_indices, :],env,),
+            self.actions[batch_inds, env_indices, :],
+            next_obs,
+            (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1),
+            self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1),env,),)
+        steps = self.steps[batch_inds, env_indices]
+        torch_data = tuple(map(self.to_torch, data))
+        return CustomReplayBufferSamples(
+            observations=torch_data[0],
+            actions=torch_data[1],
+            next_observations=torch_data[2],
+            dones=torch_data[3],
+            rewards=torch_data[4],
+            discounts=None,
+            steps=self.to_torch(steps).long(),
+        )
+
 class CustomTQC(TQC):
-    def __init__(self, *args, alpha, beta, **kwargs):
+    def __init__(self, *args, env_type, alpha, beta, **kwargs):
         super().__init__(*args, **kwargs)
         self.alpha=alpha
         self.beta=beta
@@ -3920,6 +4088,7 @@ class CustomTQC(TQC):
         self.actor_losses=[]
         self.critic_losses=[]
         self.supervised_losses=[]
+        self.env_type=env_type
 
     def set_expert_data(self, obs_tensor, act_tensor):
         self.expert_obs = obs_tensor.to(self.device)
@@ -4025,7 +4194,13 @@ class CustomTQC(TQC):
             self.critic_losses.append(critic_loss.item())
             self.actor_losses.append(actor_loss.item())
             if self.supervised_loss:
-                batch_steps = self.infer_step_from_obs_batch(replay_data.observations)
+                if self.env_type is RL_simulate_muons_env:
+                    batch_steps = replay_data.steps
+                elif self.env_type is RL_muons_env_final:
+                    batch_steps = self.infer_step_from_obs_batch(replay_data.observations)
+                else:
+                    print("Unknown env")
+                    sys.exit()
                 expert_actions = self.expert_act[batch_steps]
                 # MSE imitation loss
                 expert_loss = F.mse_loss(actions_pi, expert_actions) 

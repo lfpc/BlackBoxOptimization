@@ -20,7 +20,7 @@ class DeepSetEncoder(torch.nn.Module):
         # x is of shape (batch_size, num_particles, input_dim)
         phi_x = self.mlp(x)  # shape (batch_size, num_particles, output_dim)
         obs = self.pool(phi_x, dim=1)  # shape (batch_size, output_dim)
-
+        obs = torch.tanh(obs)#To have an output range of [-1,1]
         return obs
 
 class ConvolutionalEncoder(torch.nn.Module):

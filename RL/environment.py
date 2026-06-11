@@ -21,13 +21,13 @@ class MuonShieldDiscreteEnvironment(gym.Env):
                        "add_cavern": True,
                        "use_diluted": False,
                        "return_all": False,
-                       "histogram_dir": "/disk/users/lprate/projects/MuonsAndMatter/cuda_muons/data",
+                       "histogram_dir": "/home/hep/ghijan/MuonShieldProject/MuonsAndMatter/cuda_muons/data",
                        }
         self.detector = [{"dz": 0.02,"dx": 4,"dy": 6,"position": 82}, \
                         {"dz": 0.02,"dx": 4,"dy": 6,"position": 91}]
 
         self.default_magnet = HA_magnet
-        self.muons_file =  "/home/hep/lprate/projects/MuonsAndMatter/data/muons/full_sample_after_target.h5"
+        self.muons_file =  "/disk/users/ghijan/full_sample_after_target.h5"
         self.max_steps = 30
         self.max_Z = 30
         self.n_samples = n_samples
