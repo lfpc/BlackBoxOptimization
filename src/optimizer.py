@@ -2548,7 +2548,9 @@ class RL_final():
         n_eval_episodes=1000
         start_time = time()
         GA_solution_rewards = evaluate_policy_parallel(self.warm_baseline, self.problem_fn, self.env_type, self.low_bounds, self.high_bounds, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
-        print(f"Rewards of GA solution computed. Computation time: {time()-start_time} s. Mean reward: {GA_solution_rewards.mean()}")
+        mean_rewards=GA_solution_rewards.mean()
+        cvar_alpha = np.sort(GA_solution_rewards)[:int(np.ceil(self.alpha * n_eval_episodes))].mean()
+        print(f"Rewards of GA solution computed. Computation time: {time()-start_time} s. Mean reward: {mean_rewards}. CVaR: {cvar_alpha}. Custom metric: {(1-self.beta)*mean_rewards+self.beta*cvar_alpha}")
         #Compute deterministic actions:
         trained_model_deterministic_actions=[]
         obs, _ = aux_env.reset()
@@ -2560,7 +2562,9 @@ class RL_final():
         trained_model_deterministic_actions=np.array(trained_model_deterministic_actions)
         start_time = time()
         trained_agent_rewards = evaluate_policy_parallel(trained_model_deterministic_actions, self.problem_fn, self.env_type, self.low_bounds, self.high_bounds, self.devices, self.num_envs, folder_path=self.folder_path, n_eval_episodes=n_eval_episodes, return_all_rewards=True)
-        print(f"Rewards of trained agent computed. Computation time: {time()-start_time} s. Mean reward: {trained_agent_rewards.mean()}")
+        mean_rewards=trained_agent_rewards.mean()
+        cvar_alpha = np.sort(trained_agent_rewards)[:int(np.ceil(self.alpha * n_eval_episodes))].mean()
+        print(f"Rewards of trained agent computed. Computation time: {time()-start_time} s. Mean reward: {mean_rewards}. CVaR: {cvar_alpha}. Custom metric: {(1-self.beta)*mean_rewards+self.beta*cvar_alpha}")
 
         min_val = min(trained_agent_rewards.min(),GA_solution_rewards.min())
         max_val = max(trained_agent_rewards.max(),GA_solution_rewards.max())

@@ -46,7 +46,7 @@ LOCAL_LIBRARIES_DIR="/home/hep/$USER_NAME/MuonShieldProject/BlackBoxOptimization
 mkdir -p "$LOCAL_LIBRARIES_DIR"
 pip install --target "$LOCAL_LIBRARIES_DIR" --no-deps cma cross-entropy-method gymnasium d3rlpy stable_baselines3 sb3_contrib cloudpickle imitation gym structlog dataclasses_json marshmallow # Install locally if missing
 
-nohup apptainer exec --nv \
+nohup /disk/users/lprate/apptainer/bin/apptainer exec --nv \
   -B /cvmfs \
   -B /disk/users/$USER_NAME \
   -B /disk/gfs_lhcb/$USER_NAME \
